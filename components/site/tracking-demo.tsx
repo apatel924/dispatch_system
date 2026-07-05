@@ -15,32 +15,70 @@ import {
   Headset,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { DEMO_TRACKING_CODE, demoDelivery } from '@/data/trackingDemo'
+import { DEMO_TRACKING_CODE } from '@/data/trackingDemo'
+import { isApiEnabled } from '@/lib/dash/api/config'
+import {
+  fetchTracking,
+  getDemoTrackingView,
+  isDemoTrackingCode,
+} from '@/lib/dash/api/tracking-client'
+import type { TrackingView } from '@/lib/types/backend'
 import { images } from '@/lib/images'
 
 type View = 'idle' | 'found' | 'notfound'
-
-function resolveView(code: string): View {
-  const normalized = code.trim().toUpperCase()
-  if (!normalized) return 'idle'
-  if (normalized === DEMO_TRACKING_CODE) return 'found'
-  return 'notfound'
-}
 
 export function TrackingDemo({ initialCode = '' }: { initialCode?: string }) {
   const searchParams = useSearchParams()
   const codeFromUrl = searchParams.get('code') ?? initialCode
   const [code, setCode] = useState(codeFromUrl)
-  const [view, setView] = useState<View>(() => resolveView(codeFromUrl))
+  const [view, setView] = useState<View>('idle')
+  const [tracking, setTracking] = useState<TrackingView | null>(null)
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     setCode(codeFromUrl)
-    setView(resolveView(codeFromUrl))
+    if (!codeFromUrl.trim()) {
+      setView('idle')
+      setTracking(null)
+    }
   }, [codeFromUrl, initialCode])
+
+  async function lookupTracking(input: string) {
+    const normalized = input.trim()
+    if (!normalized) {
+      setView('idle')
+      setTracking(null)
+      return
+    }
+
+    if (isDemoTrackingCode(normalized)) {
+      setTracking(getDemoTrackingView())
+      setView('found')
+      return
+    }
+
+    if (!isApiEnabled()) {
+      setTracking(null)
+      setView('notfound')
+      return
+    }
+
+    setLoading(true)
+    try {
+      const { tracking: apiTracking } = await fetchTracking(normalized)
+      setTracking(apiTracking)
+      setView('found')
+    } catch {
+      setTracking(null)
+      setView('notfound')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   function submit(e: React.FormEvent) {
     e.preventDefault()
-    setView(resolveView(code))
+    void lookupTracking(code)
   }
 
   return (
@@ -64,10 +102,11 @@ export function TrackingDemo({ initialCode = '' }: { initialCode?: string }) {
         </div>
         <button
           type="submit"
-          className="inline-flex w-full shrink-0 items-center justify-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground transition-colors hover:bg-[var(--signal-dark)] sm:w-auto"
+          disabled={loading}
+          className="inline-flex w-full shrink-0 items-center justify-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground transition-colors hover:bg-[var(--signal-dark)] disabled:opacity-50 sm:w-auto"
         >
           <Truck className="size-4" />
-          Track
+          {loading ? 'Tracking…' : 'Track'}
         </button>
       </form>
       <p className="mt-2.5 px-1 font-mono text-[11px] text-muted-foreground">
@@ -75,7 +114,7 @@ export function TrackingDemo({ initialCode = '' }: { initialCode?: string }) {
       </p>
 
       <AnimatePresence mode="wait">
-        {view === 'found' && <FoundState key="found" />}
+        {view === 'found' && tracking && <FoundState key="found" tracking={tracking} />}
         {view === 'notfound' && <NotFoundState key="notfound" />}
       </AnimatePresence>
     </div>
@@ -105,8 +144,8 @@ function NotFoundState() {
   )
 }
 
-function FoundState() {
-  const d = demoDelivery
+function FoundState({ tracking }: { tracking: TrackingView }) {
+  const d = tracking
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
@@ -121,12 +160,12 @@ function FoundState() {
             Tracking code
           </p>
           <p className="truncate font-mono text-lg font-bold text-foreground">
-            {d.code}
+            {d.trackingId}
           </p>
         </div>
         <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1.5 text-sm font-semibold text-primary">
           <Truck className="size-4" />
-          {d.status}
+          {d.statusLabel}
         </span>
       </div>
 
@@ -138,7 +177,7 @@ function FoundState() {
               Estimated arrival
             </p>
             <p className="text-sm font-semibold text-foreground">
-              {d.estimatedArrival}
+              {d.estimatedArrival ?? '—'}
             </p>
           </div>
         </div>
@@ -149,7 +188,7 @@ function FoundState() {
               Delivery type
             </p>
             <p className="text-sm font-semibold text-foreground">
-              {d.deliveryType}
+              {d.deliveryType ?? 'Express delivery'}
             </p>
           </div>
         </div>

@@ -1,3 +1,7 @@
+import type { OrderStatus } from "@/lib/types/backend";
+import { isApiEnabled } from "@/lib/dash/api/config";
+import { postOrderProof, postOrderStatus } from "@/lib/dash/api/driver-client";
+import { uploadProofBlob } from "@/lib/auth/firebase-storage";
 import type { DeliveryStepKey, DriverOrder } from "./driver-mock-data";
 
 export type ProofType = "signature" | "exteriorPhoto";
@@ -69,6 +73,67 @@ export function saveProof(orderId: string, type: ProofType, dataUrl: string): Or
   }
   saveOrderProofs(orderId, current);
   return current;
+}
+
+export async function markStepCompleteAsync(
+  orderId: string,
+  step: DeliveryStepKey,
+  currentStatus: OrderStatus,
+): Promise<OrderProofs> {
+  const current = markStepComplete(orderId, step);
+
+  if (!isApiEnabled()) return current;
+
+  try {
+    await postOrderStatus(orderId, { status: currentStatus, stepKey: step });
+  } catch {
+    // Keep local state as offline fallback
+  }
+
+  return current;
+}
+
+export async function saveProofAsync(
+  orderId: string,
+  type: ProofType,
+  dataUrl: string,
+): Promise<OrderProofs> {
+  const current = saveProof(orderId, type, dataUrl);
+
+  if (!isApiEnabled()) return current;
+
+  const stepMap: Record<ProofType, DeliveryStepKey> = {
+    signature: "signature",
+    exteriorPhoto: "exteriorPhoto",
+  };
+
+  try {
+    const uploaded = await uploadProofBlob(orderId, type, dataUrl);
+    await postOrderProof(orderId, {
+      type,
+      stepKey: stepMap[type],
+      storagePath: uploaded.storagePath,
+      mimeType: uploaded.mimeType,
+      fileSizeBytes: uploaded.fileSizeBytes,
+    });
+  } catch {
+    // Local dataUrl retained until sync succeeds
+  }
+
+  return current;
+}
+
+export async function completeDeliveryAsync(orderId: string): Promise<void> {
+  if (!isApiEnabled()) return;
+
+  try {
+    await postOrderStatus(orderId, {
+      status: "Delivered",
+      note: "Delivery completed by driver",
+    });
+  } catch {
+    // UI may still show local completion
+  }
 }
 
 export function clearOrderProofs(orderId: string) {

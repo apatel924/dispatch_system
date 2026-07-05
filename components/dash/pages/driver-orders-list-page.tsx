@@ -5,16 +5,16 @@ import { useState } from "react";
 import { Package, ChevronRight, Search } from "lucide-react";
 import { OrderStatusBadge } from "@/components/dash/status-badge";
 import { DriverBottomNav } from "@/components/dash/driver/bottom-nav";
-import { driverOrders, completedOrders } from "@/lib/dash/driver-mock-data";
+import { useDriverOrders } from "@/lib/dash/hooks/use-driver-orders";
 
 type Tab = "active" | "completed";
 
 export function DriverOrdersList() {
   const [tab, setTab] = useState<Tab>("active");
   const [query, setQuery] = useState("");
+  const { activeOrders, completedOrders, loading } = useDriverOrders();
 
-  const active = driverOrders;
-  const filteredActive = active.filter((o) =>
+  const filteredActive = activeOrders.filter((o) =>
     !query || o.id.toLowerCase().includes(query.toLowerCase()) || o.customer.toLowerCase().includes(query.toLowerCase()),
   );
   const filteredCompleted = completedOrders.filter((o) =>
@@ -45,13 +45,15 @@ export function DriverOrdersList() {
               onClick={() => setTab(t)}
               className={`rounded-full px-4 py-1.5 text-xs font-semibold capitalize ${tab === t ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground"}`}
             >
-              {t === "active" ? `Active (${active.length})` : "Completed"}
+              {t === "active" ? `Active (${activeOrders.length})` : `Completed (${completedOrders.length})`}
             </button>
           ))}
         </div>
 
         <div className="mt-4 divide-y divide-border/60 rounded-2xl border border-border bg-card">
-          {tab === "active" ? (
+          {loading && tab === "active" && activeOrders.length === 0 ? (
+            <div className="p-8 text-center text-sm text-muted-foreground">Loading orders…</div>
+          ) : tab === "active" ? (
             filteredActive.length === 0 ? (
               <div className="p-8 text-center text-sm text-muted-foreground">No orders found</div>
             ) : (

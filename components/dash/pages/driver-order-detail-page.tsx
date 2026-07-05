@@ -10,10 +10,16 @@ import {
 import { OrderStatusBadge } from "@/components/dash/status-badge";
 import { ProofCaptureSheet, ProofThumbnail } from "@/components/dash/driver/proof-capture";
 import {
-  DELIVERY_STEPS, DEFAULT_COMPLETED_STEPS, getDriverOrder, type DeliveryStepKey,
+  DELIVERY_STEPS, DEFAULT_COMPLETED_STEPS, type DeliveryStepKey,
 } from "@/lib/dash/driver-mock-data";
 import {
-  getOrderProofs, markStepComplete, saveProof, saveOrderProofs, clearOrderProofs,
+  apiProofsToLocalProofs,
+  mergeCompletedSteps,
+} from "@/lib/dash/api/driver-adapters";
+import { useDriverOrder } from "@/lib/dash/hooks/use-driver-order";
+import {
+  getOrderProofs, markStepCompleteAsync, saveProofAsync, saveOrderProofs, clearOrderProofs,
+  completeDeliveryAsync,
   orderMapsUrl, deliveryMapsUrl, pickupMapsUrl, getDeliveryLocation, type ProofType,
 } from "@/lib/dash/driver-store";
 
@@ -30,22 +36,45 @@ function formatStepTime(iso: string): string {
 
 export function DriverOrderDetail({ orderId }: { orderId: string }) {
   const router = useRouter();
-  const order = getDriverOrder(orderId);
+  const {
+    order,
+    completedSteps: apiCompletedSteps,
+    proofs: apiProofs,
+    source,
+    loading,
+  } = useDriverOrder(orderId);
   const [completedSteps, setCompletedSteps] = useState<DeliveryStepKey[]>(DEFAULT_COMPLETED_STEPS);
   const [stepTimestamps, setStepTimestamps] = useState<Partial<Record<DeliveryStepKey, string>>>({});
   const [proofs, setProofs] = useState<Partial<Record<ProofType, string>>>({});
   const [capture, setCapture] = useState<{ mode: CaptureMode; proofType: ProofType } | null>(null);
   const [delivered, setDelivered] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const loadProofs = useCallback(() => {
     const stored = getOrderProofs(orderId);
-    const steps = stored.completedSteps.length > 0 ? stored.completedSteps : DEFAULT_COMPLETED_STEPS;
+    const apiProofUrls = source === "api" ? apiProofsToLocalProofs(apiProofs) : {};
+    const mergedProofs = { ...apiProofUrls, ...stored.proofs };
+
+    let steps = stored.completedSteps;
+    if (source === "api" && apiCompletedSteps.length > 0) {
+      steps = mergeCompletedSteps(apiCompletedSteps, stored.completedSteps);
+    }
+    if (steps.length === 0) steps = DEFAULT_COMPLETED_STEPS;
+
     setCompletedSteps(steps);
     setStepTimestamps(stored.stepTimestamps);
-    setProofs(stored.proofs);
-  }, [orderId]);
+    setProofs(mergedProofs);
+  }, [orderId, source, apiCompletedSteps, apiProofs]);
 
   useEffect(() => { loadProofs(); }, [loadProofs]);
+
+  if (loading && !order) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-4">
+        <p className="text-muted-foreground">Loading order…</p>
+      </div>
+    );
+  }
 
   if (!order) {
     return (
@@ -58,24 +87,35 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
 
   const canComplete = DELIVERY_STEPS.every((s) => completedSteps.includes(s.key));
 
-  const handleTapStep = (key: DeliveryStepKey) => {
-    if (completedSteps.includes(key)) return;
-    const updated = markStepComplete(orderId, key);
-    setCompletedSteps(updated.completedSteps);
-    setStepTimestamps(updated.stepTimestamps);
+  const handleTapStep = async (key: DeliveryStepKey) => {
+    if (completedSteps.includes(key) || !order) return;
+    setSyncing(true);
+    try {
+      const updated = await markStepCompleteAsync(orderId, key, order.status);
+      setCompletedSteps(updated.completedSteps);
+      setStepTimestamps(updated.stepTimestamps);
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const openCapture = (proofType: ProofType, mode: CaptureMode) => {
     setCapture({ mode, proofType });
   };
 
-  const handleSaveProof = (dataUrl: string) => {
+  const handleSaveProof = async (dataUrl: string) => {
     if (!capture) return;
-    const updated = saveProof(orderId, capture.proofType, dataUrl);
-    setProofs(updated.proofs);
-    setCompletedSteps(updated.completedSteps);
-    setStepTimestamps(updated.stepTimestamps);
+    const { proofType } = capture;
     setCapture(null);
+    setSyncing(true);
+    try {
+      const updated = await saveProofAsync(orderId, proofType, dataUrl);
+      setProofs(updated.proofs);
+      setCompletedSteps(updated.completedSteps);
+      setStepTimestamps(updated.stepTimestamps);
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const handleRemoveProof = (type: ProofType) => {
@@ -99,9 +139,15 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
     setCompletedSteps(stored.completedSteps.length > 0 ? stored.completedSteps : DEFAULT_COMPLETED_STEPS);
   };
 
-  const handleComplete = () => {
-    setDelivered(true);
-    setTimeout(() => router.push("/driver-dashboard"), 1500);
+  const handleComplete = async () => {
+    setSyncing(true);
+    try {
+      await completeDeliveryAsync(orderId);
+      setDelivered(true);
+      setTimeout(() => router.push("/driver-dashboard"), 1500);
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const completedCount = DELIVERY_STEPS.filter((s) => completedSteps.includes(s.key)).length;
@@ -255,12 +301,12 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
       <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card p-3">
         <div className="mx-auto max-w-md">
           <button
-            disabled={!canComplete || delivered}
+            disabled={!canComplete || delivered || syncing}
             onClick={handleComplete}
-            className={`flex h-14 w-full items-center justify-center gap-2 rounded-xl text-base font-bold ${canComplete && !delivered ? "bg-primary text-primary-foreground hover:bg-primary/90" : "cursor-not-allowed bg-secondary text-muted-foreground"}`}
+            className={`flex h-14 w-full items-center justify-center gap-2 rounded-xl text-base font-bold ${canComplete && !delivered && !syncing ? "bg-primary text-primary-foreground hover:bg-primary/90" : "cursor-not-allowed bg-secondary text-muted-foreground"}`}
           >
             <CheckCircle2 className="h-5 w-5" />
-            {delivered ? "Delivery Complete!" : "Complete Delivery"}
+            {delivered ? "Delivery Complete!" : syncing ? "Saving…" : "Complete Delivery"}
           </button>
           {!canComplete && !delivered && (
             <div className="mt-1.5 text-center text-[11px] text-muted-foreground">

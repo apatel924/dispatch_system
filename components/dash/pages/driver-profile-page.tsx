@@ -6,10 +6,20 @@ import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { StatCard } from "@/components/dash/ui/stat-card";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { DriverStatusBadge, OrderStatusBadge } from "@/components/dash/status-badge";
-import { drivers, orders } from "@/lib/dash/mock-data";
+import { useAdminDriver } from "@/lib/dash/hooks/use-admin-drivers";
+import { useAdminOrders } from "@/lib/dash/hooks/use-admin-orders";
 
 export function DriverProfilePage({ driverId }: { driverId: string }) {
-  const d = drivers.find((x) => x.id === driverId) ?? drivers[0];
+  const { driver: d } = useAdminDriver(driverId);
+  const { orders: driverOrders } = useAdminOrders({ driverId, limit: 20 });
+
+  if (!d) {
+    return (
+      <DashboardLayout title="Driver Profile">
+        <p className="text-muted-foreground">Driver not found</p>
+      </DashboardLayout>
+    );
+  }
   return (
     <DashboardLayout title="Driver Profile">
       <Link href="/drivers" className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary"><ArrowLeft className="h-4 w-4" /> Back to Drivers</Link>
@@ -43,7 +53,7 @@ export function DriverProfilePage({ driverId }: { driverId: string }) {
           <MetaField label="Driver ID" value={d.id} />
           <MetaField label="Status" value={<span className="font-semibold text-success">Active</span>} />
           <MetaField label="Rating" value={<span className="inline-flex items-center gap-1"><Star className="h-4 w-4 fill-warning text-warning" />{d.rating} / 5</span>} />
-          <MetaField label="Total Deliveries" value="1,248" />
+          <MetaField label="Total Deliveries" value={String(d.deliveries ?? "—")} />
         </div>
       </div>
 
@@ -53,7 +63,7 @@ export function DriverProfilePage({ driverId }: { driverId: string }) {
         <StatCard label="Returned Orders" value={23} icon={RotateCcw} tone="orange" delta="8%" trend="down" compareLabel="vs last 30 days" />
         <StatCard label="Average Delivery Time" value="28 min" icon={Clock} tone="purple" delta="6m" trend="down" compareLabel="vs last 30 days" />
         <StatCard label="On-Time Rate" value="96.2%" icon={TrendingUp} tone="info" delta="4.1%" compareLabel="vs last 30 days" />
-        <StatCard label="Active Orders" value={3} icon={Truck} tone="warning" delta="—" compareLabel="vs last 30 days" />
+        <StatCard label="Active Orders" value={d.activeDeliveries} icon={Truck} tone="warning" delta="—" compareLabel="vs last 30 days" />
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-3">
@@ -73,7 +83,7 @@ export function DriverProfilePage({ driverId }: { driverId: string }) {
               <tr><th className="px-4 py-2 font-medium">Order #</th><th className="px-2 py-2 font-medium">Customer</th><th className="px-2 py-2 font-medium">Date</th><th className="px-2 py-2 font-medium">Status</th><th className="px-4 py-2 font-medium">Completed At</th></tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {orders.slice(0, 5).map((o) => (
+              {driverOrders.slice(0, 5).map((o) => (
                 <tr key={o.id} className="hover:bg-secondary/30">
                   <td className="px-4 py-2 font-mono">{o.id}</td>
                   <td className="px-2 py-2">{o.customer}</td>
@@ -89,7 +99,7 @@ export function DriverProfilePage({ driverId }: { driverId: string }) {
 
         <SectionCard title="Current Assignments" action={<a className="text-xs font-semibold text-primary hover:underline" href="#">View All</a>}>
           <div className="space-y-4">
-            {orders.slice(0, 3).map((o) => (
+            {driverOrders.slice(0, 3).map((o) => (
               <div key={o.id} className="rounded-lg border border-border/60 p-3">
                 <div className="flex items-start justify-between">
                   <div>

@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useState } from "react";
 import { Phone, Mail, Truck, LogOut, ChevronRight, Bell } from "lucide-react";
 import { DriverBottomNav } from "@/components/dash/driver/bottom-nav";
-import { CURRENT_DRIVER } from "@/lib/dash/driver-mock-data";
+import { useDriverSession } from "@/lib/dash/hooks/use-driver-session";
 
 export function DriverAccountPage() {
   const [notifications, setNotifications] = useState(true);
+  const { driver, loading } = useDriverSession();
 
   return (
     <div className="min-h-screen bg-background pb-24">
@@ -16,21 +17,27 @@ export function DriverAccountPage() {
           <h1 className="text-xl font-bold">Account</h1>
         </header>
 
-        <div className="mt-4 flex items-center gap-4 rounded-2xl border border-border bg-card p-4">
-          <div className={`grid h-16 w-16 place-items-center rounded-full text-xl font-bold ${CURRENT_DRIVER.avatarColor}`}>
-            {CURRENT_DRIVER.initials}
-          </div>
-          <div>
-            <div className="text-lg font-bold">{CURRENT_DRIVER.name}</div>
-            <div className="text-sm text-muted-foreground">Driver · {CURRENT_DRIVER.id}</div>
-          </div>
-        </div>
+        {loading && !driver ? (
+          <div className="mt-8 text-center text-sm text-muted-foreground">Loading profile…</div>
+        ) : (
+          <>
+            <div className="mt-4 flex items-center gap-4 rounded-2xl border border-border bg-card p-4">
+              <div className={`grid h-16 w-16 place-items-center rounded-full text-xl font-bold ${driver.avatarColor}`}>
+                {driver.initials}
+              </div>
+              <div>
+                <div className="text-lg font-bold">{driver.name}</div>
+                <div className="text-sm text-muted-foreground">Driver · {driver.id}</div>
+              </div>
+            </div>
 
-        <div className="mt-4 space-y-2 rounded-2xl border border-border bg-card divide-y divide-border/60">
-          <InfoRow icon={Phone} label="Phone" value={CURRENT_DRIVER.phone} />
-          <InfoRow icon={Mail} label="Email" value={CURRENT_DRIVER.email} />
-          <InfoRow icon={Truck} label="Vehicle" value={CURRENT_DRIVER.vehicle} />
-        </div>
+            <div className="mt-4 space-y-2 rounded-2xl border border-border bg-card divide-y divide-border/60">
+              <InfoRow icon={Phone} label="Phone" value={driver.phone} />
+              <InfoRow icon={Mail} label="Email" value={driver.email} />
+              <InfoRow icon={Truck} label="Vehicle" value={driver.vehicle} />
+            </div>
+          </>
+        )}
 
         <div className="mt-4 rounded-2xl border border-border bg-card">
           <button

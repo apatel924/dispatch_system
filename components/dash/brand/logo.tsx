@@ -20,7 +20,11 @@ export function Logo({
           'object-contain transition-all duration-300',
           collapsed ? 'h-9 w-9' : 'h-14 w-auto max-w-[180px]',
         )}
-        style={collapsed ? { objectPosition: 'left center' } : undefined}
+        style={{
+          width: 'auto',
+          height: 'auto',
+          ...(collapsed ? { objectPosition: 'left center' } : {}),
+        }}
         priority
       />
     </div>

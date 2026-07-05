@@ -17,6 +17,7 @@ export function Footer() {
                 width={180}
                 height={120}
                 className="h-12 w-auto object-contain"
+                style={{ width: 'auto', height: 'auto' }}
               />
             </div>
             <p className="mt-5 max-w-sm text-pretty text-sm leading-relaxed text-white/60">

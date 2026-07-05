@@ -23,6 +23,7 @@ export function Logo({
         height={150}
         priority={priority}
         className="h-full w-auto object-contain"
+        style={{ width: 'auto', height: 'auto' }}
       />
     </Link>
   )

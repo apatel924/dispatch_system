@@ -58,6 +58,7 @@ export function Navbar() {
                 'w-auto object-contain transition-all duration-300',
                 solid ? 'h-10' : 'h-12',
               )}
+              style={{ width: 'auto', height: 'auto' }}
             />
           </Link>
 

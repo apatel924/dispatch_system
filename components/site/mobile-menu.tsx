@@ -44,6 +44,7 @@ export function MobileMenu({ open, onClose, pathname }: Props) {
               width={180}
               height={120}
               className="h-11 w-auto object-contain"
+              style={{ width: 'auto', height: 'auto' }}
             />
             <button
               type="button"

@@ -5,6 +5,7 @@ export interface DriverOrder {
   customer: string;
   phone: string;
   address: string;
+  unit?: string;
   pickupName: string;
   pickupAddress: string;
   status: OrderStatus;
@@ -49,6 +50,7 @@ export const driverOrders: DriverOrder[] = [
     customer: "Acme Manufacturing",
     phone: "(555) 123-4567",
     address: "123 Industrial Way, Dallas, TX 75201",
+    unit: "Suite 200 / Buzz 42",
     pickupName: "Northside Pharmacy",
     pickupAddress: "4567 Medical Dr, Dallas, TX 75231",
     status: "En Route",
@@ -123,25 +125,23 @@ export type DeliveryStepKey =
   | "arrivedDestination"
   | "verifyId"
   | "signature"
-  | "dropoffPhoto"
   | "exteriorPhoto";
 
 export interface DeliveryStep {
   key: DeliveryStepKey;
   label: string;
-  type: "auto" | "tap" | "proof";
-  proofType?: "id" | "signature" | "photo";
+  type: "tap" | "proof";
+  proofType?: "signature" | "photo";
 }
 
 export const DELIVERY_STEPS: DeliveryStep[] = [
-  { key: "arrivedPickup", label: "Arrived at pickup", type: "auto" },
-  { key: "pickedUp", label: "Picked up", type: "auto" },
-  { key: "outForDelivery", label: "Out for delivery", type: "auto" },
+  { key: "arrivedPickup", label: "Arrived at pickup", type: "tap" },
+  { key: "pickedUp", label: "Picked up", type: "tap" },
+  { key: "outForDelivery", label: "Out for delivery", type: "tap" },
   { key: "arrivedDestination", label: "Arrived at destination", type: "tap" },
-  { key: "verifyId", label: "Verify ID", type: "proof", proofType: "id" },
+  { key: "verifyId", label: "Verify ID", type: "tap" },
   { key: "signature", label: "Capture signature", type: "proof", proofType: "signature" },
-  { key: "dropoffPhoto", label: "Upload drop-off photo", type: "proof", proofType: "photo" },
   { key: "exteriorPhoto", label: "Upload exterior photo", type: "proof", proofType: "photo" },
 ];
 
-export const DEFAULT_COMPLETED_STEPS: DeliveryStepKey[] = ["arrivedPickup", "pickedUp", "outForDelivery"];
+export const DEFAULT_COMPLETED_STEPS: DeliveryStepKey[] = [];

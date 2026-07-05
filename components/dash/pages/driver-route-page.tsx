@@ -5,7 +5,7 @@ import { MapPin, Navigation, Package, Clock } from "lucide-react";
 import { OrderStatusBadge } from "@/components/dash/status-badge";
 import { DriverBottomNav } from "@/components/dash/driver/bottom-nav";
 import { driverOrders } from "@/lib/dash/driver-mock-data";
-import { mapsUrl } from "@/lib/dash/driver-store";
+import { getOrderProofs, orderMapsUrl, getDeliveryLocation } from "@/lib/dash/driver-store";
 
 export function DriverRoutePage() {
   const stops = [...driverOrders].sort((a, b) => {
@@ -50,7 +50,7 @@ export function DriverRoutePage() {
                 </div>
                 <div className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
                   <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span>{stop.address}</span>
+                  <span>{getDeliveryLocation(stop)}</span>
                 </div>
                 <div className="mt-2 flex items-center gap-1 text-xs font-semibold">
                   <Clock className="h-3.5 w-3.5 text-muted-foreground" /> ETA {stop.eta}
@@ -59,7 +59,7 @@ export function DriverRoutePage() {
                   <Link href={`/driver-orders/${stop.id}`} className="flex h-10 items-center justify-center gap-1 rounded-lg bg-primary text-xs font-semibold text-primary-foreground hover:bg-primary/90">
                     <Package className="h-3.5 w-3.5" /> Open
                   </Link>
-                  <a href={mapsUrl(stop.address)} target="_blank" rel="noopener noreferrer" className="flex h-10 items-center justify-center gap-1 rounded-lg border border-primary text-xs font-semibold text-primary hover:bg-primary/5">
+                  <a href={orderMapsUrl(stop, getOrderProofs(stop.id).completedSteps)} target="_blank" rel="noopener noreferrer" className="flex h-10 items-center justify-center gap-1 rounded-lg border border-primary text-xs font-semibold text-primary hover:bg-primary/5">
                     <MapPin className="h-3.5 w-3.5" /> Navigate
                   </a>
                 </div>

@@ -7,28 +7,32 @@ import {
   ArrowLeft, Phone, MapPin, Package, PenTool, Camera, IdCard,
   CheckCircle2, Circle, Truck, ChevronRight,
 } from "lucide-react";
-import { OrderStatusBadge, PaymentBadge } from "@/components/dash/status-badge";
+import { OrderStatusBadge } from "@/components/dash/status-badge";
 import { ProofCaptureSheet, ProofThumbnail } from "@/components/dash/driver/proof-capture";
 import {
   DELIVERY_STEPS, DEFAULT_COMPLETED_STEPS, getDriverOrder, type DeliveryStepKey,
 } from "@/lib/dash/driver-mock-data";
 import {
-  getOrderProofs, markStepComplete, saveProof, saveOrderProofs, clearOrderProofs, mapsUrl, type ProofType,
+  getOrderProofs, markStepComplete, saveProof, saveOrderProofs, clearOrderProofs,
+  orderMapsUrl, deliveryMapsUrl, pickupMapsUrl, getDeliveryLocation, type ProofType,
 } from "@/lib/dash/driver-store";
 
-type CaptureMode = "photo" | "signature" | "id";
+type CaptureMode = "photo" | "signature";
 
 const PROOF_LABELS: Record<ProofType, string> = {
-  id: "ID Verification",
   signature: "Signature",
-  dropoffPhoto: "Drop-off Photo",
   exteriorPhoto: "Address Photo",
 };
+
+function formatStepTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
 
 export function DriverOrderDetail({ orderId }: { orderId: string }) {
   const router = useRouter();
   const order = getDriverOrder(orderId);
   const [completedSteps, setCompletedSteps] = useState<DeliveryStepKey[]>(DEFAULT_COMPLETED_STEPS);
+  const [stepTimestamps, setStepTimestamps] = useState<Partial<Record<DeliveryStepKey, string>>>({});
   const [proofs, setProofs] = useState<Partial<Record<ProofType, string>>>({});
   const [capture, setCapture] = useState<{ mode: CaptureMode; proofType: ProofType } | null>(null);
   const [delivered, setDelivered] = useState(false);
@@ -37,6 +41,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
     const stored = getOrderProofs(orderId);
     const steps = stored.completedSteps.length > 0 ? stored.completedSteps : DEFAULT_COMPLETED_STEPS;
     setCompletedSteps(steps);
+    setStepTimestamps(stored.stepTimestamps);
     setProofs(stored.proofs);
   }, [orderId]);
 
@@ -51,14 +56,13 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
     );
   }
 
-  const proofSteps = DELIVERY_STEPS.filter((s) => s.type === "proof");
-  const allProofsDone = proofSteps.every((s) => completedSteps.includes(s.key));
-  const canComplete = allProofsDone && completedSteps.includes("arrivedDestination");
+  const canComplete = DELIVERY_STEPS.every((s) => completedSteps.includes(s.key));
 
   const handleTapStep = (key: DeliveryStepKey) => {
     if (completedSteps.includes(key)) return;
     const updated = markStepComplete(orderId, key);
     setCompletedSteps(updated.completedSteps);
+    setStepTimestamps(updated.stepTimestamps);
   };
 
   const openCapture = (proofType: ProofType, mode: CaptureMode) => {
@@ -70,23 +74,28 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
     const updated = saveProof(orderId, capture.proofType, dataUrl);
     setProofs(updated.proofs);
     setCompletedSteps(updated.completedSteps);
+    setStepTimestamps(updated.stepTimestamps);
     setCapture(null);
   };
 
   const handleRemoveProof = (type: ProofType) => {
     const stored = getOrderProofs(orderId);
     const stepMap: Record<ProofType, DeliveryStepKey> = {
-      id: "verifyId", signature: "signature", dropoffPhoto: "dropoffPhoto", exteriorPhoto: "exteriorPhoto",
+      signature: "signature", exteriorPhoto: "exteriorPhoto",
     };
+    const step = stepMap[type];
     stored.proofs = { ...stored.proofs };
     delete stored.proofs[type];
-    stored.completedSteps = stored.completedSteps.filter((s) => s !== stepMap[type]);
+    stored.completedSteps = stored.completedSteps.filter((s) => s !== step);
+    stored.stepTimestamps = { ...stored.stepTimestamps };
+    delete stored.stepTimestamps[step];
     if (stored.completedSteps.length > 0 || Object.keys(stored.proofs).length > 0) {
       saveOrderProofs(orderId, stored);
     } else {
       clearOrderProofs(orderId);
     }
     setProofs(stored.proofs);
+    setStepTimestamps(stored.stepTimestamps);
     setCompletedSteps(stored.completedSteps.length > 0 ? stored.completedSteps : DEFAULT_COMPLETED_STEPS);
   };
 
@@ -96,6 +105,8 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
   };
 
   const completedCount = DELIVERY_STEPS.filter((s) => completedSteps.includes(s.key)).length;
+  const deliveryLocation = getDeliveryLocation(order);
+  const navigationUrl = orderMapsUrl(order, completedSteps);
 
   return (
     <div className="min-h-screen bg-background pb-32">
@@ -117,7 +128,14 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
               <div className="text-lg font-bold">{order.customer}</div>
               <div className="mt-1 flex items-start gap-1.5 text-sm text-muted-foreground">
                 <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>{order.address}</span>
+                <a
+                  href={deliveryMapsUrl(order)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:text-primary hover:underline"
+                >
+                  {deliveryLocation}
+                </a>
               </div>
               <div className="mt-2 text-sm">ETA <span className="font-semibold">{order.eta}</span></div>
             </div>
@@ -126,15 +144,25 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
             <a href={`tel:${order.phone.replace(/\D/g, "")}`} className="flex h-12 items-center justify-center gap-1.5 rounded-xl bg-primary text-sm font-semibold text-primary-foreground hover:bg-primary/90">
               <Phone className="h-4 w-4" /> Call Customer
             </a>
-            <a href={mapsUrl(order.address)} target="_blank" rel="noopener noreferrer" className="flex h-12 items-center justify-center gap-1.5 rounded-xl border border-primary text-sm font-semibold text-primary hover:bg-primary/5">
+            <a href={navigationUrl} target="_blank" rel="noopener noreferrer" className="flex h-12 items-center justify-center gap-1.5 rounded-xl border border-primary text-sm font-semibold text-primary hover:bg-primary/5">
               <MapPin className="h-4 w-4" /> Open Maps
             </a>
           </div>
         </section>
 
         <section className="rounded-2xl border border-border bg-card p-4">
-          <div className="flex items-center gap-2 text-sm font-bold">
-            <Package className="h-4 w-4 text-purple" /> Pickup
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm font-bold">
+              <Package className="h-4 w-4 text-purple" /> Pickup
+            </div>
+            <a
+              href={pickupMapsUrl(order)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
+            >
+              <MapPin className="h-3.5 w-3.5" /> Open Maps
+            </a>
           </div>
           <div className="mt-2 text-sm">
             <div className="font-semibold">{order.pickupName}</div>
@@ -150,44 +178,51 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
 
         <section className="rounded-2xl border border-border bg-card p-4">
           <div className="flex items-center justify-between">
-            <div className="text-sm font-bold">Payment</div>
-            <PaymentBadge status={order.payment} />
-          </div>
-          <div className="mt-2 flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Total</span>
-            <span className="text-lg font-bold">{order.total}</span>
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-border bg-card p-4">
-          <div className="flex items-center justify-between">
             <div className="text-sm font-bold">Required Delivery Steps</div>
             <span className="text-xs font-semibold text-primary">{completedCount} of {DELIVERY_STEPS.length}</span>
           </div>
           <ol className="mt-3 space-y-2">
             {DELIVERY_STEPS.map((s) => {
               const done = completedSteps.includes(s.key);
-              const Icon = s.proofType === "id" ? IdCard : s.proofType === "signature" ? PenTool : s.proofType === "photo" ? Camera : null;
+              const timestamp = stepTimestamps[s.key];
+              const Icon = s.proofType === "signature" ? PenTool : s.proofType === "photo" ? Camera : null;
+              const tapLabel = s.key === "verifyId" ? "Verify" : "Mark Done";
+              const TapIcon = s.key === "verifyId" ? IdCard : null;
+
               return (
-                <li key={s.key} className={`flex items-center gap-3 rounded-xl border p-3 ${done ? "border-success/30 bg-success-soft/40" : "border-border"}`}>
-                  {done ? <CheckCircle2 className="h-5 w-5 shrink-0 text-success" /> : <Circle className="h-5 w-5 shrink-0 text-muted-foreground" />}
-                  <span className={`flex-1 text-sm ${done ? "text-muted-foreground" : "font-medium"}`}>{s.label}</span>
-                  {!done && s.type === "tap" && (
-                    <button onClick={() => handleTapStep(s.key)} className="rounded-lg border border-primary/40 px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary/5">
-                      Mark Done
-                    </button>
-                  )}
-                  {!done && s.type === "proof" && Icon && (
-                    <button
-                      onClick={() => openCapture(
-                        s.key === "verifyId" ? "id" : s.key === "signature" ? "signature" : s.key === "dropoffPhoto" ? "dropoffPhoto" : "exteriorPhoto",
-                        s.proofType === "signature" ? "signature" : s.proofType === "id" ? "id" : "photo",
+                <li
+                  key={s.key}
+                  className={`rounded-xl border p-3 ${done ? "border-success/30 bg-success-soft/40" : "border-border"}`}
+                >
+                  <div className="flex items-center gap-3">
+                    {done ? <CheckCircle2 className="h-5 w-5 shrink-0 text-success" /> : <Circle className="h-5 w-5 shrink-0 text-muted-foreground" />}
+                    <div className="flex-1 min-w-0">
+                      <span className={`text-sm ${done ? "text-muted-foreground" : "font-medium"}`}>{s.label}</span>
+                      {done && timestamp && (
+                        <div className="mt-0.5 text-xs text-success">Completed at {formatStepTime(timestamp)}</div>
                       )}
-                      className="inline-flex items-center gap-1 rounded-lg border border-primary/40 bg-card px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary/5"
-                    >
-                      <Icon className="h-3.5 w-3.5" /> Capture <ChevronRight className="h-3 w-3" />
-                    </button>
-                  )}
+                    </div>
+                    {!done && s.type === "tap" && (
+                      <button
+                        onClick={() => handleTapStep(s.key)}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-primary/40 px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary/5"
+                      >
+                        {TapIcon && <TapIcon className="h-3.5 w-3.5" />}
+                        {tapLabel}
+                      </button>
+                    )}
+                    {!done && s.type === "proof" && Icon && (
+                      <button
+                        onClick={() => openCapture(
+                          s.key === "signature" ? "signature" : "exteriorPhoto",
+                          s.proofType === "signature" ? "signature" : "photo",
+                        )}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-primary/40 bg-card px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary/5"
+                      >
+                        <Icon className="h-3.5 w-3.5" /> Capture <ChevronRight className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
                 </li>
               );
             })}
@@ -196,7 +231,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
 
         <section className="rounded-2xl border border-border bg-card p-4">
           <div className="text-sm font-bold">Proof Capture</div>
-          <div className="mt-3 grid grid-cols-3 gap-2">
+          <div className="mt-3 grid grid-cols-2 gap-2">
             <ProofThumbnail
               label="Signature"
               required
@@ -206,15 +241,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
               onRemove={proofs.signature ? () => handleRemoveProof("signature") : undefined}
             />
             <ProofThumbnail
-              label="Drop-off"
-              required
-              dataUrl={proofs.dropoffPhoto}
-              icon={<Camera className="h-6 w-6" />}
-              onCapture={() => openCapture("dropoffPhoto", "photo")}
-              onRemove={proofs.dropoffPhoto ? () => handleRemoveProof("dropoffPhoto") : undefined}
-            />
-            <ProofThumbnail
-              label="Address"
+              label="Exterior"
               required
               dataUrl={proofs.exteriorPhoto}
               icon={<Camera className="h-6 w-6" />}
@@ -237,7 +264,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
           </button>
           {!canComplete && !delivered && (
             <div className="mt-1.5 text-center text-[11px] text-muted-foreground">
-              Mark arrival and attach all required proof to continue
+              Complete all delivery steps to continue
             </div>
           )}
         </div>

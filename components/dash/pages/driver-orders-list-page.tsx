@@ -63,7 +63,6 @@ export function DriverOrdersList() {
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-bold">{o.id}</div>
                     <div className="truncate text-sm">{o.customer}</div>
-                    <div className="text-xs text-muted-foreground">{o.total}</div>
                   </div>
                   <div className="text-right">
                     <OrderStatusBadge status={o.status} />

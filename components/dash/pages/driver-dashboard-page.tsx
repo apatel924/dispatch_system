@@ -7,12 +7,14 @@ import { Logo } from "@/components/dash/brand/logo";
 import { OrderStatusBadge } from "@/components/dash/status-badge";
 import { DriverBottomNav } from "@/components/dash/driver/bottom-nav";
 import { CURRENT_DRIVER, driverOrders, completedOrders, getActiveOrder } from "@/lib/dash/driver-mock-data";
-import { mapsUrl } from "@/lib/dash/driver-store";
+import { getOrderProofs, orderMapsUrl, getDeliveryLocation } from "@/lib/dash/driver-store";
 
 export function DriverDashboard() {
   const [available, setAvailable] = useState(true);
   const active = getActiveOrder();
   const assignments = driverOrders.filter((o) => o.id !== active.id);
+  const activeNavigationUrl = orderMapsUrl(active, getOrderProofs(active.id).completedSteps);
+  const activeDeliveryLocation = getDeliveryLocation(active);
 
   return (
     <div className="min-h-screen bg-background pb-24">
@@ -64,7 +66,7 @@ export function DriverDashboard() {
             <div>
               <div className="text-lg font-bold">{active.id}</div>
               <div className="text-sm">{active.customer}</div>
-              <div className="text-sm text-muted-foreground">{active.address}</div>
+              <div className="text-sm text-muted-foreground">{activeDeliveryLocation}</div>
               <div className="mt-2 flex items-center gap-1 text-sm">
                 <Clock className="h-4 w-4 text-muted-foreground" /> ETA {active.eta}
               </div>
@@ -74,7 +76,7 @@ export function DriverDashboard() {
             <Link href={`/driver-orders/${active.id}`} className="flex h-12 items-center justify-center gap-1.5 rounded-xl bg-primary text-sm font-semibold text-primary-foreground hover:bg-primary/90">
               <Package className="h-4 w-4" /> Open Order
             </Link>
-            <a href={mapsUrl(active.address)} target="_blank" rel="noopener noreferrer" className="flex h-12 items-center justify-center gap-1.5 rounded-xl border border-primary text-sm font-semibold text-primary hover:bg-primary/5">
+            <a href={activeNavigationUrl} target="_blank" rel="noopener noreferrer" className="flex h-12 items-center justify-center gap-1.5 rounded-xl border border-primary text-sm font-semibold text-primary hover:bg-primary/5">
               <MapPin className="h-4 w-4" /> Open Maps
             </a>
           </div>

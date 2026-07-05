@@ -1,0 +1,26 @@
+.marketing-theme {
+  --radius: 0.5rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.18 0.004 285);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0.004 285);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.18 0.004 285);
+  --primary: oklch(0.577 0.232 27.2);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.968 0.002 286);
+  --secondary-foreground: oklch(0.21 0.004 285);
+  --muted: oklch(0.97 0.001 286);
+  --muted-foreground: oklch(0.5 0.006 286);
+  --accent: oklch(0.96 0.003 286);
+  --accent-foreground: oklch(0.21 0.004 285);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.916 0.003 286);
+  --input: oklch(0.916 0.003 286);
+  --ring: oklch(0.577 0.232 27.2);
+  --signal: oklch(0.577 0.232 27.2);
+  --signal-dark: oklch(0.48 0.2 27.2);
+  --charcoal: oklch(0.22 0.005 285);
+  --charcoal-light: oklch(0.3 0.006 285);
+  --ink: oklch(0.14 0.004 285);
+}

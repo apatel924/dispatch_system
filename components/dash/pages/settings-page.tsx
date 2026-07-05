@@ -1,0 +1,212 @@
+'use client'
+
+import { Building2, Bell, Truck, Users, Shield, CircleCheck, HardDrive, Activity, Edit3, MapPin, Mail, Phone, FileText, ChevronRight, ChevronDown, MessageCircle, Save, X } from "lucide-react";
+import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
+import { SectionCard } from "@/components/dash/ui/section-card";
+import { Logo } from "@/components/dash/brand/logo";
+
+
+export function SettingsPage() {
+  return (
+    <DashboardLayout title="Settings" actions={
+      <>
+        <button className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-4 py-2 text-sm font-medium hover:bg-secondary"><X className="h-4 w-4" /> Discard</button>
+        <button className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"><Save className="h-4 w-4" /> Save Changes</button>
+      </>
+    }>
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-6">
+          <div className="grid gap-6 lg:grid-cols-2">
+            <SectionCard title="Business Settings" icon={<Building2 className="h-4 w-4" />} description="Manage your business and contact information.">
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Operating Name *" value="Quick-Run Express" />
+                <Field label="Pickup Address *" value="123 Industrial Way, Dallas, TX 75201" trailing={<MapPin className="h-4 w-4 text-muted-foreground" />} />
+                <Field label="Support Email *" value="support@quickrunexpress.com" />
+                <div>
+                  <div className="mb-1 flex items-center justify-between"><label className="text-xs font-medium">Business Hours</label><Edit3 className="h-3.5 w-3.5 text-muted-foreground" /></div>
+                  <div className="rounded-lg border border-input p-3 text-xs">
+                    <Row l="Mon - Fri" r="8:00 AM - 7:00 PM" />
+                    <Row l="Saturday" r="9:00 AM - 5:00 PM" />
+                    <Row l="Sunday" r="Closed" />
+                  </div>
+                </div>
+                <Field label="Support Phone *" value="(555) 123-4567" />
+              </div>
+            </SectionCard>
+
+            <SectionCard title="Notification Settings" icon={<Bell className="h-4 w-4" />} description="Manage notifications and message templates.">
+              <div className="space-y-2">
+                {[
+                  "Customer - Order Received",
+                  "Customer - Driver Assigned",
+                  "Customer - Out for Delivery",
+                  "Customer - Delivered",
+                  "Customer - Failed Delivery",
+                  "Driver - New Assignment",
+                ].map((n) => (
+                  <div key={n} className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2">
+                    <span className="text-sm">{n}</span>
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="text-muted-foreground">On</span>
+                      <Toggle on />
+                      <button className="inline-flex items-center gap-1 rounded border border-input px-2 py-1 text-xs"><Edit3 className="h-3 w-3" /> Edit</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-primary/30 py-2 text-sm font-semibold text-primary hover:bg-primary/5"><MessageCircle className="h-4 w-4" /> Manage All Templates</button>
+            </SectionCard>
+
+            <SectionCard title="Delivery Rules" icon={<Truck className="h-4 w-4" />} description="Configure default delivery requirements and policies.">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2.5">
+                  {[
+                    ["Require Signature on Delivery", true],
+                    ["Require ID Verification Record", false],
+                    ["Require Drop-off Photo", true],
+                    ["Require Exterior / Address Photo", true],
+                  ].map(([l, on]) => (
+                    <div key={l as string} className="flex items-center justify-between text-sm"><span>{l as string}</span><Toggle on={Boolean(on)} /></div>
+                  ))}
+                </div>
+                <div className="space-y-3">
+                  <Select label="Tracking Link Expiration *" value="7 Days" />
+                  <Select label="Default Delivery Window *" value="9:00 AM - 12:00 PM" />
+                  <Select label="Auto-complete Delivery After *" value="24 Hours" />
+                </div>
+              </div>
+              <div className="mt-3 flex items-center gap-2 rounded-lg border border-border/60 bg-secondary/30 px-3 py-2 text-xs text-muted-foreground"><FileText className="h-3.5 w-3.5" /> These rules apply to new orders by default. They can be overridden during order creation.</div>
+            </SectionCard>
+
+            <SectionCard title="User & Access" icon={<Users className="h-4 w-4" />} description="Manage users, roles, and access controls.">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5 text-sm">
+                  {[["Admin Users","3"],["Dispatcher Users","6"],["Driver Users","152"],["Roles & Permissions","→"],["Activity Sessions","12 Active"]].map(([l, v]) => (
+                    <div key={l as string} className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2"><span>{l as string}</span><span className={`text-xs ${v === "→" ? "text-muted-foreground" : "font-semibold"}`}>{v as string}</span></div>
+                  ))}
+                </div>
+                <div className="space-y-3">
+                  <Select label="Password Reset Policy" value="Require reset every 90 days" />
+                  <div className="rounded-lg border border-border/60 p-3">
+                    <div className="text-sm font-semibold">Two-Factor Authentication</div>
+                    <div className="mt-1 text-xs text-muted-foreground">Require 2FA for all admin and dispatcher users.</div>
+                    <div className="mt-2 flex items-center gap-2"><Toggle on /><span className="text-xs text-success">Enabled</span></div>
+                  </div>
+                  <button className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-input py-2 text-sm font-medium hover:bg-secondary"><Users className="h-4 w-4" /> Manage Users</button>
+                </div>
+              </div>
+            </SectionCard>
+          </div>
+
+          <SectionCard title="Security & Privacy" icon={<Shield className="h-4 w-4" />} description="Security, data protection, and compliance settings.">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-3">
+                {[
+                  ["Encrypted File Storage", "All evidence photos and documents are encrypted at rest.", "Enabled"],
+                  ["Data Retention Period *", "Determines how long delivery records are retained.", "18 Months"],
+                  ["Private Evidence Storage", "Evidence files are stored in a private, access-controlled environment.", "Enabled"],
+                ].map(([t, d, v]) => (
+                  <div key={t} className="flex items-start justify-between gap-4 rounded-lg border border-border/60 p-3">
+                    <div><div className="text-sm font-semibold">{t}</div><div className="text-xs text-muted-foreground">{d}</div></div>
+                    <span className="shrink-0 rounded-md bg-success-soft px-2 py-0.5 text-xs font-medium text-success">{v}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="space-y-3">
+                {[
+                  ["Audit Logging", "Log all user actions and data changes.", "Enabled"],
+                  ["Login Attempt Monitoring", "Monitor and alert on suspicious login activity.", "Enabled"],
+                  ["IP Allowlist (Optional)", "Restrict admin access to trusted IP addresses.", null],
+                ].map(([t, d, v]) => (
+                  <div key={t as string} className="flex items-start justify-between gap-4 rounded-lg border border-border/60 p-3">
+                    <div><div className="text-sm font-semibold">{t}</div><div className="text-xs text-muted-foreground">{d}</div></div>
+                    {v ? <span className="shrink-0 rounded-md bg-success-soft px-2 py-0.5 text-xs font-medium text-success">{v}</span> : <button className="shrink-0 rounded-md border border-input bg-card px-2 py-0.5 text-xs font-medium">Configure</button>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </SectionCard>
+        </div>
+
+        {/* Right sidebar */}
+        <aside className="space-y-6">
+          <SectionCard title="Business Profile">
+            <div className="text-center">
+              <div className="mx-auto flex justify-center"><Logo /></div>
+              <div className="mt-2 text-lg font-bold">Quick-Run Express</div>
+              <div className="text-xs text-muted-foreground">Fast. Reliable. Every Time.</div>
+            </div>
+            <div className="mt-4 space-y-2 text-sm">
+              <div className="flex items-center gap-2 text-muted-foreground"><Mail className="h-4 w-4" />support@quickrunexpress.com</div>
+              <div className="flex items-center gap-2 text-muted-foreground"><Phone className="h-4 w-4" />(555) 123-4567</div>
+              <div className="flex items-center gap-2 text-muted-foreground"><MapPin className="h-4 w-4" />123 Industrial Way, Dallas, TX 75201</div>
+              <div className="flex items-center gap-2 text-muted-foreground"><FileText className="h-4 w-4" />Tax ID: 81-2345678</div>
+            </div>
+            <button className="mt-4 flex w-full items-center justify-center gap-1.5 rounded-lg border border-input py-2 text-sm font-medium hover:bg-secondary"><Edit3 className="h-4 w-4" /> Edit Profile</button>
+          </SectionCard>
+
+          <SectionCard title="System Summary" icon={<Activity className="h-4 w-4" />}>
+            <div className="grid grid-cols-3 gap-2 text-center text-xs">
+              <div className="rounded-lg border border-border/60 p-3"><div className="text-muted-foreground">Active Drivers</div><div className="mt-1 text-xl font-bold">12</div><div className="text-[10px] text-success">Online</div></div>
+              <div className="rounded-lg border border-border/60 p-3"><div className="text-muted-foreground">SMS Provider</div><div className="mt-1 text-sm font-bold">TWILIO</div><div className="text-[10px] text-success">Connected</div></div>
+              <div className="rounded-lg border border-border/60 p-3"><div className="text-muted-foreground">System Time</div><div className="mt-1 text-sm font-bold">May 16, 2025</div><div className="text-[10px] text-muted-foreground">11:45 AM</div></div>
+            </div>
+          </SectionCard>
+
+          <SectionCard title="Storage Usage" icon={<HardDrive className="h-4 w-4" />}>
+            <div className="flex items-center justify-between text-sm"><span>42.6 GB of 100 GB used</span><span className="font-semibold">42.6%</span></div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full bg-primary" style={{ width: "42.6%" }} /></div>
+            <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
+              <div className="rounded-lg border border-border/60 p-2"><div className="text-muted-foreground">Photos</div><div className="mt-1 font-semibold">28.3 GB</div></div>
+              <div className="rounded-lg border border-border/60 p-2"><div className="text-muted-foreground">Documents</div><div className="mt-1 font-semibold">8.7 GB</div></div>
+              <div className="rounded-lg border border-border/60 p-2"><div className="text-muted-foreground">Logs & Other</div><div className="mt-1 font-semibold">5.6 GB</div></div>
+            </div>
+            <button className="mt-4 flex w-full items-center justify-center rounded-lg border border-input py-2 text-sm font-medium hover:bg-secondary">Manage Storage</button>
+          </SectionCard>
+
+          <SectionCard title="System Status" icon={<CircleCheck className="h-4 w-4" />}>
+            <div className="space-y-2 text-sm">
+              {[["All Systems Operational","Last checked: 1 min ago", null],["Database","Healthy",null],["API Services","Healthy",null],["Background Jobs","Healthy",null]].map(([t, sub, _], i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <CircleCheck className="h-4 w-4 text-success" />
+                  <div className="flex-1"><div className="font-medium">{t as string}</div></div>
+                  <div className="text-xs text-muted-foreground">{sub as string}</div>
+                </div>
+              ))}
+            </div>
+          </SectionCard>
+        </aside>
+      </div>
+    </DashboardLayout>
+  );
+}
+
+function Field({ label, value, trailing }: { label: string; value: string; trailing?: React.ReactNode }) {
+  return (
+    <div>
+      <label className="mb-1 block text-xs font-medium">{label}</label>
+      <div className="flex items-center gap-2">
+        <input defaultValue={value} className="h-9 w-full rounded-lg border border-input bg-card px-3 text-sm outline-none focus:border-primary/50 focus:ring-3 focus:ring-primary/10" />
+        {trailing}
+      </div>
+    </div>
+  );
+}
+function Select({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <label className="mb-1 block text-xs font-medium">{label}</label>
+      <button className="flex h-9 w-full items-center justify-between rounded-lg border border-input bg-card px-3 text-sm"><span>{value}</span><ChevronDown className="h-4 w-4 text-muted-foreground" /></button>
+    </div>
+  );
+}
+function Row({ l, r }: { l: React.ReactNode; r: React.ReactNode }) {
+  return <div className="flex items-center justify-between py-1"><span className="text-muted-foreground">{l}</span><span className="font-medium">{r}</span></div>;
+}
+function Toggle({ on }: { on: boolean }) {
+  return (
+    <button aria-pressed={on} className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${on ? "bg-primary" : "bg-secondary"}`}>
+      <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${on ? "translate-x-4" : "translate-x-0.5"}`} />
+    </button>
+  );
+}

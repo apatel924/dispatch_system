@@ -7,6 +7,7 @@ const parentDir = path.join(projectRoot, '..')
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  serverExternalPackages: ['firebase-admin'],
   turbopack: {
     root: projectRoot,
   },

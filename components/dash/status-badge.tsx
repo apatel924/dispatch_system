@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import type { OrderStatus, PaymentStatus, DriverStatus } from "@/lib/dash/mock-data";
+import type { OrderStatus, PaymentStatus, DriverStatus, ProofReviewStatus } from "@/lib/types/backend";
 
 const orderStyles: Record<OrderStatus, string> = {
   New: "bg-info-soft text-info",
@@ -36,4 +36,21 @@ export function PaymentBadge({ status, className }: { status: PaymentStatus; cla
 }
 export function DriverStatusBadge({ status, className }: { status: DriverStatus; className?: string }) {
   return <span className={cn(base, driverStyles[status], className)}>{status}</span>;
+}
+
+const proofReviewStyles: Record<ProofReviewStatus, string> = {
+  pending: "bg-warning-soft text-warning-foreground",
+  approved: "bg-success-soft text-success",
+  rejected: "bg-primary/10 text-primary",
+};
+
+export function ProofReviewBadge({
+  status,
+  className,
+}: {
+  status: ProofReviewStatus;
+  className?: string;
+}) {
+  const label = status.charAt(0).toUpperCase() + status.slice(1);
+  return <span className={cn(base, proofReviewStyles[status], className)}>{label}</span>;
 }

@@ -1,15 +1,15 @@
 'use client'
 
 import Link from "next/link";
-
 import { Search, Filter, Bookmark, Download, MoreVertical, Calendar, ChevronDown, X } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { OrderStatusBadge, PaymentBadge } from "@/components/dash/status-badge";
-import { orders } from "@/lib/dash/mock-data";
-
+import { useAdminOrders } from "@/lib/dash/hooks/use-admin-orders";
 
 export function OrdersPage() {
+  const { orders, loading } = useAdminOrders();
+
   const filters = [
     { icon: Calendar, label: "Date Range", value: "May 10 – May 16, 2024" },
     { label: "Status", value: "All Statuses" },
@@ -17,6 +17,7 @@ export function OrdersPage() {
     { label: "Payment", value: "All Payment Types" },
     { label: "Delivery Area", value: "All Areas" },
   ];
+
   return (
     <DashboardLayout title="Orders">
       <SectionCard padded={false}>
@@ -69,28 +70,32 @@ export function OrdersPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {orders.map((o) => (
-                <tr key={o.id} className="hover:bg-secondary/30">
-                  <td className="px-5 py-3"><input type="checkbox" className="h-4 w-4 rounded border-input" /></td>
-                  <td className="px-3 py-3"><Link href={`/orders/${o.id}`} className="font-mono text-xs font-semibold text-foreground hover:text-primary">{o.id}</Link></td>
-                  <td className="px-3 py-3 text-xs text-muted-foreground">{o.external}</td>
-                  <td className="px-3 py-3">{o.customer}</td>
-                  <td className="px-3 py-3 text-muted-foreground">{o.phone}</td>
-                  <td className="px-3 py-3 max-w-[180px] truncate text-muted-foreground">{o.address}</td>
-                  <td className="px-3 py-3">{o.driver ?? "—"}</td>
-                  <td className="px-3 py-3"><OrderStatusBadge status={o.status} /></td>
-                  <td className="px-3 py-3"><PaymentBadge status={o.payment} /></td>
-                  <td className="px-3 py-3 font-medium">{o.total}</td>
-                  <td className="px-3 py-3 text-xs text-muted-foreground">{o.created}</td>
-                  <td className="px-3 py-3 text-xs text-muted-foreground">{o.updated}</td>
-                  <td className="px-5 py-3 text-right"><button className="rounded p-1 text-muted-foreground hover:bg-secondary"><MoreVertical className="h-4 w-4" /></button></td>
-                </tr>
-              ))}
+              {loading && orders.length === 0 ? (
+                <tr><td colSpan={13} className="px-5 py-8 text-center text-muted-foreground">Loading orders…</td></tr>
+              ) : (
+                orders.map((o) => (
+                  <tr key={o.id} className="hover:bg-secondary/30">
+                    <td className="px-5 py-3"><input type="checkbox" className="h-4 w-4 rounded border-input" /></td>
+                    <td className="px-3 py-3"><Link href={`/orders/${o.id}`} className="font-mono text-xs font-semibold text-foreground hover:text-primary">{o.id}</Link></td>
+                    <td className="px-3 py-3 text-xs text-muted-foreground">{o.external}</td>
+                    <td className="px-3 py-3">{o.customer}</td>
+                    <td className="px-3 py-3 text-muted-foreground">{o.phone}</td>
+                    <td className="px-3 py-3 max-w-[180px] truncate text-muted-foreground">{o.address}</td>
+                    <td className="px-3 py-3">{o.driver ?? "—"}</td>
+                    <td className="px-3 py-3"><OrderStatusBadge status={o.status} /></td>
+                    <td className="px-3 py-3"><PaymentBadge status={o.payment} /></td>
+                    <td className="px-3 py-3 font-medium">{o.total}</td>
+                    <td className="px-3 py-3 text-xs text-muted-foreground">{o.created}</td>
+                    <td className="px-3 py-3 text-xs text-muted-foreground">{o.updated}</td>
+                    <td className="px-5 py-3 text-right"><button className="rounded p-1 text-muted-foreground hover:bg-secondary"><MoreVertical className="h-4 w-4" /></button></td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
-          <span>Showing 1 to 15 of 248 orders</span>
+          <span>Showing 1 to {orders.length} of {orders.length} orders</span>
           <div className="flex items-center gap-1">
             {[1,2,3,4,5,"…",17].map((n, i) => (
               <button key={i} className={`h-7 min-w-7 px-2 rounded ${n===1?"border border-primary/40 text-primary":"hover:bg-secondary"}`}>{n}</button>

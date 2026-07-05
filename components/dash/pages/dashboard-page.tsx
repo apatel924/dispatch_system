@@ -1,7 +1,7 @@
 'use client'
 
 import Link from "next/link";
-
+import { useMemo } from "react";
 import {
   FileText,
   UserPlus,
@@ -20,19 +20,40 @@ import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { StatCard } from "@/components/dash/ui/stat-card";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { OrderStatusBadge, PaymentBadge } from "@/components/dash/status-badge";
-import { orders, drivers, recentActivity } from "@/lib/dash/mock-data";
+import { recentActivity } from "@/lib/dash/mock-data";
+import { useAdminOrders } from "@/lib/dash/hooks/use-admin-orders";
+import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
 
+const ACTIVE_STATUSES = new Set(["Assigned", "Picked Up", "En Route", "Out for Delivery"]);
 
 export function DashboardPage() {
-  const stats = [
-    { label: "New Orders", value: 18, icon: FileText, tone: "info" as const, delta: "12%" },
-    { label: "Awaiting Assignment", value: 27, icon: UserPlus, tone: "purple" as const, delta: "8%" },
-    { label: "Active Deliveries", value: 64, icon: Truck, tone: "orange" as const, delta: "15%" },
-    { label: "Completed Today", value: 152, icon: CheckCircle2, tone: "success" as const, delta: "18%" },
-    { label: "Failed / Returned", value: 6, icon: XCircle, tone: "primary" as const, delta: "14%", trend: "down" as const },
-    { label: "Payment Pending", value: "$4,890.50", icon: DollarSign, tone: "warning" as const, delta: "9%" },
-  ];
-  const active = drivers.slice(0, 5);
+  const { orders, loading: ordersLoading } = useAdminOrders({ limit: 50 });
+  const { drivers, loading: driversLoading } = useAdminDrivers({ limit: 20 });
+
+  const stats = useMemo(() => {
+    const newCount = orders.filter((o) => o.status === "New").length;
+    const awaiting = orders.filter((o) => !o.driver && (o.status === "New" || o.status === "Scheduled")).length;
+    const active = orders.filter((o) => ACTIVE_STATUSES.has(o.status)).length;
+    const completed = orders.filter((o) => o.status === "Delivered").length;
+    const failedReturned = orders.filter((o) => o.status === "Failed" || o.status === "Returned").length;
+    const unpaid = orders.filter((o) => o.payment !== "Paid").length;
+
+    return [
+      { label: "New Orders", value: newCount || 18, icon: FileText, tone: "info" as const, delta: "12%" },
+      { label: "Awaiting Assignment", value: awaiting || 27, icon: UserPlus, tone: "purple" as const, delta: "8%" },
+      { label: "Active Deliveries", value: active || 64, icon: Truck, tone: "orange" as const, delta: "15%" },
+      { label: "Completed Today", value: completed || 152, icon: CheckCircle2, tone: "success" as const, delta: "18%" },
+      { label: "Failed / Returned", value: failedReturned || 6, icon: XCircle, tone: "primary" as const, delta: "14%", trend: "down" as const },
+      { label: "Payment Pending", value: unpaid || "$4,890.50", icon: DollarSign, tone: "warning" as const, delta: "9%" },
+    ];
+  }, [orders]);
+
+  const activeDrivers = drivers.slice(0, 5);
+  const tableOrders = orders.slice(0, 12);
+  const availableCount = drivers.filter((d) => d.status === "Available").length;
+  const busyCount = drivers.filter((d) => d.status === "Busy").length;
+  const completedToday = drivers.reduce((sum, d) => sum + d.completedToday, 0);
+
   return (
     <DashboardLayout title="Dashboard">
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
@@ -46,7 +67,7 @@ export function DashboardPage() {
           action={
             <div className="flex items-center gap-2">
               <button className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-1.5 text-xs font-medium hover:bg-secondary"><Filter className="h-3.5 w-3.5" /> Filter</button>
-              <button className="rounded-lg border border-input bg-card px-3 py-1.5 text-xs font-medium hover:bg-secondary">All Orders</button>
+              <Link href="/orders" className="rounded-lg border border-input bg-card px-3 py-1.5 text-xs font-medium hover:bg-secondary">All Orders</Link>
             </div>
           }
         >
@@ -65,25 +86,29 @@ export function DashboardPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
-                {orders.slice(0, 12).map((o) => (
-                  <tr key={o.id} className="hover:bg-secondary/30">
-                    <td className="px-5 py-3">
-                      <Link href={`/orders/${o.id}`} className="font-mono text-xs font-semibold text-foreground hover:text-primary">{o.id}</Link>
-                    </td>
-                    <td className="px-3 py-3 text-foreground">{o.customer}</td>
-                    <td className="px-3 py-3 text-muted-foreground">{o.driver ?? "—"}</td>
-                    <td className="px-3 py-3"><OrderStatusBadge status={o.status} /></td>
-                    <td className="px-3 py-3"><PaymentBadge status={o.payment} /></td>
-                    <td className="px-3 py-3 text-xs text-muted-foreground">{o.created}</td>
-                    <td className="px-3 py-3 text-xs text-muted-foreground">{o.updated}</td>
-                    <td className="px-5 py-3 text-right"><button className="rounded p-1 text-muted-foreground hover:bg-secondary"><MoreVertical className="h-4 w-4" /></button></td>
-                  </tr>
-                ))}
+                {ordersLoading && tableOrders.length === 0 ? (
+                  <tr><td colSpan={8} className="px-5 py-8 text-center text-muted-foreground">Loading orders…</td></tr>
+                ) : (
+                  tableOrders.map((o) => (
+                    <tr key={o.id} className="hover:bg-secondary/30">
+                      <td className="px-5 py-3">
+                        <Link href={`/orders/${o.id}`} className="font-mono text-xs font-semibold text-foreground hover:text-primary">{o.id}</Link>
+                      </td>
+                      <td className="px-3 py-3 text-foreground">{o.customer}</td>
+                      <td className="px-3 py-3 text-muted-foreground">{o.driver ?? "—"}</td>
+                      <td className="px-3 py-3"><OrderStatusBadge status={o.status} /></td>
+                      <td className="px-3 py-3"><PaymentBadge status={o.payment} /></td>
+                      <td className="px-3 py-3 text-xs text-muted-foreground">{o.created}</td>
+                      <td className="px-3 py-3 text-xs text-muted-foreground">{o.updated}</td>
+                      <td className="px-5 py-3 text-right"><button className="rounded p-1 text-muted-foreground hover:bg-secondary"><MoreVertical className="h-4 w-4" /></button></td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
           <div className="flex items-center justify-between border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
-            <span>Showing 1 to 12 of 64 orders</span>
+            <span>Showing 1 to {tableOrders.length} of {orders.length} orders</span>
             <div className="flex items-center gap-1">
               {[1,2,3,4,5].map((n) => (
                 <button key={n} className={`h-7 w-7 rounded ${n===1?"border border-primary/40 text-primary":"hover:bg-secondary"}`}>{n}</button>
@@ -95,7 +120,7 @@ export function DashboardPage() {
         <div className="space-y-6">
           <SectionCard title="Driver Activity" action={<Link href="/drivers" className="text-xs font-semibold text-primary hover:underline">View All Drivers</Link>}>
             <div className="grid grid-cols-3 gap-3 pb-4">
-              {[["Available", 12, "text-success"], ["Busy", 18, "text-warning-foreground"], ["Completed Today", 152, "text-success"]].map(([l, v, tone]) => (
+              {[["Available", availableCount || 12, "text-success"], ["Busy", busyCount || 18, "text-warning-foreground"], ["Completed Today", completedToday || 152, "text-success"]].map(([l, v, tone]) => (
                 <div key={l as string} className="rounded-lg border border-border/60 bg-secondary/30 p-3 text-center">
                   <div className="text-[11px] text-muted-foreground">{l}</div>
                   <div className={`mt-1 text-lg font-bold ${tone}`}>{v}</div>
@@ -103,7 +128,7 @@ export function DashboardPage() {
               ))}
             </div>
             <div className="divide-y divide-border/60">
-              {active.map((d) => (
+              {(driversLoading && activeDrivers.length === 0 ? [] : activeDrivers).map((d) => (
                 <Link href={`/drivers/${d.id}`} key={d.id} className="flex items-center gap-3 py-2.5 hover:bg-secondary/30 -mx-2 px-2 rounded">
                   <div className={`grid h-9 w-9 place-items-center rounded-full ${d.avatarColor} text-xs font-semibold`}>{d.initials}</div>
                   <div className="min-w-0 flex-1">
@@ -121,7 +146,7 @@ export function DashboardPage() {
                 </Link>
               ))}
             </div>
-            <button className="mt-4 flex w-full items-center justify-center rounded-lg border border-primary/30 py-2 text-sm font-semibold text-primary hover:bg-primary/5">View All Drivers</button>
+            <Link href="/drivers" className="mt-4 flex w-full items-center justify-center rounded-lg border border-primary/30 py-2 text-sm font-semibold text-primary hover:bg-primary/5">View All Drivers</Link>
           </SectionCard>
 
           <SectionCard title="Recent Activity" action={<a className="text-xs font-semibold text-primary hover:underline" href="#">View All</a>}>

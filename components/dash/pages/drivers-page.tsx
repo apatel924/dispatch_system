@@ -7,18 +7,19 @@ import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { StatCard } from "@/components/dash/ui/stat-card";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { DriverStatusBadge } from "@/components/dash/status-badge";
-import { drivers } from "@/lib/dash/mock-data";
+import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
 
 
 export function DriversPage() {
+  const { drivers, loading } = useAdminDrivers();
   return (
     <DashboardLayout title="Drivers">
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
-        <StatCard label="Total Drivers" value={48} icon={Users} tone="info" delta="8%" />
-        <StatCard label="Available Drivers" value={22} icon={UserCheck} tone="success" delta="5%" />
-        <StatCard label="Busy Drivers" value={18} icon={UserCog} tone="orange" delta="12%" />
-        <StatCard label="Completed Today" value={152} icon={Truck} tone="purple" delta="18%" />
-        <StatCard label="Failed Deliveries Today" value={6} icon={XCircle} tone="primary" delta="14%" trend="down" />
+        <StatCard label="Total Drivers" value={drivers.length || 48} icon={Users} tone="info" delta="8%" />
+        <StatCard label="Available Drivers" value={drivers.filter(d => d.status === "Available").length || 22} icon={UserCheck} tone="success" delta="5%" />
+        <StatCard label="Busy Drivers" value={drivers.filter(d => d.status === "Busy").length || 18} icon={UserCog} tone="orange" delta="12%" />
+        <StatCard label="Completed Today" value={drivers.reduce((s, d) => s + d.completedToday, 0) || 152} icon={Truck} tone="purple" delta="18%" />
+        <StatCard label="Failed Deliveries Today" value={drivers.reduce((s, d) => s + d.failedToday, 0) || 6} icon={XCircle} tone="primary" delta="14%" trend="down" />
         <StatCard label="Average Delivery Time" value="28m" icon={Clock} tone="warning" delta="5%" trend="down" />
       </div>
 
@@ -48,30 +49,34 @@ export function DriversPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
-                {drivers.map((d) => (
-                  <tr key={d.id} className="hover:bg-secondary/30">
-                    <td className="px-5 py-3">
-                      <Link href={`/drivers/${d.id}`} className="flex items-center gap-3">
-                        <div className={`grid h-9 w-9 place-items-center rounded-full ${d.avatarColor} text-xs font-semibold`}>{d.initials}</div>
-                        <span className="font-medium hover:text-primary">{d.name}</span>
-                      </Link>
-                    </td>
-                    <td className="px-3 py-3 text-muted-foreground">{d.phone}</td>
-                    <td className="px-3 py-3 text-muted-foreground">{d.email}</td>
-                    <td className="px-3 py-3"><DriverStatusBadge status={d.status} /></td>
-                    <td className="px-3 py-3">{d.activeDeliveries}</td>
-                    <td className="px-3 py-3">{d.completedToday}</td>
-                    <td className="px-3 py-3">{d.failedToday}</td>
-                    <td className="px-3 py-3 text-muted-foreground">{d.averageTime}</td>
-                    <td className="px-3 py-3 text-muted-foreground">{d.lastActive}</td>
-                    <td className="px-5 py-3 text-right"><button className="rounded p-1 text-muted-foreground hover:bg-secondary"><MoreVertical className="h-4 w-4" /></button></td>
-                  </tr>
-                ))}
+                {loading && drivers.length === 0 ? (
+                  <tr><td colSpan={10} className="px-5 py-8 text-center text-muted-foreground">Loading drivers…</td></tr>
+                ) : (
+                  drivers.map((d) => (
+                    <tr key={d.id} className="hover:bg-secondary/30">
+                      <td className="px-5 py-3">
+                        <Link href={`/drivers/${d.id}`} className="flex items-center gap-3">
+                          <div className={`grid h-9 w-9 place-items-center rounded-full ${d.avatarColor} text-xs font-semibold`}>{d.initials}</div>
+                          <span className="font-medium hover:text-primary">{d.name}</span>
+                        </Link>
+                      </td>
+                      <td className="px-3 py-3 text-muted-foreground">{d.phone}</td>
+                      <td className="px-3 py-3 text-muted-foreground">{d.email}</td>
+                      <td className="px-3 py-3"><DriverStatusBadge status={d.status} /></td>
+                      <td className="px-3 py-3">{d.activeDeliveries}</td>
+                      <td className="px-3 py-3">{d.completedToday}</td>
+                      <td className="px-3 py-3">{d.failedToday}</td>
+                      <td className="px-3 py-3 text-muted-foreground">{d.averageTime}</td>
+                      <td className="px-3 py-3 text-muted-foreground">{d.lastActive}</td>
+                      <td className="px-5 py-3 text-right"><button className="rounded p-1 text-muted-foreground hover:bg-secondary"><MoreVertical className="h-4 w-4" /></button></td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
           <div className="flex items-center justify-between border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
-            <span>Showing 1 to 12 of 48 drivers</span>
+            <span>Showing 1 to {drivers.length} of {drivers.length} drivers</span>
             <div className="flex items-center gap-1">{[1,2,3,4,5].map((n) => (<button key={n} className={`h-7 w-7 rounded ${n===1?"border border-primary/40 text-primary":"hover:bg-secondary"}`}>{n}</button>))}</div>
           </div>
         </SectionCard>
@@ -80,11 +85,11 @@ export function DriversPage() {
           <SectionCard title="Driver Availability">
             <div className="flex items-center gap-4">
               <Donut segments={[
-                { value: 22, color: "var(--success)" },
-                { value: 18, color: "var(--warning)" },
-                { value: 6, color: "var(--muted-foreground)" },
-                { value: 2, color: "var(--primary)" },
-              ]} total={48} label="Total" />
+                { value: drivers.filter(d => d.status === "Available").length || 22, color: "var(--success)" },
+                { value: drivers.filter(d => d.status === "Busy").length || 18, color: "var(--warning)" },
+                { value: drivers.filter(d => d.status === "Inactive").length || 6, color: "var(--muted-foreground)" },
+                { value: drivers.filter(d => d.status === "Suspended").length || 2, color: "var(--primary)" },
+              ]} total={drivers.length || 48} label="Total" />
               <div className="flex-1 space-y-2 text-sm">
                 {[
                   ["Available", "22 (45.8%)", "bg-success"],

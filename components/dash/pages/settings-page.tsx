@@ -1,12 +1,35 @@
 'use client'
 
-import { Building2, Bell, Truck, Users, Shield, CircleCheck, HardDrive, Activity, Edit3, MapPin, Mail, Phone, FileText, ChevronRight, ChevronDown, MessageCircle, Save, X } from "lucide-react";
+import { useState } from "react";
+import { Building2, Bell, Truck, Users, Shield, CircleCheck, HardDrive, Activity, Edit3, MapPin, Mail, Phone, FileText, ChevronRight, ChevronDown, MessageCircle, Save, X, Download, Plug } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { Logo } from "@/components/dash/brand/logo";
+import { useAdminImportLogs } from "@/lib/dash/hooks/use-admin-import";
+import type { MockImportSource } from "@/lib/import/mock-fixtures";
 
+const IMPORT_PROVIDERS: { id: MockImportSource; label: string }[] = [
+  { id: "mock-uber", label: "Mock Uber" },
+  { id: "mock-doordash", label: "Mock DoorDash" },
+  { id: "mock-amazon", label: "Mock Amazon" },
+];
+
+const IMPORT_STATUS_STYLES: Record<string, string> = {
+  success: "bg-success-soft text-success",
+  partial: "bg-warning-soft text-warning-foreground",
+  failed: "bg-primary/10 text-primary",
+};
 
 export function SettingsPage() {
+  const { logs, loading, error, runMockImport } = useAdminImportLogs();
+  const [selectedSource, setSelectedSource] = useState<MockImportSource>("mock-uber");
+  const [importMessage, setImportMessage] = useState<string | null>(null);
+
+  const handleRunImport = async () => {
+    setImportMessage(null);
+    const result = await runMockImport(selectedSource);
+    setImportMessage(result.message);
+  };
   return (
     <DashboardLayout title="Settings" actions={
       <>
@@ -97,6 +120,76 @@ export function SettingsPage() {
               </div>
             </SectionCard>
           </div>
+
+          <SectionCard
+            title="Order Integrations (Mock)"
+            icon={<Plug className="h-4 w-4" />}
+            description="Test order import with mock provider payloads. No live external APIs are connected."
+          >
+            <div className="flex flex-wrap gap-2">
+              {IMPORT_PROVIDERS.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => setSelectedSource(p.id)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold ${selectedSource === p.id ? "bg-primary text-primary-foreground" : "border border-border bg-card text-muted-foreground hover:bg-secondary"}`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                disabled={loading}
+                onClick={handleRunImport}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                <Download className="h-4 w-4" />
+                {loading ? "Importing…" : `Run ${IMPORT_PROVIDERS.find((p) => p.id === selectedSource)?.label} Import`}
+              </button>
+              {importMessage && (
+                <span className="text-sm text-muted-foreground">{importMessage}</span>
+              )}
+              {error && !importMessage && (
+                <span className="text-sm text-primary">{error}</span>
+              )}
+            </div>
+            <div className="mt-4 overflow-hidden rounded-lg border border-border">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-border bg-secondary/40 text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Source</th>
+                    <th className="px-3 py-2 font-medium">Status</th>
+                    <th className="px-3 py-2 font-medium">Imported</th>
+                    <th className="px-3 py-2 font-medium">Failed</th>
+                    <th className="px-3 py-2 font-medium">When</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {logs.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+                        No import runs yet
+                      </td>
+                    </tr>
+                  ) : (
+                    logs.map((log) => (
+                      <tr key={log.id}>
+                        <td className="px-3 py-2 font-medium">{log.source}</td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium capitalize ${IMPORT_STATUS_STYLES[log.status] ?? "bg-secondary"}`}>
+                            {log.status}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">{log.ordersImported}</td>
+                        <td className="px-3 py-2">{log.ordersFailed}</td>
+                        <td className="px-3 py-2 text-xs text-muted-foreground">{log.createdAt}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </SectionCard>
 
           <SectionCard title="Security & Privacy" icon={<Shield className="h-4 w-4" />} description="Security, data protection, and compliance settings.">
             <div className="grid gap-4 md:grid-cols-2">

@@ -3,11 +3,13 @@
 import { User2, MapPin, Package, DollarSign, Users, ClipboardCheck, Plus, ChevronDown, Info, Save } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { SectionCard } from "@/components/dash/ui/section-card";
-import { drivers } from "@/lib/dash/mock-data";
 import { DriverStatusBadge } from "@/components/dash/status-badge";
+import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
 
 
 export function CreateOrderPage() {
+  const { drivers } = useAdminDrivers({ limit: 12 });
+  const selectedDriver = drivers[0];
   const steps = [
     { n: 1, label: "Customer Details", active: true, done: false },
     { n: 2, label: "Delivery Details", done: false },
@@ -100,9 +102,13 @@ export function CreateOrderPage() {
             <div className="mb-3">
               <label className="mb-1 block text-xs font-medium">Assign Driver *</label>
               <div className="flex items-center gap-2 rounded-lg border border-input p-2">
-                <div className="grid h-8 w-8 place-items-center rounded-full bg-info-soft text-xs font-semibold text-info">JC</div>
-                <span className="text-sm font-medium">James Carter</span>
-                <span className="text-xs text-muted-foreground">(555) 234-9876</span>
+                {selectedDriver && (
+                  <>
+                    <div className={`grid h-8 w-8 place-items-center rounded-full ${selectedDriver.avatarColor} text-xs font-semibold`}>{selectedDriver.initials}</div>
+                    <span className="text-sm font-medium">{selectedDriver.name}</span>
+                    <span className="text-xs text-muted-foreground">{selectedDriver.phone}</span>
+                  </>
+                )}
                 <ChevronDown className="ml-auto h-4 w-4 text-muted-foreground" />
               </div>
             </div>
@@ -152,9 +158,13 @@ export function CreateOrderPage() {
             <Divider />
             <div className="text-xs uppercase tracking-wide text-muted-foreground">Assigned Driver</div>
             <div className="mt-2 flex items-center gap-2">
-              <div className="grid h-8 w-8 place-items-center rounded-full bg-info-soft text-xs font-semibold text-info">JC</div>
-              <div className="text-sm"><div className="font-semibold">James Carter</div><div className="text-xs text-muted-foreground">(555) 234-9876</div></div>
-              <span className="ml-auto rounded-md bg-success-soft px-2 py-0.5 text-xs font-medium text-success">Available</span>
+              {selectedDriver && (
+                <>
+                  <div className={`grid h-8 w-8 place-items-center rounded-full ${selectedDriver.avatarColor} text-xs font-semibold`}>{selectedDriver.initials}</div>
+                  <div className="text-sm"><div className="font-semibold">{selectedDriver.name}</div><div className="text-xs text-muted-foreground">{selectedDriver.phone}</div></div>
+                  <span className="ml-auto rounded-md bg-success-soft px-2 py-0.5 text-xs font-medium text-success">{selectedDriver.status}</span>
+                </>
+              )}
             </div>
           </SectionCard>
         </aside>

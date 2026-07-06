@@ -164,6 +164,7 @@ export interface OrderProviderHealthResponse {
   ok: boolean;
   mode: "mock" | "live";
   configured: boolean;
+  ordersConfigured: boolean;
   liveReadsEnabled: boolean;
   liveSyncEnabled: boolean;
   readsDisabled: boolean;
@@ -190,6 +191,40 @@ export interface LiveOrderPreviewResponse {
   page: number;
   itemsOnPage: number;
   locationId: string;
+}
+
+export interface SafeBarnetLocationRow {
+  id: string | number | null;
+  store_id: string | number | null;
+  name: string | null;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  phone: string | null;
+  email: string | null;
+  is_test_store: boolean | null;
+  dont_use_for_ecomm: boolean | null;
+  hasWebhookUrl: boolean;
+}
+
+export type BarnetLocationsRawShape =
+  | "single_object"
+  | "array"
+  | "items_wrapper"
+  | "locations_wrapper"
+  | "empty"
+  | "unknown_object";
+
+export interface BarnetLocationsMeta {
+  rawShape: BarnetLocationsRawShape;
+  count: number;
+  topLevelKeys: string[];
+}
+
+export interface LiveLocationsResponse {
+  ok: boolean;
+  locations: SafeBarnetLocationRow[];
+  meta: BarnetLocationsMeta;
 }
 
 export interface OrderProviderSyncResponse {
@@ -255,6 +290,10 @@ export async function fetchLiveOrderProviderHealth(params?: {
 
 export async function previewLiveExternalOrdersApi(): Promise<LiveOrderPreviewResponse> {
   return adminFetch("/api/integrations/order-provider/live-preview");
+}
+
+export async function fetchLiveLocations(): Promise<LiveLocationsResponse> {
+  return adminFetch("/api/integrations/order-provider/live-locations");
 }
 
 export async function runLiveOrderProviderSync(): Promise<OrderProviderSyncResponse> {

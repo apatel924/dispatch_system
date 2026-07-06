@@ -1,7 +1,7 @@
 import { getAdminFirestore } from "@/lib/server/firebase-admin";
 import { omitUndefined } from "@/lib/server/firestore/helpers";
 import {
-  assertLiveReadsAllowed,
+  assertLiveOrdersReadsAllowed,
   assertLiveSyncAllowed,
   getExternalOrderProviderConfig,
 } from "@/lib/integrations/order-provider/env.server";
@@ -35,6 +35,7 @@ export function getOrderProviderHealth(): ExternalOrderProviderHealth {
     ok: true,
     mode: config.mode,
     configured: config.configured,
+    ordersConfigured: config.ordersConfigured,
     liveReadsEnabled: config.liveReadsEnabled,
     liveSyncEnabled: config.liveSyncEnabled,
     readsDisabled,
@@ -57,10 +58,11 @@ export function getLiveOrderProviderHealth(): LiveOrderProviderHealth {
 export async function previewLiveExternalOrders(
   options?: { page?: number; itemsOnPage?: number },
 ): Promise<LiveOrderPreviewResult> {
-  assertLiveReadsAllowed();
+  assertLiveOrdersReadsAllowed();
 
   const config = getExternalOrderProviderConfig();
-  if (!config.locationId) {
+  const locationId = config.locationId;
+  if (!locationId) {
     throw new Error("EXTERNAL_ORDER_LOCATION_ID is required for live preview");
   }
 
@@ -76,7 +78,7 @@ export async function previewLiveExternalOrders(
     total: orders.length,
     page,
     itemsOnPage,
-    locationId: config.locationId,
+    locationId,
   };
 }
 
@@ -216,6 +218,7 @@ export async function syncMockExternalOrders(): Promise<ExternalOrderSyncResult>
 }
 
 export {
+  assertLiveOrdersReadsAllowed,
   assertLiveReadsAllowed,
   assertLiveSyncAllowed,
   getExternalOrderProviderConfig,
@@ -226,7 +229,9 @@ export {
   fetchBarnetOrderById,
   fetchBarnetOrderByNumber,
   fetchBarnetOrders,
+  fetchSafeBarnetLocations,
   getBarnetProviderName,
+  normalizeBarnetLocationsResponse,
 } from "@/lib/integrations/order-provider/barnet-client.server";
 export {
   fetchMockProviderOrders,
@@ -242,12 +247,16 @@ export {
   normalizeBarnetOrders,
 } from "@/lib/integrations/order-provider/normalize-barnet-order";
 export type {
+  BarnetLocationsMeta,
+  BarnetLocationsRawShape,
   ExternalOrderProviderConfig,
   ExternalOrderProviderHealth,
   ExternalOrderProviderMode,
   ExternalOrderSyncResult,
   ExternalProviderOrder,
+  LiveLocationsResult,
   LiveOrderPreviewResult,
   LiveOrderProviderHealth,
   NormalizedExternalOrder,
+  SafeBarnetLocation,
 } from "@/lib/integrations/order-provider/types";

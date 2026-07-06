@@ -32,6 +32,7 @@ export function SettingsPage() {
     loading: externalOrdersLoading,
     syncing,
     liveChecking,
+    liveDiscovering,
     livePreviewing,
     liveSyncing,
     error: providerError,
@@ -40,8 +41,12 @@ export function SettingsPage() {
     isMockMode,
     liveReadsEnabled,
     liveSyncEnabled,
+    ordersConfigured,
+    discoveredLocations,
+    discoveredLocationsMeta,
     runMockSync,
     checkLiveConfig,
+    discoverLiveLocations,
     previewLiveOrders,
     runLiveSync,
     formatTotal,
@@ -64,6 +69,10 @@ export function SettingsPage() {
 
   const handleCheckLiveConfig = async () => {
     await checkLiveConfig(false);
+  };
+
+  const handleDiscoverLiveLocations = async () => {
+    await discoverLiveLocations();
   };
 
   const handlePreviewLiveOrders = async () => {
@@ -191,6 +200,11 @@ export function SettingsPage() {
                   Configured: {providerHealth.configured ? "Yes" : "No"}
                 </span>
               )}
+              {!isMockMode && (
+                <span className="text-xs text-muted-foreground">
+                  Orders configured: {ordersConfigured ? "Yes" : "No"}
+                </span>
+              )}
               <span className="text-xs text-muted-foreground">
                 Live reads: {liveReadsEnabled ? "enabled" : "disabled"}
               </span>
@@ -240,9 +254,23 @@ export function SettingsPage() {
                 </button>
                 <button
                   disabled={
+                    liveDiscovering ||
+                    isMockMode ||
+                    !liveReadsEnabled ||
+                    !isApiEnabled()
+                  }
+                  onClick={handleDiscoverLiveLocations}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-4 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-50"
+                >
+                  <MapPin className="h-4 w-4" />
+                  {liveDiscovering ? "Discovering…" : "Discover Live Locations"}
+                </button>
+                <button
+                  disabled={
                     livePreviewing ||
                     isMockMode ||
-                    !liveReadsEnabled
+                    !liveReadsEnabled ||
+                    !ordersConfigured
                   }
                   onClick={handlePreviewLiveOrders}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-4 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-50"
@@ -255,7 +283,8 @@ export function SettingsPage() {
                     disabled={
                       liveSyncing ||
                       isMockMode ||
-                      !liveReadsEnabled
+                      !liveReadsEnabled ||
+                      !ordersConfigured
                     }
                     onClick={handleRunLiveSync}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
@@ -277,7 +306,61 @@ export function SettingsPage() {
               {liveMessage && (
                 <p className="mt-2 text-sm text-muted-foreground">{liveMessage}</p>
               )}
+              {discoveredLocationsMeta && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Response shape:{" "}
+                  <code className="text-[11px]">{discoveredLocationsMeta.rawShape}</code>
+                </p>
+              )}
+              {!isMockMode && liveReadsEnabled && !ordersConfigured && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Copy the correct location ID into{" "}
+                  <code className="text-[11px]">EXTERNAL_ORDER_LOCATION_ID</code> in{" "}
+                  <code className="text-[11px]">.env.local</code>, then restart the dev
+                  server.
+                </p>
+              )}
             </div>
+
+            {discoveredLocations.length > 0 && (
+              <div className="mt-4 overflow-hidden rounded-lg border border-dashed border-border">
+                <div className="border-b border-border bg-secondary/40 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Discovered live locations
+                </div>
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-border bg-secondary/20 text-xs uppercase tracking-wide text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">ID</th>
+                      <th className="px-3 py-2 font-medium">Store</th>
+                      <th className="px-3 py-2 font-medium">Name</th>
+                      <th className="px-3 py-2 font-medium">City</th>
+                      <th className="px-3 py-2 font-medium">State</th>
+                      <th className="px-3 py-2 font-medium">Test</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {discoveredLocations.map((location, index) => (
+                      <tr key={`location-${location.id ?? index}`}>
+                        <td className="px-3 py-2 font-medium">{location.id ?? "—"}</td>
+                        <td className="px-3 py-2">{location.store_id ?? "—"}</td>
+                        <td className="px-3 py-2">{location.name ?? "—"}</td>
+                        <td className="px-3 py-2">{location.city ?? "—"}</td>
+                        <td className="px-3 py-2">{location.state ?? "—"}</td>
+                        <td className="px-3 py-2">
+                          {location.is_test_store === true ? "Yes" : location.is_test_store === false ? "No" : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="border-t border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground">
+                  Copy the correct location ID into{" "}
+                  <code className="text-[11px]">EXTERNAL_ORDER_LOCATION_ID</code> in{" "}
+                  <code className="text-[11px]">.env.local</code>, then restart the dev
+                  server.
+                </p>
+              </div>
+            )}
 
             {providerError && !syncMessage && !liveMessage && (
               <p className="mt-3 text-sm text-primary">{providerError}</p>

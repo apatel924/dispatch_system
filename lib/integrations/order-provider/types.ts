@@ -59,7 +59,10 @@ export interface ExternalOrderProviderConfig {
   apiBaseUrl: string | null;
   apiPathPrefix: string;
   locationId: string | null;
+  /** Base live credentials present (API URL, key, pass). */
   configured: boolean;
+  /** Base credentials plus EXTERNAL_ORDER_LOCATION_ID — required for order reads. */
+  ordersConfigured: boolean;
   liveReadsEnabled: boolean;
   liveSyncEnabled: boolean;
   hasOtp: boolean;
@@ -70,6 +73,7 @@ export interface ExternalOrderProviderHealth {
   ok: boolean;
   mode: ExternalOrderProviderMode;
   configured: boolean;
+  ordersConfigured: boolean;
   liveReadsEnabled: boolean;
   liveSyncEnabled: boolean;
   /** True when mode is live, configured, but live reads flag is off. */
@@ -97,4 +101,39 @@ export interface LiveOrderPreviewResult {
   page: number;
   itemsOnPage: number;
   locationId: string;
+}
+
+/** Safe Barnet location fields returned by Discover Locations (no secrets). */
+export interface SafeBarnetLocation {
+  id: string | number | null;
+  store_id: string | number | null;
+  name: string | null;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  phone: string | null;
+  email: string | null;
+  is_test_store: boolean | null;
+  dont_use_for_ecomm: boolean | null;
+  hasWebhookUrl: boolean;
+}
+
+export type BarnetLocationsRawShape =
+  | "single_object"
+  | "array"
+  | "items_wrapper"
+  | "locations_wrapper"
+  | "empty"
+  | "unknown_object";
+
+export interface BarnetLocationsMeta {
+  rawShape: BarnetLocationsRawShape;
+  count: number;
+  topLevelKeys: string[];
+}
+
+export interface LiveLocationsResult {
+  ok: boolean;
+  locations: SafeBarnetLocation[];
+  meta: BarnetLocationsMeta;
 }

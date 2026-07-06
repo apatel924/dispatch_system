@@ -41,10 +41,16 @@ const EnvSchema = z.object({
   ),
 });
 
-const LIVE_REQUIRED_KEYS = [
+/** Base live credentials — required for GET /locations and live config. */
+const LIVE_BASE_REQUIRED_KEYS = [
   "EXTERNAL_ORDER_API_BASE_URL",
   "EXTERNAL_ORDER_API_KEY",
   "EXTERNAL_ORDER_API_PASS",
+] as const;
+
+/** Orders live config — base credentials plus location ID for GET /orders. */
+const LIVE_ORDERS_REQUIRED_KEYS = [
+  ...LIVE_BASE_REQUIRED_KEYS,
   "EXTERNAL_ORDER_LOCATION_ID",
 ] as const;
 
@@ -63,13 +69,13 @@ function parseEnv() {
   });
 }
 
-function assertLiveEnvComplete(
+function assertLiveBaseEnvComplete(
   mode: ExternalOrderProviderMode,
   env: z.infer<typeof EnvSchema>,
 ): void {
   if (mode === "mock") return;
 
-  const missing = LIVE_REQUIRED_KEYS.filter((key) => {
+  const missing = LIVE_BASE_REQUIRED_KEYS.filter((key) => {
     const value = env[key];
     return typeof value !== "string" || value.length === 0;
   });
@@ -81,13 +87,29 @@ function assertLiveEnvComplete(
   }
 }
 
+function assertLiveOrdersEnvComplete(
+  mode: ExternalOrderProviderMode,
+  env: z.infer<typeof EnvSchema>,
+): void {
+  if (mode === "mock") return;
+
+  assertLiveBaseEnvComplete(mode, env);
+
+  const locationId = env.EXTERNAL_ORDER_LOCATION_ID;
+  if (typeof locationId !== "string" || locationId.length === 0) {
+    throw new Error(
+      'External order provider mode is "live" but EXTERNAL_ORDER_LOCATION_ID is required for order reads',
+    );
+  }
+}
+
 /**
  * Returns safe provider config for server routes and UI.
  * Never includes API keys, passwords, OTPs, or webhook secrets.
  */
 export function getExternalOrderProviderConfig(): ExternalOrderProviderConfig {
   const env = parseEnv();
-  assertLiveEnvComplete(env.EXTERNAL_ORDER_PROVIDER_MODE, env);
+  assertLiveBaseEnvComplete(env.EXTERNAL_ORDER_PROVIDER_MODE, env);
 
   const mode = env.EXTERNAL_ORDER_PROVIDER_MODE;
 
@@ -96,7 +118,12 @@ export function getExternalOrderProviderConfig(): ExternalOrderProviderConfig {
     apiBaseUrl: env.EXTERNAL_ORDER_API_BASE_URL ?? null,
     apiPathPrefix: env.EXTERNAL_ORDER_API_PATH_PREFIX,
     locationId: env.EXTERNAL_ORDER_LOCATION_ID ?? null,
-    configured: mode === "mock" || LIVE_REQUIRED_KEYS.every((key) => Boolean(env[key])),
+    configured:
+      mode === "mock" ||
+      LIVE_BASE_REQUIRED_KEYS.every((key) => Boolean(env[key])),
+    ordersConfigured:
+      mode === "mock" ||
+      LIVE_ORDERS_REQUIRED_KEYS.every((key) => Boolean(env[key])),
     liveReadsEnabled: env.EXTERNAL_ORDER_LIVE_READS_ENABLED,
     liveSyncEnabled: env.EXTERNAL_ORDER_LIVE_SYNC_ENABLED,
     hasOtp: Boolean(env.EXTERNAL_ORDER_OTP),
@@ -115,7 +142,7 @@ export function getExternalOrderProviderSecrets(): {
   webhookSecret: string | null;
 } {
   const env = parseEnv();
-  assertLiveEnvComplete(env.EXTERNAL_ORDER_PROVIDER_MODE, env);
+  assertLiveBaseEnvComplete(env.EXTERNAL_ORDER_PROVIDER_MODE, env);
 
   return {
     apiKey: env.EXTERNAL_ORDER_API_KEY ?? null,
@@ -143,9 +170,16 @@ export function assertLiveReadsAllowed(): void {
   }
 }
 
+/** Gate: location ID required before Barnet order GETs, preview, or sync. */
+export function assertLiveOrdersReadsAllowed(): void {
+  assertLiveReadsAllowed();
+  const env = parseEnv();
+  assertLiveOrdersEnvComplete(env.EXTERNAL_ORDER_PROVIDER_MODE, env);
+}
+
 /** Gate: live sync flag must be enabled before writing Barnet data to Firestore. */
 export function assertLiveSyncAllowed(): void {
-  assertLiveReadsAllowed();
+  assertLiveOrdersReadsAllowed();
   const config = getExternalOrderProviderConfig();
   if (!config.liveSyncEnabled) {
     throw new Error(

@@ -55,15 +55,19 @@ function validate() {
     );
   }
 
-  const liveRequired = [
+  const liveBaseRequired = [
     "EXTERNAL_ORDER_API_BASE_URL",
     "EXTERNAL_ORDER_API_KEY",
     "EXTERNAL_ORDER_API_PASS",
+  ];
+
+  const liveOrdersRequired = [
+    ...liveBaseRequired,
     "EXTERNAL_ORDER_LOCATION_ID",
   ];
 
   if (mode === "live") {
-    const missing = liveRequired.filter((key) => !emptyToUndefined(process.env[key]));
+    const missing = liveBaseRequired.filter((key) => !emptyToUndefined(process.env[key]));
     if (missing.length > 0) {
       throw new Error(
         `Mode is "live" but required env vars are missing: ${missing.join(", ")}`,
@@ -73,7 +77,11 @@ function validate() {
 
   const configured =
     mode === "mock" ||
-    liveRequired.every((key) => Boolean(emptyToUndefined(process.env[key])));
+    liveBaseRequired.every((key) => Boolean(emptyToUndefined(process.env[key])));
+
+  const ordersConfigured =
+    mode === "mock" ||
+    liveOrdersRequired.every((key) => Boolean(emptyToUndefined(process.env[key])));
 
   const liveReadsEnabled = parseBoolEnv(process.env.EXTERNAL_ORDER_LIVE_READS_ENABLED, false);
   const liveSyncEnabled = parseBoolEnv(process.env.EXTERNAL_ORDER_LIVE_SYNC_ENABLED, false);
@@ -82,6 +90,7 @@ function validate() {
     ok: true,
     mode,
     configured,
+    ordersConfigured,
     liveReadsEnabled,
     liveSyncEnabled,
     readsDisabled: mode === "live" && configured && !liveReadsEnabled,

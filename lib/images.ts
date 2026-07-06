@@ -6,6 +6,7 @@
 export const images = {
   brand: {
     logo: '/images/brand/logo.png',
+    favicon: '/images/brand/favicon.png',
   },
   heroes: {
     vanDriving: '/images/heroes/van-driving.png',

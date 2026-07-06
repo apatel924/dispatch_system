@@ -58,12 +58,14 @@ Optional:
 | `EXTERNAL_ORDER_API_PATH_PREFIX` | API path prefix (default `/swagger`) |
 | `EXTERNAL_ORDER_OTP` | One-time password if required by provider |
 | `EXTERNAL_ORDER_WEBHOOK_SECRET` | Reserved for future webhook verification |
+| `EXTERNAL_ORDER_CUSTOMER_MESSAGING_ENABLED` | Allow customer SMS from synced orders when phone is present (default `false`) |
 
 ### Safety gates
 
 - **Live location GET** (`fetchBarnetLocations`, Discover Locations) runs when mode is `live`, base credentials are configured, and `EXTERNAL_ORDER_LIVE_READS_ENABLED=true`. Does **not** require `EXTERNAL_ORDER_LOCATION_ID`.
 - **Live order GET** (`fetchBarnetOrders`, live-preview) requires base config **plus** `EXTERNAL_ORDER_LOCATION_ID`.
-- **Live Firestore sync** only runs when order config is complete, reads are enabled, **and** `EXTERNAL_ORDER_LIVE_SYNC_ENABLED=true`.
+- **Live Firestore sync** only runs when order config is complete, reads are enabled, **and** `EXTERNAL_ORDER_LIVE_SYNC_ENABLED=true`. Only **delivery** orders (`is_delivery=true`) are synced. Customer name/phone remain nullable; `rawPayload` is stored server-side only and is never returned in API/UI responses.
+- **Customer SMS** from synced external orders is blocked unless `EXTERNAL_ORDER_CUSTOMER_MESSAGING_ENABLED=true` **and** the order passes `customerMessagingReady` diagnostics (customer phone present).
 - If mode is `live` but reads are disabled, health reports `readsDisabled: true` and configured status without calling the API.
 - Admin routes never return API keys, passwords, OTPs, Authorization headers, webhook URLs, or webhook secrets. Discover Locations returns only safe location fields (`hasWebhookUrl` boolean instead of the raw URL).
 
@@ -82,6 +84,35 @@ Authentication: `Authorization: Basic base64(apiKey:apiPass)`.
 
 Normalized orders use document IDs `barnet_{externalOrderId}` in Firestore.
 
+### Confirmed Barnet delivery order detail fields
+
+Live order detail responses (confirmed) include:
+
+| Field | Normalized to |
+|-------|----------------|
+| `id`, `number`, `store_id` | `externalOrderId`, `externalOrderNumber` |
+| `total`, `timestamp` | `total`, `placedAt` |
+| `is_delivery`, `delivery_status`, `p_status` | `isDelivery`, `deliveryStatus`, `status` |
+| `address`, `city`, `state`, `zip` | `deliveryAddress` (joined) |
+| `delivery_notes` | `deliveryInstructions` |
+| `items` | `items` (+ `itemsCount` in safe API metadata) |
+| `tracking_number`, `p_shipment_pin`, `processed` | preserved in server-side `rawPayload` only |
+
+**Confirmed missing** on the current Barnet order detail endpoint: customer name and customer phone.
+
+### Dispatch vs customer messaging readiness
+
+Diagnostics separate two concerns:
+
+| Flag | Meaning |
+|------|---------|
+| `dispatchReady` | Delivery order with address (`address`+`city`+`state`+`zip`), and at least one item |
+| `customerMessagingReady` | Customer phone is present on the order payload |
+
+Settings **Preview Live Orders** and synced order tables show these flags plus `missingFields` — without exposing raw address or customer values in diagnostic panels.
+
+**Next provider question:** Which endpoint or webhook payload includes customer name and phone for delivery orders?
+
 ## Required Environment Variables
 
 Copy `.env.example` to `.env.local`. **Never commit `.env.local` or real credentials.**
@@ -99,6 +130,7 @@ EXTERNAL_ORDER_OTP=
 EXTERNAL_ORDER_WEBHOOK_SECRET=
 EXTERNAL_ORDER_LIVE_READS_ENABLED=false
 EXTERNAL_ORDER_LIVE_SYNC_ENABLED=false
+EXTERNAL_ORDER_CUSTOMER_MESSAGING_ENABLED=false
 ```
 
 To test live reads locally (after authorization):
@@ -272,8 +304,11 @@ lib/integrations/order-provider/
   env.server.ts               # Zod env validation + safety gates
   mock-client.server.ts       # Fake orders (no fetch)
   barnet-client.server.ts     # Read-only live GET client
+  barnet-order-diagnostics.ts # Dispatch vs messaging readiness checks
   normalize-order.ts          # Mock provider → normalized mapping
-  normalize-barnet-order.ts     # Barnet → normalized mapping
+  normalize-barnet-order.ts   # Barnet detail → normalized mapping
+  safe-external-order.ts      # Strip rawPayload for API/UI responses
+  customer-messaging.server.ts # SMS feature gate for synced orders
   index.server.ts             # Sync orchestration + exports
 
 app/api/integrations/order-provider/

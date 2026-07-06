@@ -243,6 +243,13 @@ export function SettingsPage() {
               <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 Live provider (read-only)
               </div>
+              {!isMockMode && liveReadsEnabled && (
+                <div className="mt-3 rounded-lg border border-warning/40 bg-warning-soft/30 px-3 py-2 text-xs text-warning-foreground">
+                  Barnet order details include delivery address and items, but customer
+                  phone/name are not currently present. Customer SMS automation cannot be
+                  enabled until a phone source is confirmed.
+                </div>
+              )}
               <div className="mt-3 flex flex-wrap items-center gap-3">
                 <button
                   disabled={liveChecking || !isApiEnabled()}
@@ -376,7 +383,10 @@ export function SettingsPage() {
                     <tr>
                       <th className="px-3 py-2 font-medium">Order #</th>
                       <th className="px-3 py-2 font-medium">Status</th>
-                      <th className="px-3 py-2 font-medium">Delivery</th>
+                      <th className="px-3 py-2 font-medium">Items</th>
+                      <th className="px-3 py-2 font-medium">Dispatch Ready</th>
+                      <th className="px-3 py-2 font-medium">Customer Messaging Ready</th>
+                      <th className="px-3 py-2 font-medium">Missing Fields</th>
                       <th className="px-3 py-2 font-medium">Total</th>
                     </tr>
                   </thead>
@@ -387,8 +397,17 @@ export function SettingsPage() {
                           {order.externalOrderNumber ?? order.externalOrderId}
                         </td>
                         <td className="px-3 py-2 capitalize">{order.status}</td>
-                        <td className="px-3 py-2 capitalize">
-                          {order.deliveryStatus ?? "—"}
+                        <td className="px-3 py-2">{order.itemsCount}</td>
+                        <td className="px-3 py-2">
+                          {order.diagnostics.dispatchReady ? "Yes" : "No"}
+                        </td>
+                        <td className="px-3 py-2">
+                          {order.diagnostics.customerMessagingReady ? "Yes" : "No"}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-muted-foreground">
+                          {order.diagnostics.missingFields.length > 0
+                            ? order.diagnostics.missingFields.join(", ")
+                            : "—"}
                         </td>
                         <td className="px-3 py-2">{formatTotal(order.total)}</td>
                       </tr>
@@ -403,9 +422,11 @@ export function SettingsPage() {
                 <thead className="border-b border-border bg-secondary/40 text-xs uppercase tracking-wide text-muted-foreground">
                   <tr>
                     <th className="px-3 py-2 font-medium">Order #</th>
-                    <th className="px-3 py-2 font-medium">Customer</th>
                     <th className="px-3 py-2 font-medium">Status</th>
-                    <th className="px-3 py-2 font-medium">Delivery</th>
+                    <th className="px-3 py-2 font-medium">Items</th>
+                    <th className="px-3 py-2 font-medium">Dispatch Ready</th>
+                    <th className="px-3 py-2 font-medium">Customer Messaging Ready</th>
+                    <th className="px-3 py-2 font-medium">Missing Fields</th>
                     <th className="px-3 py-2 font-medium">Total</th>
                     <th className="px-3 py-2 font-medium">Updated</th>
                   </tr>
@@ -413,13 +434,13 @@ export function SettingsPage() {
                 <tbody className="divide-y divide-border/60">
                   {externalOrdersLoading && syncedExternalOrders.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
+                      <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">
                         Loading synced orders…
                       </td>
                     </tr>
                   ) : syncedExternalOrders.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
+                      <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">
                         No synced external orders yet — run mock sync to populate
                       </td>
                     </tr>
@@ -429,10 +450,18 @@ export function SettingsPage() {
                         <td className="px-3 py-2 font-medium">
                           {order.externalOrderNumber ?? order.externalOrderId}
                         </td>
-                        <td className="px-3 py-2">{order.customerName ?? "—"}</td>
                         <td className="px-3 py-2 capitalize">{order.status}</td>
-                        <td className="px-3 py-2 capitalize">
-                          {order.deliveryStatus ?? "—"}
+                        <td className="px-3 py-2">{order.itemsCount}</td>
+                        <td className="px-3 py-2">
+                          {order.diagnostics.dispatchReady ? "Yes" : "No"}
+                        </td>
+                        <td className="px-3 py-2">
+                          {order.diagnostics.customerMessagingReady ? "Yes" : "No"}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-muted-foreground">
+                          {order.diagnostics.missingFields.length > 0
+                            ? order.diagnostics.missingFields.join(", ")
+                            : "—"}
                         </td>
                         <td className="px-3 py-2">{formatTotal(order.total)}</td>
                         <td className="px-3 py-2 text-xs text-muted-foreground">

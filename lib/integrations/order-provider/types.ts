@@ -65,6 +65,8 @@ export interface ExternalOrderProviderConfig {
   ordersConfigured: boolean;
   liveReadsEnabled: boolean;
   liveSyncEnabled: boolean;
+  /** When false, synced external orders must not trigger customer SMS. */
+  customerMessagingEnabled: boolean;
   hasOtp: boolean;
   hasWebhookSecret: boolean;
 }
@@ -93,10 +95,42 @@ export interface LiveOrderProviderHealth extends ExternalOrderProviderHealth {
   };
 }
 
+export interface BarnetOrderDiagnostics {
+  hasDeliveryAddress: boolean;
+  hasDeliveryInstructions: boolean;
+  hasItems: boolean;
+  hasCustomerName: boolean;
+  hasCustomerPhone: boolean;
+  dispatchReady: boolean;
+  customerMessagingReady: boolean;
+  missingFields: string[];
+}
+
+/** API/UI-safe external order — no rawPayload. */
+export interface SafeExternalOrder {
+  provider: string;
+  externalOrderId: string;
+  externalOrderNumber: string | null;
+  status: string;
+  deliveryStatus: string | null;
+  isDelivery: boolean;
+  total: number;
+  placedAt: string;
+  customerName: string | null;
+  customerPhone: string | null;
+  pickupAddress: string | null;
+  deliveryAddress: string | null;
+  deliveryInstructions: string | null;
+  itemsCount: number;
+  createdAt: string;
+  updatedAt: string;
+  diagnostics: BarnetOrderDiagnostics;
+}
+
 export interface LiveOrderPreviewResult {
   ok: boolean;
   mode: "live";
-  orders: NormalizedExternalOrder[];
+  orders: SafeExternalOrder[];
   total: number;
   page: number;
   itemsOnPage: number;

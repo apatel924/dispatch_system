@@ -13,7 +13,11 @@ export const metadata: Metadata = {
   description:
     'Internal dispatch platform for Quick-Run Express: orders, drivers, proof of delivery, and customer tracking.',
   icons: {
-    icon: '/images/brand/logo.png',
+    icon: [
+      { url: '/images/brand/favicon-32.png', sizes: '32x32', type: 'image/png' },
+      { url: '/images/brand/favicon.png', sizes: '512x512', type: 'image/png' },
+    ],
+    apple: '/images/brand/apple-touch-icon.png',
   },
 }
 

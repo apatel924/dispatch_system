@@ -11,18 +11,45 @@ import type {
 
 const BARNET_PROVIDER = "barnet";
 
-/** Read-only Barnet order summary shape (tolerant of missing fields). */
+/** Read-only Barnet order item shape (tolerant of missing fields). */
+export interface BarnetOrderItemRaw {
+  name?: string;
+  product_name?: string;
+  title?: string;
+  quantity?: number | string;
+  qty?: number | string;
+  price?: number | string;
+  unit_price?: number | string;
+  notes?: string;
+  note?: string;
+  [key: string]: unknown;
+}
+
+/** Read-only Barnet order detail shape (tolerant of missing fields). */
 export interface BarnetOrderRaw {
   id?: number | string;
   number?: number | string;
+  store_id?: number | string;
   status_display?: string;
   p_status?: string;
+  p_shipment_pin?: string;
   delivery_status?: string | null;
   is_delivery?: boolean | number | string;
   total?: number;
   timestamp?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  delivery_notes?: string;
+  items?: BarnetOrderItemRaw[];
+  tracking_number?: string;
+  processed?: boolean | number | string;
   customer_name?: string;
   customer_phone?: string;
+  customer?: { name?: string; phone?: string };
+  name?: string;
+  phone?: string;
   delivery_address?: string;
   [key: string]: unknown;
 }

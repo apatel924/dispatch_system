@@ -235,6 +235,12 @@ export interface OrderProviderSyncResponse {
   total: number;
 }
 
+export interface ExternalOrderDiagnostics {
+  dispatchReady: boolean;
+  customerMessagingReady: boolean;
+  missingFields: string[];
+}
+
 export interface ExternalOrderRow {
   provider: string;
   externalOrderId: string;
@@ -249,8 +255,10 @@ export interface ExternalOrderRow {
   pickupAddress: string | null;
   deliveryAddress: string | null;
   deliveryInstructions: string | null;
+  itemsCount: number;
   createdAt: string;
   updatedAt: string;
+  diagnostics: ExternalOrderDiagnostics;
 }
 
 export async function fetchOrderProviderHealth(): Promise<OrderProviderHealthResponse> {

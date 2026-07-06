@@ -1,5 +1,8 @@
 import type { BarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-client.server";
-import type { NormalizedExternalOrder } from "@/lib/integrations/order-provider/types";
+import type {
+  ExternalProviderOrderItem,
+  NormalizedExternalOrder,
+} from "@/lib/integrations/order-provider/types";
 
 const BARNET_PROVIDER = "barnet";
 
@@ -28,6 +31,16 @@ function coerceNumber(value: unknown): number {
   return 0;
 }
 
+function coerceNullableNumber(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
 function resolveStatus(order: BarnetOrderRaw): string {
   const statusDisplay = coerceString(order.status_display);
   if (statusDisplay) return statusDisplay;
@@ -41,9 +54,82 @@ function resolvePlacedAt(order: BarnetOrderRaw, fallback: string): string {
   return timestamp ?? fallback;
 }
 
+function resolveCustomerName(order: BarnetOrderRaw): string | null {
+  const direct = coerceString(order.customer_name);
+  if (direct) return direct;
+
+  const customer = order.customer;
+  if (customer && typeof customer === "object" && !Array.isArray(customer)) {
+    const name = coerceString((customer as Record<string, unknown>).name);
+    if (name) return name;
+  }
+
+  return coerceString(order.name);
+}
+
+function resolveCustomerPhone(order: BarnetOrderRaw): string | null {
+  const direct = coerceString(order.customer_phone);
+  if (direct) return direct;
+
+  const customer = order.customer;
+  if (customer && typeof customer === "object" && !Array.isArray(customer)) {
+    const phone = coerceString((customer as Record<string, unknown>).phone);
+    if (phone) return phone;
+  }
+
+  return coerceString(order.phone);
+}
+
+function buildDeliveryAddress(order: BarnetOrderRaw): string | null {
+  const parts = [
+    coerceString(order.address),
+    coerceString(order.city),
+    coerceString(order.state),
+    coerceString(order.zip),
+  ].filter((part): part is string => part !== null);
+
+  if (parts.length > 0) return parts.join(", ");
+
+  return coerceString(order.delivery_address);
+}
+
+function normalizeBarnetItems(rawItems: unknown): ExternalProviderOrderItem[] {
+  if (!Array.isArray(rawItems)) return [];
+
+  return rawItems.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return {
+        name: "Unknown item",
+        quantity: 1,
+        unitPrice: null,
+        notes: null,
+      };
+    }
+
+    const item = entry as Record<string, unknown>;
+    const quantity = coerceNumber(item.quantity ?? item.qty) || 1;
+
+    return {
+      name:
+        coerceString(item.name) ??
+        coerceString(item.product_name) ??
+        coerceString(item.title) ??
+        "Unknown item",
+      quantity,
+      unitPrice: coerceNullableNumber(item.unit_price ?? item.price ?? item.unitPrice),
+      notes: coerceString(item.notes ?? item.note),
+    };
+  });
+}
+
+export function isBarnetDeliveryOrder(order: BarnetOrderRaw): boolean {
+  if (order.is_delivery === undefined || order.is_delivery === null) return false;
+  return coerceBoolean(order.is_delivery);
+}
+
 /**
- * Maps a Barnet order summary into the normalized internal shape.
- * Tolerant of missing fields in summary responses.
+ * Maps a Barnet order detail payload into the normalized internal shape.
+ * Tolerant of missing fields; customer name/phone remain null when absent.
  */
 export function normalizeBarnetOrder(
   order: BarnetOrderRaw,
@@ -54,6 +140,7 @@ export function normalizeBarnetOrder(
 ): NormalizedExternalOrder {
   const now = options?.now ?? new Date().toISOString();
   const externalOrderId = coerceString(order.id) ?? "unknown";
+  const items = normalizeBarnetItems(order.items);
 
   return {
     provider: BARNET_PROVIDER,
@@ -61,15 +148,15 @@ export function normalizeBarnetOrder(
     externalOrderNumber: coerceString(order.number),
     status: resolveStatus(order),
     deliveryStatus: coerceString(order.delivery_status),
-    isDelivery: coerceBoolean(order.is_delivery),
+    isDelivery: isBarnetDeliveryOrder(order),
     total: coerceNumber(order.total),
     placedAt: resolvePlacedAt(order, now),
-    customerName: coerceString(order.customer_name),
-    customerPhone: coerceString(order.customer_phone),
+    customerName: resolveCustomerName(order),
+    customerPhone: resolveCustomerPhone(order),
     pickupAddress: null,
-    deliveryAddress: coerceString(order.delivery_address),
-    deliveryInstructions: null,
-    items: [],
+    deliveryAddress: buildDeliveryAddress(order),
+    deliveryInstructions: coerceString(order.delivery_notes),
+    items,
     rawPayload: order,
     createdAt: options?.preserveTimestamps?.createdAt ?? now,
     updatedAt: options?.preserveTimestamps?.updatedAt ?? now,
@@ -78,7 +165,9 @@ export function normalizeBarnetOrder(
 
 export function normalizeBarnetOrders(orders: BarnetOrderRaw[]): NormalizedExternalOrder[] {
   const now = new Date().toISOString();
-  return orders.map((order) => normalizeBarnetOrder(order, { now }));
+  return orders
+    .filter(isBarnetDeliveryOrder)
+    .map((order) => normalizeBarnetOrder(order, { now }));
 }
 
 export function barnetDocumentId(externalOrderId: string): string {

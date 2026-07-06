@@ -39,6 +39,10 @@ const EnvSchema = z.object({
     (value) => parseBoolEnv(value, false),
     z.boolean(),
   ),
+  EXTERNAL_ORDER_CUSTOMER_MESSAGING_ENABLED: z.preprocess(
+    (value) => parseBoolEnv(value, false),
+    z.boolean(),
+  ),
 });
 
 /** Base live credentials — required for GET /locations and live config. */
@@ -66,6 +70,8 @@ function parseEnv() {
     EXTERNAL_ORDER_WEBHOOK_SECRET: process.env.EXTERNAL_ORDER_WEBHOOK_SECRET,
     EXTERNAL_ORDER_LIVE_READS_ENABLED: process.env.EXTERNAL_ORDER_LIVE_READS_ENABLED,
     EXTERNAL_ORDER_LIVE_SYNC_ENABLED: process.env.EXTERNAL_ORDER_LIVE_SYNC_ENABLED,
+    EXTERNAL_ORDER_CUSTOMER_MESSAGING_ENABLED:
+      process.env.EXTERNAL_ORDER_CUSTOMER_MESSAGING_ENABLED,
   });
 }
 
@@ -126,6 +132,7 @@ export function getExternalOrderProviderConfig(): ExternalOrderProviderConfig {
       LIVE_ORDERS_REQUIRED_KEYS.every((key) => Boolean(env[key])),
     liveReadsEnabled: env.EXTERNAL_ORDER_LIVE_READS_ENABLED,
     liveSyncEnabled: env.EXTERNAL_ORDER_LIVE_SYNC_ENABLED,
+    customerMessagingEnabled: env.EXTERNAL_ORDER_CUSTOMER_MESSAGING_ENABLED,
     hasOtp: Boolean(env.EXTERNAL_ORDER_OTP),
     hasWebhookSecret: Boolean(env.EXTERNAL_ORDER_WEBHOOK_SECRET),
   };

@@ -5,6 +5,7 @@ import {
   assertLiveSyncAllowed,
   getExternalOrderProviderConfig,
 } from "@/lib/integrations/order-provider/env.server";
+import { diagnoseBarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-order-diagnostics";
 import { fetchBarnetOrders } from "@/lib/integrations/order-provider/barnet-client.server";
 import {
   fetchMockProviderOrders,
@@ -13,15 +14,17 @@ import {
 import { normalizeExternalOrder } from "@/lib/integrations/order-provider/normalize-order";
 import {
   barnetDocumentId,
+  isBarnetDeliveryOrder,
   normalizeBarnetOrder,
-  normalizeBarnetOrders,
 } from "@/lib/integrations/order-provider/normalize-barnet-order";
+import { toSafeExternalOrder } from "@/lib/integrations/order-provider/safe-external-order";
 import type {
   ExternalOrderProviderHealth,
   ExternalOrderSyncResult,
   LiveOrderPreviewResult,
   LiveOrderProviderHealth,
   NormalizedExternalOrder,
+  SafeExternalOrder,
 } from "@/lib/integrations/order-provider/types";
 
 const COLLECTION = "externalOrders";
@@ -69,7 +72,12 @@ export async function previewLiveExternalOrders(
   const page = options?.page ?? 1;
   const itemsOnPage = options?.itemsOnPage ?? 10;
   const rawOrders = await fetchBarnetOrders({ page, itemsOnPage });
-  const orders = normalizeBarnetOrders(rawOrders);
+  const deliveryOrders = rawOrders.filter(isBarnetDeliveryOrder);
+  const orders: SafeExternalOrder[] = deliveryOrders.map((rawOrder) => {
+    const normalized = normalizeBarnetOrder(rawOrder);
+    const diagnostics = diagnoseBarnetOrderRaw(rawOrder);
+    return toSafeExternalOrder(normalized, diagnostics);
+  });
 
   return {
     ok: true,
@@ -94,16 +102,7 @@ export async function syncLiveExternalOrders(
   const page = options?.page ?? 1;
   const itemsOnPage = options?.itemsOnPage ?? 50;
   const rawOrders = await fetchBarnetOrders({ page, itemsOnPage });
-  const deliveryOrders = rawOrders.filter((order) => {
-    if (order.is_delivery === undefined) return true;
-    if (typeof order.is_delivery === "boolean") return order.is_delivery;
-    if (typeof order.is_delivery === "number") return order.is_delivery !== 0;
-    if (typeof order.is_delivery === "string") {
-      const normalized = order.is_delivery.trim().toLowerCase();
-      return normalized === "true" || normalized === "1" || normalized === "yes";
-    }
-    return true;
-  });
+  const deliveryOrders = rawOrders.filter(isBarnetDeliveryOrder);
 
   const db = getAdminFirestore();
   const now = new Date().toISOString();
@@ -151,7 +150,7 @@ export async function syncLiveExternalOrders(
 
 export async function listSyncedExternalOrders(
   limit = 50,
-): Promise<NormalizedExternalOrder[]> {
+): Promise<SafeExternalOrder[]> {
   const db = getAdminFirestore();
   const snapshot = await db
     .collection(COLLECTION)
@@ -159,7 +158,9 @@ export async function listSyncedExternalOrders(
     .limit(limit)
     .get();
 
-  return snapshot.docs.map((doc) => doc.data() as NormalizedExternalOrder);
+  return snapshot.docs.map((doc) =>
+    toSafeExternalOrder(doc.data() as NormalizedExternalOrder),
+  );
 }
 
 /**
@@ -242,13 +243,23 @@ export {
   normalizeExternalOrders,
 } from "@/lib/integrations/order-provider/normalize-order";
 export {
+  diagnoseBarnetOrderRaw,
+  diagnoseNormalizedExternalOrder,
+} from "@/lib/integrations/order-provider/barnet-order-diagnostics";
+export { shouldTriggerExternalOrderCustomerSms } from "@/lib/integrations/order-provider/customer-messaging.server";
+export {
+  toSafeExternalOrder,
+} from "@/lib/integrations/order-provider/safe-external-order";
+export {
   barnetDocumentId,
+  isBarnetDeliveryOrder,
   normalizeBarnetOrder,
   normalizeBarnetOrders,
 } from "@/lib/integrations/order-provider/normalize-barnet-order";
 export type {
   BarnetLocationsMeta,
   BarnetLocationsRawShape,
+  BarnetOrderDiagnostics,
   ExternalOrderProviderConfig,
   ExternalOrderProviderHealth,
   ExternalOrderProviderMode,
@@ -259,4 +270,5 @@ export type {
   LiveOrderProviderHealth,
   NormalizedExternalOrder,
   SafeBarnetLocation,
+  SafeExternalOrder,
 } from "@/lib/integrations/order-provider/types";

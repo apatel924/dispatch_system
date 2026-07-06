@@ -57,12 +57,44 @@ export interface ExternalOrderSyncResult {
 export interface ExternalOrderProviderConfig {
   mode: ExternalOrderProviderMode;
   apiBaseUrl: string | null;
+  apiPathPrefix: string;
   locationId: string | null;
   configured: boolean;
+  liveReadsEnabled: boolean;
+  liveSyncEnabled: boolean;
+  hasOtp: boolean;
+  hasWebhookSecret: boolean;
 }
 
 export interface ExternalOrderProviderHealth {
   ok: boolean;
   mode: ExternalOrderProviderMode;
   configured: boolean;
+  liveReadsEnabled: boolean;
+  liveSyncEnabled: boolean;
+  /** True when mode is live, configured, but live reads flag is off. */
+  readsDisabled: boolean;
+}
+
+export interface LiveOrderProviderHealth extends ExternalOrderProviderHealth {
+  apiPathPrefix: string;
+  locationId: string | null;
+  hasOtp: boolean;
+  hasWebhookSecret: boolean;
+  probe?: {
+    attempted: boolean;
+    ok: boolean;
+    locationCount?: number;
+    error?: string;
+  };
+}
+
+export interface LiveOrderPreviewResult {
+  ok: boolean;
+  mode: "live";
+  orders: NormalizedExternalOrder[];
+  total: number;
+  page: number;
+  itemsOnPage: number;
+  locationId: string;
 }

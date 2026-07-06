@@ -1,14 +1,26 @@
 import { getAdminFirestore } from "@/lib/server/firebase-admin";
 import { omitUndefined } from "@/lib/server/firestore/helpers";
-import { getExternalOrderProviderConfig } from "@/lib/integrations/order-provider/env.server";
+import {
+  assertLiveReadsAllowed,
+  assertLiveSyncAllowed,
+  getExternalOrderProviderConfig,
+} from "@/lib/integrations/order-provider/env.server";
+import { fetchBarnetOrders } from "@/lib/integrations/order-provider/barnet-client.server";
 import {
   fetchMockProviderOrders,
   getMockProviderName,
 } from "@/lib/integrations/order-provider/mock-client.server";
 import { normalizeExternalOrder } from "@/lib/integrations/order-provider/normalize-order";
+import {
+  barnetDocumentId,
+  normalizeBarnetOrder,
+  normalizeBarnetOrders,
+} from "@/lib/integrations/order-provider/normalize-barnet-order";
 import type {
   ExternalOrderProviderHealth,
   ExternalOrderSyncResult,
+  LiveOrderPreviewResult,
+  LiveOrderProviderHealth,
   NormalizedExternalOrder,
 } from "@/lib/integrations/order-provider/types";
 
@@ -16,11 +28,123 @@ const COLLECTION = "externalOrders";
 
 export function getOrderProviderHealth(): ExternalOrderProviderHealth {
   const config = getExternalOrderProviderConfig();
+  const readsDisabled =
+    config.mode === "live" && config.configured && !config.liveReadsEnabled;
+
   return {
     ok: true,
     mode: config.mode,
     configured: config.configured,
+    liveReadsEnabled: config.liveReadsEnabled,
+    liveSyncEnabled: config.liveSyncEnabled,
+    readsDisabled,
   };
+}
+
+export function getLiveOrderProviderHealth(): LiveOrderProviderHealth {
+  const base = getOrderProviderHealth();
+  const config = getExternalOrderProviderConfig();
+
+  return {
+    ...base,
+    apiPathPrefix: config.apiPathPrefix,
+    locationId: config.locationId,
+    hasOtp: config.hasOtp,
+    hasWebhookSecret: config.hasWebhookSecret,
+  };
+}
+
+export async function previewLiveExternalOrders(
+  options?: { page?: number; itemsOnPage?: number },
+): Promise<LiveOrderPreviewResult> {
+  assertLiveReadsAllowed();
+
+  const config = getExternalOrderProviderConfig();
+  if (!config.locationId) {
+    throw new Error("EXTERNAL_ORDER_LOCATION_ID is required for live preview");
+  }
+
+  const page = options?.page ?? 1;
+  const itemsOnPage = options?.itemsOnPage ?? 10;
+  const rawOrders = await fetchBarnetOrders({ page, itemsOnPage });
+  const orders = normalizeBarnetOrders(rawOrders);
+
+  return {
+    ok: true,
+    mode: "live",
+    orders,
+    total: orders.length,
+    page,
+    itemsOnPage,
+    locationId: config.locationId,
+  };
+}
+
+/**
+ * Loads live Barnet orders (read-only GET), normalizes delivery orders, and upserts into Firestore.
+ * Document IDs are stable: barnet_<externalOrderId>.
+ */
+export async function syncLiveExternalOrders(
+  options?: { page?: number; itemsOnPage?: number },
+): Promise<ExternalOrderSyncResult> {
+  assertLiveSyncAllowed();
+
+  const page = options?.page ?? 1;
+  const itemsOnPage = options?.itemsOnPage ?? 50;
+  const rawOrders = await fetchBarnetOrders({ page, itemsOnPage });
+  const deliveryOrders = rawOrders.filter((order) => {
+    if (order.is_delivery === undefined) return true;
+    if (typeof order.is_delivery === "boolean") return order.is_delivery;
+    if (typeof order.is_delivery === "number") return order.is_delivery !== 0;
+    if (typeof order.is_delivery === "string") {
+      const normalized = order.is_delivery.trim().toLowerCase();
+      return normalized === "true" || normalized === "1" || normalized === "yes";
+    }
+    return true;
+  });
+
+  const db = getAdminFirestore();
+  const now = new Date().toISOString();
+
+  let inserted = 0;
+  let updated = 0;
+
+  for (const rawOrder of deliveryOrders) {
+    const normalized = normalizeBarnetOrder(rawOrder, { now });
+    const docRef = db.collection(COLLECTION).doc(barnetDocumentId(normalized.externalOrderId));
+    const existing = await docRef.get();
+    const preserve = existing.exists
+      ? {
+          createdAt: (existing.data()?.createdAt as string | undefined) ?? now,
+          updatedAt: now,
+        }
+      : undefined;
+
+    const toStore = normalizeBarnetOrder(rawOrder, {
+      now,
+      preserveTimestamps: preserve,
+    });
+
+    await docRef.set(omitUndefined(toStore as unknown as Record<string, unknown>));
+
+    if (existing.exists) {
+      updated += 1;
+    } else {
+      inserted += 1;
+    }
+  }
+
+  const result: ExternalOrderSyncResult = {
+    inserted,
+    updated,
+    total: inserted + updated,
+  };
+
+  console.info(
+    `[order-provider] live sync complete: inserted=${result.inserted} updated=${result.updated}`,
+  );
+
+  return result;
 }
 
 export async function listSyncedExternalOrders(
@@ -92,9 +216,18 @@ export async function syncMockExternalOrders(): Promise<ExternalOrderSyncResult>
 }
 
 export {
+  assertLiveReadsAllowed,
+  assertLiveSyncAllowed,
   getExternalOrderProviderConfig,
   getExternalOrderProviderSecrets,
 } from "@/lib/integrations/order-provider/env.server";
+export {
+  fetchBarnetLocations,
+  fetchBarnetOrderById,
+  fetchBarnetOrderByNumber,
+  fetchBarnetOrders,
+  getBarnetProviderName,
+} from "@/lib/integrations/order-provider/barnet-client.server";
 export {
   fetchMockProviderOrders,
   getMockProviderName,
@@ -103,11 +236,18 @@ export {
   normalizeExternalOrder,
   normalizeExternalOrders,
 } from "@/lib/integrations/order-provider/normalize-order";
+export {
+  barnetDocumentId,
+  normalizeBarnetOrder,
+  normalizeBarnetOrders,
+} from "@/lib/integrations/order-provider/normalize-barnet-order";
 export type {
   ExternalOrderProviderConfig,
   ExternalOrderProviderHealth,
   ExternalOrderProviderMode,
   ExternalOrderSyncResult,
   ExternalProviderOrder,
+  LiveOrderPreviewResult,
+  LiveOrderProviderHealth,
   NormalizedExternalOrder,
 } from "@/lib/integrations/order-provider/types";

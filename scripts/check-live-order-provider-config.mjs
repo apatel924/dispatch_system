@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Validates external order provider env configuration without starting the dev server.
+ * Validates external order provider live env configuration without calling live APIs.
  * Loads .env.local from the project root when present.
  */
 import fs from "node:fs";
@@ -77,27 +77,35 @@ function validate() {
 
   const liveReadsEnabled = parseBoolEnv(process.env.EXTERNAL_ORDER_LIVE_READS_ENABLED, false);
   const liveSyncEnabled = parseBoolEnv(process.env.EXTERNAL_ORDER_LIVE_SYNC_ENABLED, false);
+  const apiPathPrefix =
+    emptyToUndefined(process.env.EXTERNAL_ORDER_API_PATH_PREFIX) ?? "/swagger";
 
   return {
     ok: true,
     mode,
     configured,
+    apiPathPrefix,
+    locationId: emptyToUndefined(process.env.EXTERNAL_ORDER_LOCATION_ID) ?? null,
     liveReadsEnabled,
     liveSyncEnabled,
     readsDisabled: mode === "live" && configured && !liveReadsEnabled,
+    hasOtp: Boolean(emptyToUndefined(process.env.EXTERNAL_ORDER_OTP)),
+    hasWebhookSecret: Boolean(emptyToUndefined(process.env.EXTERNAL_ORDER_WEBHOOK_SECRET)),
+    liveApiCallsAllowed: mode === "live" && configured && liveReadsEnabled,
+    liveSyncAllowed: mode === "live" && configured && liveReadsEnabled && liveSyncEnabled,
   };
 }
 
 loadEnvLocal();
 
 try {
-  const health = validate();
-  console.log("✅ External order provider health check passed");
-  console.log(JSON.stringify(health, null, 2));
+  const status = validate();
+  console.log("✅ External order provider live config validation passed (no API calls made)");
+  console.log(JSON.stringify(status, null, 2));
   process.exit(0);
 } catch (err) {
   const message = err instanceof Error ? err.message : String(err);
-  console.error("❌ External order provider health check failed");
+  console.error("❌ External order provider live config validation failed");
   console.error(message);
   process.exit(1);
 }

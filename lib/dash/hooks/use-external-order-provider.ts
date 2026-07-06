@@ -3,10 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import {
+  fetchLiveOrderProviderHealth,
   fetchOrderProviderHealth,
   fetchSyncedExternalOrders,
+  previewLiveExternalOrdersApi,
+  runLiveOrderProviderSync,
   runOrderProviderMockSync,
   type ExternalOrderRow,
+  type LiveOrderProviderHealthResponse,
   type OrderProviderHealthResponse,
 } from "@/lib/dash/api/client";
 
@@ -16,11 +20,17 @@ function formatCents(cents: number): string {
 
 export function useExternalOrderProvider() {
   const [health, setHealth] = useState<OrderProviderHealthResponse | null>(null);
+  const [liveHealth, setLiveHealth] = useState<LiveOrderProviderHealthResponse | null>(null);
   const [orders, setOrders] = useState<ExternalOrderRow[]>([]);
+  const [previewOrders, setPreviewOrders] = useState<ExternalOrderRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [liveChecking, setLiveChecking] = useState(false);
+  const [livePreviewing, setLivePreviewing] = useState(false);
+  const [liveSyncing, setLiveSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [liveMessage, setLiveMessage] = useState<string | null>(null);
 
   const loadHealth = useCallback(async () => {
     try {
@@ -86,15 +96,115 @@ export function useExternalOrderProvider() {
     }
   }, [loadOrders]);
 
+  const checkLiveConfig = useCallback(async (probe = false) => {
+    if (!isApiEnabled()) {
+      const message = "Enable NEXT_PUBLIC_USE_API=true to check live config";
+      setLiveMessage(message);
+      return { ok: false as const, message };
+    }
+
+    setLiveChecking(true);
+    setLiveMessage(null);
+    setError(null);
+    try {
+      const result = await fetchLiveOrderProviderHealth({ probe });
+      setLiveHealth(result);
+      let message = probe
+        ? result.probe?.ok
+          ? `Live probe OK (${result.probe.locationCount ?? 0} location(s))`
+          : `Live config OK${result.probe?.error ? ` — probe: ${result.probe.error}` : ""}`
+        : "Live config loaded";
+      if (result.readsDisabled) {
+        message = "Live mode configured but reads are disabled";
+      }
+      setLiveMessage(message);
+      return { ok: true as const, message, result };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Live config check failed";
+      setLiveHealth(null);
+      setError(message);
+      return { ok: false as const, message };
+    } finally {
+      setLiveChecking(false);
+    }
+  }, []);
+
+  const previewLiveOrders = useCallback(async () => {
+    if (!isApiEnabled()) {
+      const message = "Enable NEXT_PUBLIC_USE_API=true to preview live orders";
+      setLiveMessage(message);
+      return { ok: false as const, message };
+    }
+
+    setLivePreviewing(true);
+    setLiveMessage(null);
+    setError(null);
+    try {
+      const result = await previewLiveExternalOrdersApi();
+      setPreviewOrders(result.orders);
+      const message = `Previewed ${result.total} live order(s) (read-only, not saved)`;
+      setLiveMessage(message);
+      return { ok: true as const, message, result };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Live preview failed";
+      setPreviewOrders([]);
+      setError(message);
+      return { ok: false as const, message };
+    } finally {
+      setLivePreviewing(false);
+    }
+  }, []);
+
+  const runLiveSync = useCallback(async () => {
+    if (!isApiEnabled()) {
+      const message = "Enable NEXT_PUBLIC_USE_API=true to run live sync";
+      setLiveMessage(message);
+      return { ok: false as const, message };
+    }
+
+    setLiveSyncing(true);
+    setLiveMessage(null);
+    setError(null);
+    try {
+      const result = await runLiveOrderProviderSync();
+      await loadOrders();
+      const message = `Live sync: ${result.total} order(s) — ${result.inserted} inserted, ${result.updated} updated`;
+      setLiveMessage(message);
+      return { ok: true as const, message, result };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Live sync failed";
+      setError(message);
+      return { ok: false as const, message };
+    } finally {
+      setLiveSyncing(false);
+    }
+  }, [loadOrders]);
+
+  const isMockMode = health?.mode !== "live";
+  const liveReadsEnabled = health?.liveReadsEnabled ?? false;
+  const liveSyncEnabled = health?.liveSyncEnabled ?? false;
+
   return {
     health,
+    liveHealth,
     orders,
+    previewOrders,
     loading,
     syncing,
+    liveChecking,
+    livePreviewing,
+    liveSyncing,
     error,
     syncMessage,
+    liveMessage,
+    isMockMode,
+    liveReadsEnabled,
+    liveSyncEnabled,
     refresh,
     runMockSync,
+    checkLiveConfig,
+    previewLiveOrders,
+    runLiveSync,
     formatTotal: formatCents,
   };
 }

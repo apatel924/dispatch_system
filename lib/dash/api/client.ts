@@ -164,11 +164,37 @@ export interface OrderProviderHealthResponse {
   ok: boolean;
   mode: "mock" | "live";
   configured: boolean;
+  liveReadsEnabled: boolean;
+  liveSyncEnabled: boolean;
+  readsDisabled: boolean;
+}
+
+export interface LiveOrderProviderHealthResponse extends OrderProviderHealthResponse {
+  apiPathPrefix: string;
+  locationId: string | null;
+  hasOtp: boolean;
+  hasWebhookSecret: boolean;
+  probe?: {
+    attempted: boolean;
+    ok: boolean;
+    locationCount?: number;
+    error?: string;
+  };
+}
+
+export interface LiveOrderPreviewResponse {
+  ok: boolean;
+  mode: "live";
+  orders: ExternalOrderRow[];
+  total: number;
+  page: number;
+  itemsOnPage: number;
+  locationId: string;
 }
 
 export interface OrderProviderSyncResponse {
   ok: boolean;
-  mode: "mock";
+  mode: "mock" | "live";
   inserted: number;
   updated: number;
   total: number;
@@ -214,4 +240,23 @@ export async function fetchSyncedExternalOrders(params?: {
   if (params?.limit) qs.set("limit", String(params.limit));
   const query = qs.toString();
   return adminFetch(`/api/integrations/order-provider/orders${query ? `?${query}` : ""}`);
+}
+
+export async function fetchLiveOrderProviderHealth(params?: {
+  probe?: boolean;
+}): Promise<LiveOrderProviderHealthResponse> {
+  const qs = new URLSearchParams();
+  if (params?.probe) qs.set("probe", "true");
+  const query = qs.toString();
+  return adminFetch(
+    `/api/integrations/order-provider/live-health${query ? `?${query}` : ""}`,
+  );
+}
+
+export async function previewLiveExternalOrdersApi(): Promise<LiveOrderPreviewResponse> {
+  return adminFetch("/api/integrations/order-provider/live-preview");
+}
+
+export async function runLiveOrderProviderSync(): Promise<OrderProviderSyncResponse> {
+  return adminFetch("/api/integrations/order-provider/live-sync", { method: "POST" });
 }

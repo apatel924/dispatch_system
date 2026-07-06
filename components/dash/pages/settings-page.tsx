@@ -7,6 +7,7 @@ import { SectionCard } from "@/components/dash/ui/section-card";
 import { Logo } from "@/components/dash/brand/logo";
 import { useAdminImportLogs } from "@/lib/dash/hooks/use-admin-import";
 import { useExternalOrderProvider } from "@/lib/dash/hooks/use-external-order-provider";
+import { isApiEnabled } from "@/lib/dash/api/config";
 import type { MockImportSource } from "@/lib/import/mock-fixtures";
 
 const IMPORT_PROVIDERS: { id: MockImportSource; label: string }[] = [
@@ -25,12 +26,24 @@ export function SettingsPage() {
   const { logs, loading, error, runMockImport } = useAdminImportLogs();
   const {
     health: providerHealth,
+    liveHealth,
     orders: syncedExternalOrders,
+    previewOrders,
     loading: externalOrdersLoading,
     syncing,
+    liveChecking,
+    livePreviewing,
+    liveSyncing,
     error: providerError,
     syncMessage,
+    liveMessage,
+    isMockMode,
+    liveReadsEnabled,
+    liveSyncEnabled,
     runMockSync,
+    checkLiveConfig,
+    previewLiveOrders,
+    runLiveSync,
     formatTotal,
   } = useExternalOrderProvider();
   const [selectedSource, setSelectedSource] = useState<MockImportSource>("mock-uber");
@@ -47,6 +60,18 @@ export function SettingsPage() {
     if (!result.ok) {
       // syncMessage/error handled in hook
     }
+  };
+
+  const handleCheckLiveConfig = async () => {
+    await checkLiveConfig(false);
+  };
+
+  const handlePreviewLiveOrders = async () => {
+    await previewLiveOrders();
+  };
+
+  const handleRunLiveSync = async () => {
+    await runLiveSync();
   };
   return (
     <DashboardLayout title="Settings" actions={
@@ -140,9 +165,13 @@ export function SettingsPage() {
           </div>
 
           <SectionCard
-            title="External Order Provider (Mock)"
+            title="External Order Provider"
             icon={<Activity className="h-4 w-4" />}
-            description="Scaffold for future authorized order syncing. Mock mode only — no live external APIs."
+            description={
+              isMockMode
+                ? "Mock mode is active — no live external APIs are called."
+                : "Live read-only mode — GET /locations and GET /orders only. No create, delete, or payment calls."
+            }
           >
             <div className="flex flex-wrap items-center gap-3 text-sm">
               <span className="rounded-md border border-border bg-secondary/40 px-2.5 py-1 font-medium">
@@ -162,7 +191,26 @@ export function SettingsPage() {
                   Configured: {providerHealth.configured ? "Yes" : "No"}
                 </span>
               )}
+              <span className="text-xs text-muted-foreground">
+                Live reads: {liveReadsEnabled ? "enabled" : "disabled"}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                Live sync: {liveSyncEnabled ? "enabled" : "disabled"}
+              </span>
             </div>
+
+            {isMockMode && (
+              <p className="mt-3 text-xs text-muted-foreground">
+                Mock mode is the default. Set <code className="text-[11px]">EXTERNAL_ORDER_PROVIDER_MODE=live</code> and enable live flags in <code className="text-[11px]">.env.local</code> to use the read-only Barnet adapter.
+              </p>
+            )}
+
+            {!isMockMode && providerHealth?.readsDisabled && (
+              <p className="mt-3 text-xs text-warning-foreground">
+                Live mode is configured but reads are disabled. Set <code className="text-[11px]">EXTERNAL_ORDER_LIVE_READS_ENABLED=true</code> to allow GET requests.
+              </p>
+            )}
+
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <button
                 disabled={syncing || providerHealth?.mode !== "mock"}
@@ -175,10 +223,98 @@ export function SettingsPage() {
               {syncMessage && (
                 <span className="text-sm text-muted-foreground">{syncMessage}</span>
               )}
-              {providerError && !syncMessage && (
-                <span className="text-sm text-primary">{providerError}</span>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-border/60 bg-secondary/20 p-3">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Live provider (read-only)
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  disabled={liveChecking || !isApiEnabled()}
+                  onClick={handleCheckLiveConfig}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-4 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-50"
+                >
+                  <Activity className="h-4 w-4" />
+                  {liveChecking ? "Checking…" : "Check Live Config"}
+                </button>
+                <button
+                  disabled={
+                    livePreviewing ||
+                    isMockMode ||
+                    !liveReadsEnabled
+                  }
+                  onClick={handlePreviewLiveOrders}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-4 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-50"
+                >
+                  <Download className="h-4 w-4" />
+                  {livePreviewing ? "Previewing…" : "Preview Live Orders"}
+                </button>
+                {liveSyncEnabled && (
+                  <button
+                    disabled={
+                      liveSyncing ||
+                      isMockMode ||
+                      !liveReadsEnabled
+                    }
+                    onClick={handleRunLiveSync}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    <Download className="h-4 w-4" />
+                    {liveSyncing ? "Syncing…" : "Run Live Sync"}
+                  </button>
+                )}
+              </div>
+              {liveHealth && (
+                <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  <span>Path prefix: {liveHealth.apiPathPrefix}</span>
+                  {liveHealth.locationId && (
+                    <span>Location: {liveHealth.locationId}</span>
+                  )}
+                  {liveHealth.hasOtp && <span>OTP: configured</span>}
+                </div>
+              )}
+              {liveMessage && (
+                <p className="mt-2 text-sm text-muted-foreground">{liveMessage}</p>
               )}
             </div>
+
+            {providerError && !syncMessage && !liveMessage && (
+              <p className="mt-3 text-sm text-primary">{providerError}</p>
+            )}
+
+            {previewOrders.length > 0 && (
+              <div className="mt-4 overflow-hidden rounded-lg border border-dashed border-border">
+                <div className="border-b border-border bg-secondary/40 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Live preview (not saved to Firestore)
+                </div>
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-border bg-secondary/20 text-xs uppercase tracking-wide text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Order #</th>
+                      <th className="px-3 py-2 font-medium">Status</th>
+                      <th className="px-3 py-2 font-medium">Delivery</th>
+                      <th className="px-3 py-2 font-medium">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {previewOrders.map((order) => (
+                      <tr key={`preview-${order.externalOrderId}`}>
+                        <td className="px-3 py-2 font-medium">
+                          {order.externalOrderNumber ?? order.externalOrderId}
+                        </td>
+                        <td className="px-3 py-2 capitalize">{order.status}</td>
+                        <td className="px-3 py-2 capitalize">
+                          {order.deliveryStatus ?? "—"}
+                        </td>
+                        <td className="px-3 py-2">{formatTotal(order.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
             <div className="mt-4 overflow-hidden rounded-lg border border-border">
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-border bg-secondary/40 text-xs uppercase tracking-wide text-muted-foreground">

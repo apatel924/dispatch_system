@@ -10,17 +10,35 @@ const emptyToUndefined = (value: unknown) => {
   return trimmed.length > 0 ? trimmed : undefined;
 };
 
+function parseBoolEnv(value: unknown, defaultValue = false): boolean {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === "true" || normalized === "1" || normalized === "yes";
+}
+
 const EnvSchema = z.object({
   EXTERNAL_ORDER_PROVIDER_MODE: z
     .enum(["mock", "live"])
     .optional()
     .default("mock"),
   EXTERNAL_ORDER_API_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  EXTERNAL_ORDER_API_PATH_PREFIX: z.preprocess(
+    (value) => emptyToUndefined(value) ?? "/swagger",
+    z.string().min(1),
+  ),
   EXTERNAL_ORDER_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   EXTERNAL_ORDER_API_PASS: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   EXTERNAL_ORDER_LOCATION_ID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   EXTERNAL_ORDER_OTP: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   EXTERNAL_ORDER_WEBHOOK_SECRET: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  EXTERNAL_ORDER_LIVE_READS_ENABLED: z.preprocess(
+    (value) => parseBoolEnv(value, false),
+    z.boolean(),
+  ),
+  EXTERNAL_ORDER_LIVE_SYNC_ENABLED: z.preprocess(
+    (value) => parseBoolEnv(value, false),
+    z.boolean(),
+  ),
 });
 
 const LIVE_REQUIRED_KEYS = [
@@ -34,11 +52,14 @@ function parseEnv() {
   return EnvSchema.parse({
     EXTERNAL_ORDER_PROVIDER_MODE: process.env.EXTERNAL_ORDER_PROVIDER_MODE,
     EXTERNAL_ORDER_API_BASE_URL: process.env.EXTERNAL_ORDER_API_BASE_URL,
+    EXTERNAL_ORDER_API_PATH_PREFIX: process.env.EXTERNAL_ORDER_API_PATH_PREFIX,
     EXTERNAL_ORDER_API_KEY: process.env.EXTERNAL_ORDER_API_KEY,
     EXTERNAL_ORDER_API_PASS: process.env.EXTERNAL_ORDER_API_PASS,
     EXTERNAL_ORDER_LOCATION_ID: process.env.EXTERNAL_ORDER_LOCATION_ID,
     EXTERNAL_ORDER_OTP: process.env.EXTERNAL_ORDER_OTP,
     EXTERNAL_ORDER_WEBHOOK_SECRET: process.env.EXTERNAL_ORDER_WEBHOOK_SECRET,
+    EXTERNAL_ORDER_LIVE_READS_ENABLED: process.env.EXTERNAL_ORDER_LIVE_READS_ENABLED,
+    EXTERNAL_ORDER_LIVE_SYNC_ENABLED: process.env.EXTERNAL_ORDER_LIVE_SYNC_ENABLED,
   });
 }
 
@@ -73,13 +94,18 @@ export function getExternalOrderProviderConfig(): ExternalOrderProviderConfig {
   return {
     mode,
     apiBaseUrl: env.EXTERNAL_ORDER_API_BASE_URL ?? null,
+    apiPathPrefix: env.EXTERNAL_ORDER_API_PATH_PREFIX,
     locationId: env.EXTERNAL_ORDER_LOCATION_ID ?? null,
     configured: mode === "mock" || LIVE_REQUIRED_KEYS.every((key) => Boolean(env[key])),
+    liveReadsEnabled: env.EXTERNAL_ORDER_LIVE_READS_ENABLED,
+    liveSyncEnabled: env.EXTERNAL_ORDER_LIVE_SYNC_ENABLED,
+    hasOtp: Boolean(env.EXTERNAL_ORDER_OTP),
+    hasWebhookSecret: Boolean(env.EXTERNAL_ORDER_WEBHOOK_SECRET),
   };
 }
 
 /**
- * Server-only secrets for future live provider adapters.
+ * Server-only secrets for live provider adapters.
  * Never log or return values from this function.
  */
 export function getExternalOrderProviderSecrets(): {
@@ -97,4 +123,33 @@ export function getExternalOrderProviderSecrets(): {
     otp: env.EXTERNAL_ORDER_OTP ?? null,
     webhookSecret: env.EXTERNAL_ORDER_WEBHOOK_SECRET ?? null,
   };
+}
+
+/** Gate: live mode + live reads flag must be enabled before any Barnet GET. */
+export function assertLiveReadsAllowed(): void {
+  const config = getExternalOrderProviderConfig();
+  if (config.mode !== "live") {
+    throw new Error(
+      "Live reads require EXTERNAL_ORDER_PROVIDER_MODE=live (mock mode is active)",
+    );
+  }
+  if (!config.configured) {
+    throw new Error("Live provider is not fully configured");
+  }
+  if (!config.liveReadsEnabled) {
+    throw new Error(
+      "Live reads are disabled (set EXTERNAL_ORDER_LIVE_READS_ENABLED=true)",
+    );
+  }
+}
+
+/** Gate: live sync flag must be enabled before writing Barnet data to Firestore. */
+export function assertLiveSyncAllowed(): void {
+  assertLiveReadsAllowed();
+  const config = getExternalOrderProviderConfig();
+  if (!config.liveSyncEnabled) {
+    throw new Error(
+      "Live sync is disabled (set EXTERNAL_ORDER_LIVE_SYNC_ENABLED=true)",
+    );
+  }
 }

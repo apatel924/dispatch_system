@@ -16,6 +16,13 @@ function parseBoolEnv(value: unknown, defaultValue = false): boolean {
   return normalized === "true" || normalized === "1" || normalized === "yes";
 }
 
+function parsePositiveIntEnv(value: unknown, defaultValue: number): number {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return defaultValue;
+  return Math.floor(parsed);
+}
+
 const EnvSchema = z.object({
   EXTERNAL_ORDER_PROVIDER_MODE: z
     .enum(["mock", "live"])
@@ -42,6 +49,14 @@ const EnvSchema = z.object({
   EXTERNAL_ORDER_CUSTOMER_MESSAGING_ENABLED: z.preprocess(
     (value) => parseBoolEnv(value, false),
     z.boolean(),
+  ),
+  EXTERNAL_ORDER_SYNC_PAGES: z.preprocess(
+    (value) => parsePositiveIntEnv(value, 5),
+    z.number().int().min(1).max(10),
+  ),
+  EXTERNAL_ORDER_SYNC_ITEMS_PER_PAGE: z.preprocess(
+    (value) => parsePositiveIntEnv(value, 20),
+    z.number().int().min(1),
   ),
 });
 
@@ -72,6 +87,8 @@ function parseEnv() {
     EXTERNAL_ORDER_LIVE_SYNC_ENABLED: process.env.EXTERNAL_ORDER_LIVE_SYNC_ENABLED,
     EXTERNAL_ORDER_CUSTOMER_MESSAGING_ENABLED:
       process.env.EXTERNAL_ORDER_CUSTOMER_MESSAGING_ENABLED,
+    EXTERNAL_ORDER_SYNC_PAGES: process.env.EXTERNAL_ORDER_SYNC_PAGES,
+    EXTERNAL_ORDER_SYNC_ITEMS_PER_PAGE: process.env.EXTERNAL_ORDER_SYNC_ITEMS_PER_PAGE,
   });
 }
 

@@ -47,10 +47,32 @@ export interface NormalizedExternalOrder {
   updatedAt: string;
 }
 
-export interface ExternalOrderSyncResult {
+export interface ExternalOrderScanStats {
+  pagesScanned: number;
+  totalOrdersSeen: number;
+  deliveryOrdersFound: number;
+  pickupOrdersIgnored: number;
+  unknownOrdersIgnored: number;
+}
+
+export interface ExternalOrderSyncResult extends ExternalOrderScanStats {
   inserted: number;
   updated: number;
   total: number;
+}
+
+export interface LiveDeliveryScanResult {
+  ok: boolean;
+  mode: "live";
+  orders: SafeExternalOrder[];
+  pagesScanned: number;
+  totalOrdersSeen: number;
+  deliveryOrdersFound: number;
+  pickupOrdersIgnored: number;
+  unknownOrdersIgnored: number;
+  pagesConfigured: number;
+  itemsPerPage: number;
+  locationId: string;
 }
 
 /** Safe provider config — never includes secrets. */
@@ -132,7 +154,12 @@ export interface LiveOrderPreviewResult {
   mode: "live";
   orders: SafeExternalOrder[];
   total: number;
-  page: number;
+  pagesScanned: number;
+  totalOrdersSeen: number;
+  deliveryOrdersFound: number;
+  pickupOrdersIgnored: number;
+  unknownOrdersIgnored: number;
+  pagesConfigured: number;
   itemsOnPage: number;
   locationId: string;
 }

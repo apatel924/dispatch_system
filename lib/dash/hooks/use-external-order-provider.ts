@@ -10,7 +10,9 @@ import {
   previewLiveExternalOrdersApi,
   runLiveOrderProviderSync,
   runOrderProviderMockSync,
+  scanLiveDeliveryOrdersApi,
   type ExternalOrderRow,
+  type LiveDeliveryScanResponse,
   type LiveOrderProviderHealthResponse,
   type OrderProviderHealthResponse,
   type BarnetLocationsMeta,
@@ -26,6 +28,17 @@ export function useExternalOrderProvider() {
   const [liveHealth, setLiveHealth] = useState<LiveOrderProviderHealthResponse | null>(null);
   const [orders, setOrders] = useState<ExternalOrderRow[]>([]);
   const [previewOrders, setPreviewOrders] = useState<ExternalOrderRow[]>([]);
+  const [scanOrders, setScanOrders] = useState<ExternalOrderRow[]>([]);
+  const [scanStats, setScanStats] = useState<Pick<
+    LiveDeliveryScanResponse,
+    | "pagesScanned"
+    | "totalOrdersSeen"
+    | "deliveryOrdersFound"
+    | "pickupOrdersIgnored"
+    | "unknownOrdersIgnored"
+    | "pagesConfigured"
+    | "itemsPerPage"
+  > | null>(null);
   const [discoveredLocations, setDiscoveredLocations] = useState<SafeBarnetLocationRow[]>([]);
   const [discoveredLocationsMeta, setDiscoveredLocationsMeta] =
     useState<BarnetLocationsMeta | null>(null);
@@ -34,6 +47,7 @@ export function useExternalOrderProvider() {
   const [liveChecking, setLiveChecking] = useState(false);
   const [liveDiscovering, setLiveDiscovering] = useState(false);
   const [livePreviewing, setLivePreviewing] = useState(false);
+  const [liveScanning, setLiveScanning] = useState(false);
   const [liveSyncing, setLiveSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
@@ -178,7 +192,7 @@ export function useExternalOrderProvider() {
     try {
       const result = await previewLiveExternalOrdersApi();
       setPreviewOrders(result.orders);
-      const message = `Previewed ${result.total} live order(s) (read-only, not saved)`;
+      const message = `Previewed ${result.deliveryOrdersFound} delivery order(s) across ${result.pagesScanned} page(s) — ${result.pickupOrdersIgnored} pickup and ${result.unknownOrdersIgnored} unknown ignored (read-only, not saved)`;
       setLiveMessage(message);
       return { ok: true as const, message, result };
     } catch (err) {
@@ -188,6 +202,42 @@ export function useExternalOrderProvider() {
       return { ok: false as const, message };
     } finally {
       setLivePreviewing(false);
+    }
+  }, []);
+
+  const scanLiveDeliveryOrders = useCallback(async () => {
+    if (!isApiEnabled()) {
+      const message = "Enable NEXT_PUBLIC_USE_API=true to scan live delivery orders";
+      setLiveMessage(message);
+      return { ok: false as const, message };
+    }
+
+    setLiveScanning(true);
+    setLiveMessage(null);
+    setError(null);
+    try {
+      const result = await scanLiveDeliveryOrdersApi();
+      setScanOrders(result.orders);
+      setScanStats({
+        pagesScanned: result.pagesScanned,
+        totalOrdersSeen: result.totalOrdersSeen,
+        deliveryOrdersFound: result.deliveryOrdersFound,
+        pickupOrdersIgnored: result.pickupOrdersIgnored,
+        unknownOrdersIgnored: result.unknownOrdersIgnored,
+        pagesConfigured: result.pagesConfigured,
+        itemsPerPage: result.itemsPerPage,
+      });
+      const message = `Scanned ${result.pagesScanned} page(s): ${result.deliveryOrdersFound} delivery, ${result.pickupOrdersIgnored} pickup ignored, ${result.unknownOrdersIgnored} unknown ignored (read-only)`;
+      setLiveMessage(message);
+      return { ok: true as const, message, result };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Delivery scan failed";
+      setScanOrders([]);
+      setScanStats(null);
+      setError(message);
+      return { ok: false as const, message };
+    } finally {
+      setLiveScanning(false);
     }
   }, []);
 
@@ -204,7 +254,7 @@ export function useExternalOrderProvider() {
     try {
       const result = await runLiveOrderProviderSync();
       await loadOrders();
-      const message = `Live sync: ${result.total} order(s) — ${result.inserted} inserted, ${result.updated} updated`;
+      const message = `Live sync across ${result.pagesScanned} page(s): ${result.deliveryOrdersFound} delivery found — ${result.inserted} inserted, ${result.updated} updated (${result.pickupOrdersIgnored} pickup, ${result.unknownOrdersIgnored} unknown ignored)`;
       setLiveMessage(message);
       return { ok: true as const, message, result };
     } catch (err) {
@@ -226,6 +276,8 @@ export function useExternalOrderProvider() {
     liveHealth,
     orders,
     previewOrders,
+    scanOrders,
+    scanStats,
     discoveredLocations,
     discoveredLocationsMeta,
     loading,
@@ -233,6 +285,7 @@ export function useExternalOrderProvider() {
     liveChecking,
     liveDiscovering,
     livePreviewing,
+    liveScanning,
     liveSyncing,
     error,
     syncMessage,
@@ -246,6 +299,7 @@ export function useExternalOrderProvider() {
     checkLiveConfig,
     discoverLiveLocations,
     previewLiveOrders,
+    scanLiveDeliveryOrders,
     runLiveSync,
     formatTotal: formatCents,
   };

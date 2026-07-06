@@ -122,9 +122,16 @@ function normalizeBarnetItems(rawItems: unknown): ExternalProviderOrderItem[] {
   });
 }
 
+export type BarnetOrderKind = "delivery" | "pickup" | "unknown";
+
+/** Strict Barnet order classification based on is_delivery. */
+export function classifyBarnetOrder(order: BarnetOrderRaw): BarnetOrderKind {
+  if (order.is_delivery === undefined || order.is_delivery === null) return "unknown";
+  return coerceBoolean(order.is_delivery) ? "delivery" : "pickup";
+}
+
 export function isBarnetDeliveryOrder(order: BarnetOrderRaw): boolean {
-  if (order.is_delivery === undefined || order.is_delivery === null) return false;
-  return coerceBoolean(order.is_delivery);
+  return classifyBarnetOrder(order) === "delivery";
 }
 
 /**

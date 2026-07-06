@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import {
   ArrowLeft, Phone, MapPin, Package, PenTool, Camera, IdCard,
-  CheckCircle2, Circle, Truck, ChevronRight,
+  CheckCircle2, Circle, Truck, ChevronRight, Inbox, ClipboardList,
 } from "lucide-react";
 import { OrderStatusBadge } from "@/components/dash/status-badge";
 import { ProofCaptureSheet, ProofThumbnail } from "@/components/dash/driver/proof-capture";
@@ -188,6 +188,22 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
                 </a>
               </div>
               <div className="mt-2 text-sm">ETA <span className="font-semibold">{order.eta}</span></div>
+              {(order.receivedAt || order.assignedAt) && (
+                <div className="mt-3 space-y-1.5 rounded-xl bg-secondary/50 px-3 py-2 text-xs">
+                  {order.receivedAt && (
+                    <div className="flex items-center gap-1.5 text-muted-foreground">
+                      <Inbox className="h-3.5 w-3.5 shrink-0" />
+                      <span>Order received <span className="font-medium text-foreground">{order.receivedAt}</span></span>
+                    </div>
+                  )}
+                  {order.assignedAt && (
+                    <div className="flex items-center gap-1.5 text-muted-foreground">
+                      <ClipboardList className="h-3.5 w-3.5 shrink-0" />
+                      <span>Assigned to you <span className="font-medium text-foreground">{order.assignedAt}</span></span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">

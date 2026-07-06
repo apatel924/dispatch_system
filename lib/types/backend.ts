@@ -94,6 +94,7 @@ export interface Order {
   completedSteps: DeliveryStepKey[];
   createdAt: string;
   updatedAt: string;
+  assignedAt?: string;
   deliveredAt?: string;
   scheduledFor?: string;
   createdBy?: string;

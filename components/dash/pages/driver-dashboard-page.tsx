@@ -1,7 +1,7 @@
 'use client'
 
 import Link from "next/link";
-import { Bell, ClipboardList, CheckCircle2, Package, Clock, MapPin, ChevronRight, Truck } from "lucide-react";
+import { Bell, ClipboardList, CheckCircle2, Package, Clock, MapPin, ChevronRight, Truck, Inbox } from "lucide-react";
 import { useState } from "react";
 import { Logo } from "@/components/dash/brand/logo";
 import { OrderStatusBadge } from "@/components/dash/status-badge";
@@ -79,6 +79,7 @@ export function DriverDashboard() {
                   <div className="mt-2 flex items-center gap-1 text-sm">
                     <Clock className="h-4 w-4 text-muted-foreground" /> ETA {active.eta}
                   </div>
+                  <OrderTimestamps order={active} />
                 </div>
               </div>
               <div className="mt-4 grid grid-cols-2 gap-2">
@@ -105,6 +106,7 @@ export function DriverDashboard() {
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-bold">{o.id}</div>
                       <div className="truncate text-sm">{o.customer}</div>
+                      <OrderTimestamps order={o} compact />
                     </div>
                     <div className="text-right">
                       <OrderStatusBadge status={o.status} />
@@ -154,6 +156,36 @@ function MiniStat({ icon: Icon, tone, value, label }: { icon: React.ElementType;
         <div className="text-xl font-bold leading-none">{value}</div>
       </div>
       <div className="mt-2 text-[11px] text-muted-foreground">{label}</div>
+    </div>
+  );
+}
+
+function OrderTimestamps({ order, compact }: { order: { receivedAt?: string; assignedAt?: string }; compact?: boolean }) {
+  if (!order.receivedAt && !order.assignedAt) return null;
+
+  if (compact) {
+    return (
+      <div className="mt-1 space-y-0.5 text-[11px] text-muted-foreground">
+        {order.receivedAt && <div>Received {order.receivedAt}</div>}
+        {order.assignedAt && <div>Assigned {order.assignedAt}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 space-y-1 rounded-lg bg-secondary/50 px-3 py-2 text-xs">
+      {order.receivedAt && (
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <Inbox className="h-3.5 w-3.5 shrink-0" />
+          <span>Received <span className="font-medium text-foreground">{order.receivedAt}</span></span>
+        </div>
+      )}
+      {order.assignedAt && (
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <ClipboardList className="h-3.5 w-3.5 shrink-0" />
+          <span>Assigned <span className="font-medium text-foreground">{order.assignedAt}</span></span>
+        </div>
+      )}
     </div>
   );
 }

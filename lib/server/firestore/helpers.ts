@@ -90,6 +90,7 @@ export function docToOrder(id: string, data: FirebaseFirestore.DocumentData): Or
     completedSteps: asStringArray(data.completedSteps) as DeliveryStepKey[],
     createdAt: asString(data.createdAt),
     updatedAt: asString(data.updatedAt),
+    assignedAt: data.assignedAt ? asString(data.assignedAt) : undefined,
     deliveredAt: data.deliveredAt ? asString(data.deliveredAt) : undefined,
     scheduledFor: data.scheduledFor ? asString(data.scheduledFor) : undefined,
     createdBy: data.createdBy ? asString(data.createdBy) : undefined,

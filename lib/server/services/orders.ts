@@ -89,11 +89,13 @@ export async function createOrder(
 
   let assignedDriverId: string | null = input.assignedDriverId ?? null;
   let assignedDriverName: string | null = null;
+  let assignedAt: string | undefined;
   let status: OrderStatus = "New";
 
   if (assignedDriverId) {
     const driver = await getDriverById(assignedDriverId);
     assignedDriverName = driver.name;
+    assignedAt = now;
     status = "Assigned";
   }
 
@@ -114,6 +116,7 @@ export async function createOrder(
     deliveryWindow: input.deliveryWindow,
     assignedDriverId,
     assignedDriverName,
+    assignedAt,
     status,
     paymentStatus: input.paymentStatus ?? "Pending",
     paymentMethod: input.paymentMethod,
@@ -273,6 +276,7 @@ export async function assignDriver(
   await ref.update({
     assignedDriverId: driverId,
     assignedDriverName: driver.name,
+    assignedAt: now,
     status: "Assigned",
     updatedAt: now,
   });

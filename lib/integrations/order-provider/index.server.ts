@@ -7,6 +7,7 @@ import {
 } from "@/lib/integrations/order-provider/env.server";
 import { diagnoseBarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-order-diagnostics";
 import { fetchBarnetOrders } from "@/lib/integrations/order-provider/barnet-client.server";
+import { scanBarnetOrderPages } from "@/lib/integrations/order-provider/scan-barnet-orders.server";
 import {
   fetchMockProviderOrders,
   getMockProviderName,
@@ -14,13 +15,13 @@ import {
 import { normalizeExternalOrder } from "@/lib/integrations/order-provider/normalize-order";
 import {
   barnetDocumentId,
-  isBarnetDeliveryOrder,
   normalizeBarnetOrder,
 } from "@/lib/integrations/order-provider/normalize-barnet-order";
 import { toSafeExternalOrder } from "@/lib/integrations/order-provider/safe-external-order";
 import type {
   ExternalOrderProviderHealth,
   ExternalOrderSyncResult,
+  LiveDeliveryScanResult,
   LiveOrderPreviewResult,
   LiveOrderProviderHealth,
   NormalizedExternalOrder,
@@ -58,9 +59,7 @@ export function getLiveOrderProviderHealth(): LiveOrderProviderHealth {
   };
 }
 
-export async function previewLiveExternalOrders(
-  options?: { page?: number; itemsOnPage?: number },
-): Promise<LiveOrderPreviewResult> {
+export async function previewLiveExternalOrders(): Promise<LiveOrderPreviewResult> {
   assertLiveOrdersReadsAllowed();
 
   const config = getExternalOrderProviderConfig();
@@ -69,11 +68,8 @@ export async function previewLiveExternalOrders(
     throw new Error("EXTERNAL_ORDER_LOCATION_ID is required for live preview");
   }
 
-  const page = options?.page ?? 1;
-  const itemsOnPage = options?.itemsOnPage ?? 10;
-  const rawOrders = await fetchBarnetOrders({ page, itemsOnPage });
-  const deliveryOrders = rawOrders.filter(isBarnetDeliveryOrder);
-  const orders: SafeExternalOrder[] = deliveryOrders.map((rawOrder) => {
+  const scan = await scanBarnetOrderPages();
+  const orders: SafeExternalOrder[] = scan.deliveryOrders.map((rawOrder) => {
     const normalized = normalizeBarnetOrder(rawOrder);
     const diagnostics = diagnoseBarnetOrderRaw(rawOrder);
     return toSafeExternalOrder(normalized, diagnostics);
@@ -84,25 +80,59 @@ export async function previewLiveExternalOrders(
     mode: "live",
     orders,
     total: orders.length,
-    page,
-    itemsOnPage,
+    pagesScanned: scan.pagesScanned,
+    totalOrdersSeen: scan.totalOrdersSeen,
+    deliveryOrdersFound: scan.deliveryOrdersFound,
+    pickupOrdersIgnored: scan.pickupOrdersIgnored,
+    unknownOrdersIgnored: scan.unknownOrdersIgnored,
+    pagesConfigured: scan.pagesConfigured,
+    itemsOnPage: scan.itemsPerPage,
     locationId,
   };
 }
 
 /**
- * Loads live Barnet orders (read-only GET), normalizes delivery orders, and upserts into Firestore.
- * Document IDs are stable: barnet_<externalOrderId>.
+ * Read-only multi-page scan for delivery orders. Does not write to Firestore.
  */
-export async function syncLiveExternalOrders(
-  options?: { page?: number; itemsOnPage?: number },
-): Promise<ExternalOrderSyncResult> {
+export async function scanLiveExternalDeliveryOrders(): Promise<LiveDeliveryScanResult> {
+  assertLiveOrdersReadsAllowed();
+
+  const config = getExternalOrderProviderConfig();
+  const locationId = config.locationId;
+  if (!locationId) {
+    throw new Error("EXTERNAL_ORDER_LOCATION_ID is required for delivery scan");
+  }
+
+  const scan = await scanBarnetOrderPages();
+  const orders: SafeExternalOrder[] = scan.deliveryOrders.map((rawOrder) => {
+    const normalized = normalizeBarnetOrder(rawOrder);
+    const diagnostics = diagnoseBarnetOrderRaw(rawOrder);
+    return toSafeExternalOrder(normalized, diagnostics);
+  });
+
+  return {
+    ok: true,
+    mode: "live",
+    orders,
+    pagesScanned: scan.pagesScanned,
+    totalOrdersSeen: scan.totalOrdersSeen,
+    deliveryOrdersFound: scan.deliveryOrdersFound,
+    pickupOrdersIgnored: scan.pickupOrdersIgnored,
+    unknownOrdersIgnored: scan.unknownOrdersIgnored,
+    pagesConfigured: scan.pagesConfigured,
+    itemsPerPage: scan.itemsPerPage,
+    locationId,
+  };
+}
+
+/**
+ * Loads live Barnet orders (read-only GET across configured pages), normalizes delivery orders,
+ * and upserts into Firestore. Document IDs are stable: barnet_<externalOrderId>.
+ */
+export async function syncLiveExternalOrders(): Promise<ExternalOrderSyncResult> {
   assertLiveSyncAllowed();
 
-  const page = options?.page ?? 1;
-  const itemsOnPage = options?.itemsOnPage ?? 50;
-  const rawOrders = await fetchBarnetOrders({ page, itemsOnPage });
-  const deliveryOrders = rawOrders.filter(isBarnetDeliveryOrder);
+  const scan = await scanBarnetOrderPages();
 
   const db = getAdminFirestore();
   const now = new Date().toISOString();
@@ -110,7 +140,7 @@ export async function syncLiveExternalOrders(
   let inserted = 0;
   let updated = 0;
 
-  for (const rawOrder of deliveryOrders) {
+  for (const rawOrder of scan.deliveryOrders) {
     const normalized = normalizeBarnetOrder(rawOrder, { now });
     const docRef = db.collection(COLLECTION).doc(barnetDocumentId(normalized.externalOrderId));
     const existing = await docRef.get();
@@ -136,13 +166,18 @@ export async function syncLiveExternalOrders(
   }
 
   const result: ExternalOrderSyncResult = {
+    pagesScanned: scan.pagesScanned,
+    totalOrdersSeen: scan.totalOrdersSeen,
+    deliveryOrdersFound: scan.deliveryOrdersFound,
+    pickupOrdersIgnored: scan.pickupOrdersIgnored,
+    unknownOrdersIgnored: scan.unknownOrdersIgnored,
     inserted,
     updated,
     total: inserted + updated,
   };
 
   console.info(
-    `[order-provider] live sync complete: inserted=${result.inserted} updated=${result.updated}`,
+    `[order-provider] live sync complete: pages=${result.pagesScanned} seen=${result.totalOrdersSeen} delivery=${result.deliveryOrdersFound} inserted=${result.inserted} updated=${result.updated}`,
   );
 
   return result;
@@ -206,6 +241,11 @@ export async function syncMockExternalOrders(): Promise<ExternalOrderSyncResult>
   }
 
   const result: ExternalOrderSyncResult = {
+    pagesScanned: 1,
+    totalOrdersSeen: rawOrders.length,
+    deliveryOrdersFound: rawOrders.length,
+    pickupOrdersIgnored: 0,
+    unknownOrdersIgnored: 0,
     inserted,
     updated,
     total: inserted + updated,
@@ -252,6 +292,7 @@ export {
 } from "@/lib/integrations/order-provider/safe-external-order";
 export {
   barnetDocumentId,
+  classifyBarnetOrder,
   isBarnetDeliveryOrder,
   normalizeBarnetOrder,
   normalizeBarnetOrders,

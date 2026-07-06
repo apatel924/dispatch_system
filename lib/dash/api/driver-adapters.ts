@@ -1,6 +1,7 @@
 import type { Order, ProofAsset } from "@/lib/types/backend";
 import type { DriverOrder, DriverProfile as UiDriverProfile } from "@/lib/dash/driver-mock-data";
 import type { DriverProfile as ApiDriverProfile } from "@/lib/types/backend";
+import { formatDisplayDateTime } from "@/lib/dash/api/adapters";
 import {
   completedOrders as mockCompleted,
   CURRENT_DRIVER,
@@ -20,6 +21,9 @@ const ACTIVE_STATUSES = new Set([
 ]);
 
 export function orderToDriverOrder(order: Order): DriverOrder {
+  const received = formatDisplayDateTime(order.createdAt);
+  const assigned = order.assignedAt ? formatDisplayDateTime(order.assignedAt) : null;
+
   return {
     id: order.id,
     customer: order.customerName,
@@ -33,6 +37,8 @@ export function orderToDriverOrder(order: Order): DriverOrder {
     total: order.totalDisplay,
     eta: order.eta ?? "—",
     notes: order.notes,
+    receivedAt: received.combined,
+    assignedAt: assigned?.combined,
   };
 }
 

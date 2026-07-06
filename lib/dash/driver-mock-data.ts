@@ -13,6 +13,8 @@ export interface DriverOrder {
   total: string;
   eta: string;
   notes?: string;
+  receivedAt?: string;
+  assignedAt?: string;
 }
 
 export interface DriverProfile {
@@ -58,6 +60,8 @@ export const driverOrders: DriverOrder[] = [
     total: "$18.50",
     eta: "12:15 PM",
     notes: "Deliver to receiving dock. Ring bell. Verify recipient.",
+    receivedAt: "May 16, 8:12 AM",
+    assignedAt: "May 16, 8:15 AM",
   },
   {
     id: "QRX-10191",
@@ -71,6 +75,8 @@ export const driverOrders: DriverOrder[] = [
     total: "$58.00",
     eta: "10:45 AM",
     notes: "Leave with front desk if no one available.",
+    receivedAt: "May 16, 9:01 AM",
+    assignedAt: "May 16, 9:05 AM",
   },
   {
     id: "QRX-10192",
@@ -83,6 +89,8 @@ export const driverOrders: DriverOrder[] = [
     payment: "Paid",
     total: "$75.50",
     eta: "11:30 AM",
+    receivedAt: "May 16, 7:45 AM",
+    assignedAt: "May 16, 7:50 AM",
   },
   {
     id: "QRX-10193",
@@ -95,6 +103,8 @@ export const driverOrders: DriverOrder[] = [
     payment: "Paid",
     total: "$32.15",
     eta: "2:15 PM",
+    receivedAt: "May 16, 10:30 AM",
+    assignedAt: "May 16, 10:32 AM",
   },
 ];
 

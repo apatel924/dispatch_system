@@ -29,11 +29,14 @@ export function SettingsPage() {
     liveHealth,
     orders: syncedExternalOrders,
     previewOrders,
+    scanOrders,
+    scanStats,
     loading: externalOrdersLoading,
     syncing,
     liveChecking,
     liveDiscovering,
     livePreviewing,
+    liveScanning,
     liveSyncing,
     error: providerError,
     syncMessage,
@@ -48,6 +51,7 @@ export function SettingsPage() {
     checkLiveConfig,
     discoverLiveLocations,
     previewLiveOrders,
+    scanLiveDeliveryOrders,
     runLiveSync,
     formatTotal,
   } = useExternalOrderProvider();
@@ -77,6 +81,10 @@ export function SettingsPage() {
 
   const handlePreviewLiveOrders = async () => {
     await previewLiveOrders();
+  };
+
+  const handleScanLiveDeliveryOrders = async () => {
+    await scanLiveDeliveryOrders();
   };
 
   const handleRunLiveSync = async () => {
@@ -285,6 +293,20 @@ export function SettingsPage() {
                   <Download className="h-4 w-4" />
                   {livePreviewing ? "Previewing…" : "Preview Live Orders"}
                 </button>
+                <button
+                  disabled={
+                    liveScanning ||
+                    isMockMode ||
+                    !liveReadsEnabled ||
+                    !ordersConfigured ||
+                    !isApiEnabled()
+                  }
+                  onClick={handleScanLiveDeliveryOrders}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-4 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-50"
+                >
+                  <Activity className="h-4 w-4" />
+                  {liveScanning ? "Scanning…" : "Scan First 5 Pages for Delivery Orders"}
+                </button>
                 {liveSyncEnabled && (
                   <button
                     disabled={
@@ -308,6 +330,15 @@ export function SettingsPage() {
                     <span>Location: {liveHealth.locationId}</span>
                   )}
                   {liveHealth.hasOtp && <span>OTP: configured</span>}
+                </div>
+              )}
+              {scanStats && (
+                <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  <span>Pages scanned: {scanStats.pagesScanned}</span>
+                  <span>Total seen: {scanStats.totalOrdersSeen}</span>
+                  <span>Delivery: {scanStats.deliveryOrdersFound}</span>
+                  <span>Pickup ignored: {scanStats.pickupOrdersIgnored}</span>
+                  <span>Unknown ignored: {scanStats.unknownOrdersIgnored}</span>
                 </div>
               )}
               {liveMessage && (
@@ -409,6 +440,40 @@ export function SettingsPage() {
                             ? order.diagnostics.missingFields.join(", ")
                             : "—"}
                         </td>
+                        <td className="px-3 py-2">{formatTotal(order.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {scanOrders.length > 0 && (
+              <div className="mt-4 overflow-hidden rounded-lg border border-dashed border-border">
+                <div className="border-b border-border bg-secondary/40 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Delivery scan results (read-only, not saved to Firestore)
+                </div>
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-border bg-secondary/20 text-xs uppercase tracking-wide text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">ID</th>
+                      <th className="px-3 py-2 font-medium">Order #</th>
+                      <th className="px-3 py-2 font-medium">Status</th>
+                      <th className="px-3 py-2 font-medium">Delivery Status</th>
+                      <th className="px-3 py-2 font-medium">Items</th>
+                      <th className="px-3 py-2 font-medium">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {scanOrders.map((order) => (
+                      <tr key={`scan-${order.externalOrderId}`}>
+                        <td className="px-3 py-2 font-medium">{order.externalOrderId}</td>
+                        <td className="px-3 py-2">
+                          {order.externalOrderNumber ?? "—"}
+                        </td>
+                        <td className="px-3 py-2 capitalize">{order.status}</td>
+                        <td className="px-3 py-2">{order.deliveryStatus ?? "—"}</td>
+                        <td className="px-3 py-2">{order.itemsCount}</td>
                         <td className="px-3 py-2">{formatTotal(order.total)}</td>
                       </tr>
                     ))}

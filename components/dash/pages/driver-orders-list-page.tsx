@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { Package, ChevronRight, Search } from "lucide-react";
+import { Package, ChevronRight, Search, Inbox, ClipboardList } from "lucide-react";
+import type { DriverOrder } from "@/lib/dash/driver-mock-data";
 import { OrderStatusBadge } from "@/components/dash/status-badge";
 import { DriverBottomNav } from "@/components/dash/driver/bottom-nav";
 import { useDriverOrders } from "@/lib/dash/hooks/use-driver-orders";
@@ -65,6 +66,7 @@ export function DriverOrdersList() {
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-bold">{o.id}</div>
                     <div className="truncate text-sm">{o.customer}</div>
+                    <OrderTimestamps order={o} />
                   </div>
                   <div className="text-right">
                     <OrderStatusBadge status={o.status} />
@@ -96,6 +98,25 @@ export function DriverOrdersList() {
         </div>
       </div>
       <DriverBottomNav />
+    </div>
+  );
+}
+
+function OrderTimestamps({ order }: { order: Pick<DriverOrder, "receivedAt" | "assignedAt"> }) {
+  if (!order.receivedAt && !order.assignedAt) return null;
+
+  return (
+    <div className="mt-1 space-y-0.5 text-[11px] text-muted-foreground">
+      {order.receivedAt && (
+        <div className="flex items-center gap-1">
+          <Inbox className="h-3 w-3 shrink-0" /> Received {order.receivedAt}
+        </div>
+      )}
+      {order.assignedAt && (
+        <div className="flex items-center gap-1">
+          <ClipboardList className="h-3 w-3 shrink-0" /> Assigned {order.assignedAt}
+        </div>
+      )}
     </div>
   );
 }

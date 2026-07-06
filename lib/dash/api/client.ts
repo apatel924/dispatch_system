@@ -188,8 +188,27 @@ export interface LiveOrderPreviewResponse {
   mode: "live";
   orders: ExternalOrderRow[];
   total: number;
-  page: number;
+  pagesScanned: number;
+  totalOrdersSeen: number;
+  deliveryOrdersFound: number;
+  pickupOrdersIgnored: number;
+  unknownOrdersIgnored: number;
+  pagesConfigured: number;
   itemsOnPage: number;
+  locationId: string;
+}
+
+export interface LiveDeliveryScanResponse {
+  ok: boolean;
+  mode: "live";
+  orders: ExternalOrderRow[];
+  pagesScanned: number;
+  totalOrdersSeen: number;
+  deliveryOrdersFound: number;
+  pickupOrdersIgnored: number;
+  unknownOrdersIgnored: number;
+  pagesConfigured: number;
+  itemsPerPage: number;
   locationId: string;
 }
 
@@ -230,6 +249,11 @@ export interface LiveLocationsResponse {
 export interface OrderProviderSyncResponse {
   ok: boolean;
   mode: "mock" | "live";
+  pagesScanned: number;
+  totalOrdersSeen: number;
+  deliveryOrdersFound: number;
+  pickupOrdersIgnored: number;
+  unknownOrdersIgnored: number;
   inserted: number;
   updated: number;
   total: number;
@@ -298,6 +322,10 @@ export async function fetchLiveOrderProviderHealth(params?: {
 
 export async function previewLiveExternalOrdersApi(): Promise<LiveOrderPreviewResponse> {
   return adminFetch("/api/integrations/order-provider/live-preview");
+}
+
+export async function scanLiveDeliveryOrdersApi(): Promise<LiveDeliveryScanResponse> {
+  return adminFetch("/api/integrations/order-provider/live-delivery-scan");
 }
 
 export async function fetchLiveLocations(): Promise<LiveLocationsResponse> {

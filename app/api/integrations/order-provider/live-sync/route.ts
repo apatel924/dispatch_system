@@ -17,14 +17,7 @@ export async function POST(request: Request) {
   if (isErrorResponse(user)) return user;
 
   try {
-    const url = new URL(request.url);
-    const page = Math.max(Number(url.searchParams.get("page") ?? 1), 1);
-    const itemsOnPage = Math.min(
-      Math.max(Number(url.searchParams.get("itemsOnPage") ?? 50), 1),
-      100,
-    );
-
-    const result = await syncLiveExternalOrders({ page, itemsOnPage });
+    const result = await syncLiveExternalOrders();
     return NextResponse.json({
       ok: true,
       mode: "live",

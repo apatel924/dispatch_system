@@ -2,7 +2,8 @@
 
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { signOutUser } from "@/lib/auth/firebase-client";
 import {
   LayoutDashboard,
   ClipboardList,
@@ -31,7 +32,19 @@ const nav = [
 
 export function DashboardLayout({ title, children, actions }: { title: string; children: ReactNode; actions?: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
+
+  const handleSignOut = async () => {
+    setSigningOut(true);
+    try {
+      await signOutUser();
+      router.push("/");
+    } catch {
+      setSigningOut(false);
+    }
+  };
 
   return (
     <TooltipProvider delayDuration={100}>
@@ -80,17 +93,27 @@ export function DashboardLayout({ title, children, actions }: { title: string; c
             {collapsed ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Link href="/" className="flex items-center justify-center rounded-lg px-2 py-2.5 text-sm text-sidebar-foreground hover:bg-secondary">
+                  <button
+                    type="button"
+                    onClick={handleSignOut}
+                    disabled={signingOut}
+                    className="flex w-full items-center justify-center rounded-lg px-2 py-2.5 text-sm text-sidebar-foreground hover:bg-secondary disabled:opacity-60"
+                  >
                     <LogOut className="h-5 w-5" />
-                  </Link>
+                  </button>
                 </TooltipTrigger>
-                <TooltipContent side="right">Log out</TooltipContent>
+                <TooltipContent side="right">{signingOut ? "Signing out…" : "Log out"}</TooltipContent>
               </Tooltip>
             ) : (
-              <Link href="/" className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-sidebar-foreground hover:bg-secondary">
+              <button
+                type="button"
+                onClick={handleSignOut}
+                disabled={signingOut}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-sidebar-foreground hover:bg-secondary disabled:opacity-60"
+              >
                 <LogOut className="h-5 w-5" />
-                <span>Log out</span>
-              </Link>
+                <span>{signingOut ? "Signing out…" : "Log out"}</span>
+              </button>
             )}
           </div>
         </aside>

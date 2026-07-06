@@ -1,14 +1,27 @@
 'use client'
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Phone, Mail, Truck, LogOut, ChevronRight, Bell } from "lucide-react";
 import { DriverBottomNav } from "@/components/dash/driver/bottom-nav";
 import { useDriverSession } from "@/lib/dash/hooks/use-driver-session";
+import { signOutUser } from "@/lib/auth/firebase-client";
 
 export function DriverAccountPage() {
+  const router = useRouter();
   const [notifications, setNotifications] = useState(true);
+  const [signingOut, setSigningOut] = useState(false);
   const { driver, loading } = useDriverSession();
+
+  const handleSignOut = async () => {
+    setSigningOut(true);
+    try {
+      await signOutUser();
+      router.push("/driver-login");
+    } catch {
+      setSigningOut(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background pb-24">
@@ -52,12 +65,14 @@ export function DriverAccountPage() {
           </button>
         </div>
 
-        <Link
-          href="/driver-login"
-          className="mt-6 flex h-12 items-center justify-center gap-2 rounded-xl border border-border text-sm font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground"
+        <button
+          type="button"
+          onClick={handleSignOut}
+          disabled={signingOut}
+          className="mt-6 flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-border text-sm font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-60"
         >
-          <LogOut className="h-4 w-4" /> Sign Out
-        </Link>
+          <LogOut className="h-4 w-4" /> {signingOut ? "Signing out…" : "Sign Out"}
+        </button>
       </div>
       <DriverBottomNav />
     </div>

@@ -6,6 +6,7 @@ import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { Logo } from "@/components/dash/brand/logo";
 import { useAdminImportLogs } from "@/lib/dash/hooks/use-admin-import";
+import { useExternalOrderProvider } from "@/lib/dash/hooks/use-external-order-provider";
 import type { MockImportSource } from "@/lib/import/mock-fixtures";
 
 const IMPORT_PROVIDERS: { id: MockImportSource; label: string }[] = [
@@ -22,6 +23,16 @@ const IMPORT_STATUS_STYLES: Record<string, string> = {
 
 export function SettingsPage() {
   const { logs, loading, error, runMockImport } = useAdminImportLogs();
+  const {
+    health: providerHealth,
+    orders: syncedExternalOrders,
+    loading: externalOrdersLoading,
+    syncing,
+    error: providerError,
+    syncMessage,
+    runMockSync,
+    formatTotal,
+  } = useExternalOrderProvider();
   const [selectedSource, setSelectedSource] = useState<MockImportSource>("mock-uber");
   const [importMessage, setImportMessage] = useState<string | null>(null);
 
@@ -29,6 +40,13 @@ export function SettingsPage() {
     setImportMessage(null);
     const result = await runMockImport(selectedSource);
     setImportMessage(result.message);
+  };
+
+  const handleRunMockSync = async () => {
+    const result = await runMockSync();
+    if (!result.ok) {
+      // syncMessage/error handled in hook
+    }
   };
   return (
     <DashboardLayout title="Settings" actions={
@@ -120,6 +138,94 @@ export function SettingsPage() {
               </div>
             </SectionCard>
           </div>
+
+          <SectionCard
+            title="External Order Provider (Mock)"
+            icon={<Activity className="h-4 w-4" />}
+            description="Scaffold for future authorized order syncing. Mock mode only — no live external APIs."
+          >
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <span className="rounded-md border border-border bg-secondary/40 px-2.5 py-1 font-medium">
+                Mode: {providerHealth?.mode ?? "—"}
+              </span>
+              <span
+                className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
+                  providerHealth?.ok
+                    ? "bg-success-soft text-success"
+                    : "bg-primary/10 text-primary"
+                }`}
+              >
+                {providerHealth?.ok ? "Health OK" : "Health unavailable"}
+              </span>
+              {providerHealth && (
+                <span className="text-xs text-muted-foreground">
+                  Configured: {providerHealth.configured ? "Yes" : "No"}
+                </span>
+              )}
+            </div>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                disabled={syncing || providerHealth?.mode !== "mock"}
+                onClick={handleRunMockSync}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                <Download className="h-4 w-4" />
+                {syncing ? "Syncing…" : "Run Mock Sync"}
+              </button>
+              {syncMessage && (
+                <span className="text-sm text-muted-foreground">{syncMessage}</span>
+              )}
+              {providerError && !syncMessage && (
+                <span className="text-sm text-primary">{providerError}</span>
+              )}
+            </div>
+            <div className="mt-4 overflow-hidden rounded-lg border border-border">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-border bg-secondary/40 text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Order #</th>
+                    <th className="px-3 py-2 font-medium">Customer</th>
+                    <th className="px-3 py-2 font-medium">Status</th>
+                    <th className="px-3 py-2 font-medium">Delivery</th>
+                    <th className="px-3 py-2 font-medium">Total</th>
+                    <th className="px-3 py-2 font-medium">Updated</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {externalOrdersLoading && syncedExternalOrders.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
+                        Loading synced orders…
+                      </td>
+                    </tr>
+                  ) : syncedExternalOrders.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
+                        No synced external orders yet — run mock sync to populate
+                      </td>
+                    </tr>
+                  ) : (
+                    syncedExternalOrders.map((order) => (
+                      <tr key={order.externalOrderId}>
+                        <td className="px-3 py-2 font-medium">
+                          {order.externalOrderNumber ?? order.externalOrderId}
+                        </td>
+                        <td className="px-3 py-2">{order.customerName ?? "—"}</td>
+                        <td className="px-3 py-2 capitalize">{order.status}</td>
+                        <td className="px-3 py-2 capitalize">
+                          {order.deliveryStatus ?? "—"}
+                        </td>
+                        <td className="px-3 py-2">{formatTotal(order.total)}</td>
+                        <td className="px-3 py-2 text-xs text-muted-foreground">
+                          {order.updatedAt}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </SectionCard>
 
           <SectionCard
             title="Order Integrations (Mock)"

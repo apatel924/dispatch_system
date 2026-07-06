@@ -13,7 +13,8 @@
     "start": "next start",
     "optimize:images": "node scripts/optimize-public-media.mjs",
     "process:knockout-backgrounds": "node scripts/knockout-white-background.mjs",
-    "seed:firebase": "node scripts/seed-firebase.mjs"
+    "seed:firebase": "node scripts/seed-firebase.mjs",
+    "order-provider:health": "node scripts/check-order-provider-health.mjs"
   },
   "dependencies": {
     "@radix-ui/react-tooltip": "^1.2.11",

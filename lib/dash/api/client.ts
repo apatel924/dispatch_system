@@ -159,3 +159,59 @@ export async function fetchReportsOverview(params?: {
   const query = qs.toString();
   return adminFetch(`/api/reports/overview${query ? `?${query}` : ""}`);
 }
+
+export interface OrderProviderHealthResponse {
+  ok: boolean;
+  mode: "mock" | "live";
+  configured: boolean;
+}
+
+export interface OrderProviderSyncResponse {
+  ok: boolean;
+  mode: "mock";
+  inserted: number;
+  updated: number;
+  total: number;
+}
+
+export interface ExternalOrderRow {
+  provider: string;
+  externalOrderId: string;
+  externalOrderNumber: string | null;
+  status: string;
+  deliveryStatus: string | null;
+  isDelivery: boolean;
+  total: number;
+  placedAt: string;
+  customerName: string | null;
+  customerPhone: string | null;
+  pickupAddress: string | null;
+  deliveryAddress: string | null;
+  deliveryInstructions: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function fetchOrderProviderHealth(): Promise<OrderProviderHealthResponse> {
+  const res = await fetch("/api/integrations/order-provider/health");
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const message =
+      typeof body.error === "string" ? body.error : res.statusText || "Health check failed";
+    throw new AdminApiError(message, res.status);
+  }
+  return res.json() as Promise<OrderProviderHealthResponse>;
+}
+
+export async function runOrderProviderMockSync(): Promise<OrderProviderSyncResponse> {
+  return adminFetch("/api/integrations/order-provider/mock-sync", { method: "POST" });
+}
+
+export async function fetchSyncedExternalOrders(params?: {
+  limit?: number;
+}): Promise<{ orders: ExternalOrderRow[]; total: number }> {
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set("limit", String(params.limit));
+  const query = qs.toString();
+  return adminFetch(`/api/integrations/order-provider/orders${query ? `?${query}` : ""}`);
+}

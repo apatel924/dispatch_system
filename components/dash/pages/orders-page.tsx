@@ -1,20 +1,20 @@
 'use client'
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Search, Filter, Bookmark, Download, MoreVertical, Calendar, ChevronDown, X } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { SectionCard } from "@/components/dash/ui/section-card";
-import { OrderStatusBadge, PaymentBadge } from "@/components/dash/status-badge";
+import { OrderStatusBadge } from "@/components/dash/status-badge";
 import { useAdminOrders } from "@/lib/dash/hooks/use-admin-orders";
 
 export function OrdersPage() {
+  const router = useRouter();
   const { orders, loading } = useAdminOrders();
 
   const filters = [
     { icon: Calendar, label: "Date Range", value: "May 10 – May 16, 2024" },
     { label: "Status", value: "All Statuses" },
     { label: "Driver", value: "All Drivers" },
-    { label: "Payment", value: "All Payment Types" },
     { label: "Delivery Area", value: "All Areas" },
   ];
 
@@ -62,8 +62,6 @@ export function OrdersPage() {
                 <th className="px-3 py-3 font-medium">Address</th>
                 <th className="px-3 py-3 font-medium">Driver</th>
                 <th className="px-3 py-3 font-medium">Status</th>
-                <th className="px-3 py-3 font-medium">Payment</th>
-                <th className="px-3 py-3 font-medium">Total</th>
                 <th className="px-3 py-3 font-medium">Created</th>
                 <th className="px-3 py-3 font-medium">Updated</th>
                 <th className="px-5 py-3 font-medium">Actions</th>
@@ -71,23 +69,35 @@ export function OrdersPage() {
             </thead>
             <tbody className="divide-y divide-border/60">
               {loading && orders.length === 0 ? (
-                <tr><td colSpan={13} className="px-5 py-8 text-center text-muted-foreground">Loading orders…</td></tr>
+                <tr><td colSpan={11} className="px-5 py-8 text-center text-muted-foreground">Loading orders…</td></tr>
               ) : (
                 orders.map((o) => (
-                  <tr key={o.id} className="hover:bg-secondary/30">
-                    <td className="px-5 py-3"><input type="checkbox" className="h-4 w-4 rounded border-input" /></td>
-                    <td className="px-3 py-3"><Link href={`/orders/${o.id}`} className="font-mono text-xs font-semibold text-foreground hover:text-primary">{o.id}</Link></td>
+                  <tr
+                    key={o.id}
+                    className="cursor-pointer hover:bg-secondary/30"
+                    onClick={() => router.push(`/orders/${o.id}`)}
+                  >
+                    <td className="px-5 py-3" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" className="h-4 w-4 rounded border-input" />
+                    </td>
+                    <td className="px-3 py-3 font-mono text-xs font-semibold text-foreground">{o.id}</td>
                     <td className="px-3 py-3 text-xs text-muted-foreground">{o.external}</td>
                     <td className="px-3 py-3">{o.customer}</td>
                     <td className="px-3 py-3 text-muted-foreground">{o.phone}</td>
                     <td className="px-3 py-3 max-w-[180px] truncate text-muted-foreground">{o.address}</td>
                     <td className="px-3 py-3">{o.driver ?? "—"}</td>
                     <td className="px-3 py-3"><OrderStatusBadge status={o.status} /></td>
-                    <td className="px-3 py-3"><PaymentBadge status={o.payment} /></td>
-                    <td className="px-3 py-3 font-medium">{o.total}</td>
                     <td className="px-3 py-3 text-xs text-muted-foreground">{o.created}</td>
                     <td className="px-3 py-3 text-xs text-muted-foreground">{o.updated}</td>
-                    <td className="px-5 py-3 text-right"><button className="rounded p-1 text-muted-foreground hover:bg-secondary"><MoreVertical className="h-4 w-4" /></button></td>
+                    <td className="px-5 py-3 text-right">
+                      <button
+                        type="button"
+                        className="rounded p-1 text-muted-foreground hover:bg-secondary"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <MoreVertical className="h-4 w-4" />
+                      </button>
+                    </td>
                   </tr>
                 ))
               )}

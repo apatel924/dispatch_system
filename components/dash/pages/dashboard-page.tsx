@@ -2,13 +2,13 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
+import { useRouter } from "next/navigation";
 import {
   FileText,
   UserPlus,
   Truck,
   CheckCircle2,
   XCircle,
-  DollarSign,
   Filter,
   MoreVertical,
   CheckCircle,
@@ -19,14 +19,14 @@ import {
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { StatCard } from "@/components/dash/ui/stat-card";
 import { SectionCard } from "@/components/dash/ui/section-card";
-import { OrderStatusBadge, PaymentBadge } from "@/components/dash/status-badge";
-import { recentActivity } from "@/lib/dash/mock-data";
+import { OrderStatusBadge } from "@/components/dash/status-badge";
 import { useAdminOrders } from "@/lib/dash/hooks/use-admin-orders";
 import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
 
 const ACTIVE_STATUSES = new Set(["Assigned", "Picked Up", "En Route", "Out for Delivery"]);
 
 export function DashboardPage() {
+  const router = useRouter();
   const { orders, loading: ordersLoading } = useAdminOrders({ limit: 50 });
   const { drivers, loading: driversLoading } = useAdminDrivers({ limit: 20 });
 
@@ -36,16 +36,35 @@ export function DashboardPage() {
     const active = orders.filter((o) => ACTIVE_STATUSES.has(o.status)).length;
     const completed = orders.filter((o) => o.status === "Delivered").length;
     const failedReturned = orders.filter((o) => o.status === "Failed" || o.status === "Returned").length;
-    const unpaid = orders.filter((o) => o.payment !== "Paid").length;
 
     return [
-      { label: "New Orders", value: newCount || 18, icon: FileText, tone: "info" as const, delta: "12%" },
-      { label: "Awaiting Assignment", value: awaiting || 27, icon: UserPlus, tone: "purple" as const, delta: "8%" },
-      { label: "Active Deliveries", value: active || 64, icon: Truck, tone: "orange" as const, delta: "15%" },
-      { label: "Completed Today", value: completed || 152, icon: CheckCircle2, tone: "success" as const, delta: "18%" },
-      { label: "Failed / Returned", value: failedReturned || 6, icon: XCircle, tone: "primary" as const, delta: "14%", trend: "down" as const },
-      { label: "Payment Pending", value: unpaid || "$4,890.50", icon: DollarSign, tone: "warning" as const, delta: "9%" },
+      { label: "New Orders", value: newCount, icon: FileText, tone: "info" as const, delta: "12%" },
+      { label: "Awaiting Assignment", value: awaiting, icon: UserPlus, tone: "purple" as const, delta: "8%" },
+      { label: "Active Deliveries", value: active, icon: Truck, tone: "orange" as const, delta: "15%" },
+      { label: "Completed Today", value: completed, icon: CheckCircle2, tone: "success" as const, delta: "18%" },
+      { label: "Failed / Returned", value: failedReturned, icon: XCircle, tone: "primary" as const, delta: "14%", trend: "down" as const },
     ];
+  }, [orders]);
+
+  const recentActivity = useMemo(() => {
+    return [...orders]
+      .sort((a, b) => b.updated.localeCompare(a.updated))
+      .slice(0, 5)
+      .map((o) => {
+        if (o.status === "Delivered") {
+          return { icon: "check" as const, tone: "success", title: `Order ${o.id} delivered successfully`, by: o.driver ?? "System", time: o.updated };
+        }
+        if (o.status === "Out for Delivery" || o.status === "En Route") {
+          return { icon: "truck" as const, tone: "orange", title: `Order ${o.id} is ${o.status.toLowerCase()}`, by: o.driver ?? "System", time: o.updated };
+        }
+        if (o.status === "Failed") {
+          return { icon: "x" as const, tone: "destructive", title: `Order ${o.id} marked as failed`, by: o.driver ?? "System", time: o.updated };
+        }
+        if (o.status === "Returned") {
+          return { icon: "refresh" as const, tone: "muted", title: `Order ${o.id} returned`, by: o.driver ?? "System", time: o.updated };
+        }
+        return { icon: "file" as const, tone: "info", title: `Order ${o.id} — ${o.status}`, by: o.driver ?? "System", time: o.updated };
+      });
   }, [orders]);
 
   const activeDrivers = drivers.slice(0, 5);
@@ -56,7 +75,7 @@ export function DashboardPage() {
 
   return (
     <DashboardLayout title="Dashboard">
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
         {stats.map((s) => <StatCard key={s.label} {...s} />)}
       </div>
 
@@ -79,7 +98,6 @@ export function DashboardPage() {
                   <th className="px-3 py-3 font-medium">Customer</th>
                   <th className="px-3 py-3 font-medium">Driver</th>
                   <th className="px-3 py-3 font-medium">Status</th>
-                  <th className="px-3 py-3 font-medium">Payment</th>
                   <th className="px-3 py-3 font-medium">Created</th>
                   <th className="px-3 py-3 font-medium">Last Updated</th>
                   <th className="px-5 py-3 font-medium">Action</th>
@@ -87,20 +105,29 @@ export function DashboardPage() {
               </thead>
               <tbody className="divide-y divide-border/60">
                 {ordersLoading && tableOrders.length === 0 ? (
-                  <tr><td colSpan={8} className="px-5 py-8 text-center text-muted-foreground">Loading orders…</td></tr>
+                  <tr><td colSpan={7} className="px-5 py-8 text-center text-muted-foreground">Loading orders…</td></tr>
                 ) : (
                   tableOrders.map((o) => (
-                    <tr key={o.id} className="hover:bg-secondary/30">
-                      <td className="px-5 py-3">
-                        <Link href={`/orders/${o.id}`} className="font-mono text-xs font-semibold text-foreground hover:text-primary">{o.id}</Link>
-                      </td>
+                    <tr
+                      key={o.id}
+                      className="cursor-pointer hover:bg-secondary/30"
+                      onClick={() => router.push(`/orders/${o.id}`)}
+                    >
+                      <td className="px-5 py-3 font-mono text-xs font-semibold text-foreground">{o.id}</td>
                       <td className="px-3 py-3 text-foreground">{o.customer}</td>
                       <td className="px-3 py-3 text-muted-foreground">{o.driver ?? "—"}</td>
                       <td className="px-3 py-3"><OrderStatusBadge status={o.status} /></td>
-                      <td className="px-3 py-3"><PaymentBadge status={o.payment} /></td>
                       <td className="px-3 py-3 text-xs text-muted-foreground">{o.created}</td>
                       <td className="px-3 py-3 text-xs text-muted-foreground">{o.updated}</td>
-                      <td className="px-5 py-3 text-right"><button className="rounded p-1 text-muted-foreground hover:bg-secondary"><MoreVertical className="h-4 w-4" /></button></td>
+                      <td className="px-5 py-3 text-right">
+                        <button
+                          type="button"
+                          className="rounded p-1 text-muted-foreground hover:bg-secondary"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </button>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -109,18 +136,16 @@ export function DashboardPage() {
           </div>
           <div className="flex items-center justify-between border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
             <span>Showing 1 to {tableOrders.length} of {orders.length} orders</span>
-            <div className="flex items-center gap-1">
-              {[1,2,3,4,5].map((n) => (
-                <button key={n} className={`h-7 w-7 rounded ${n===1?"border border-primary/40 text-primary":"hover:bg-secondary"}`}>{n}</button>
-              ))}
-            </div>
+            {orders.length > tableOrders.length && (
+              <span className="text-muted-foreground">View all on Orders page</span>
+            )}
           </div>
         </SectionCard>
 
         <div className="space-y-6">
           <SectionCard title="Driver Activity" action={<Link href="/drivers" className="text-xs font-semibold text-primary hover:underline">View All Drivers</Link>}>
             <div className="grid grid-cols-3 gap-3 pb-4">
-              {[["Available", availableCount || 12, "text-success"], ["Busy", busyCount || 18, "text-warning-foreground"], ["Completed Today", completedToday || 152, "text-success"]].map(([l, v, tone]) => (
+              {[["Available", availableCount, "text-success"], ["Busy", busyCount, "text-warning-foreground"], ["Completed Today", completedToday, "text-success"]].map(([l, v, tone]) => (
                 <div key={l as string} className="rounded-lg border border-border/60 bg-secondary/30 p-3 text-center">
                   <div className="text-[11px] text-muted-foreground">{l}</div>
                   <div className={`mt-1 text-lg font-bold ${tone}`}>{v}</div>

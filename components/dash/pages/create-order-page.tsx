@@ -1,23 +1,97 @@
 'use client'
 
-import { User2, MapPin, Package, DollarSign, Users, ClipboardCheck, Plus, ChevronDown, Info, Save } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { User2, MapPin, Package, Users, ClipboardCheck, Plus, ChevronDown, Info, Save } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { DriverStatusBadge } from "@/components/dash/status-badge";
+import { createOrderApi } from "@/lib/dash/api/client";
+import { isApiEnabled } from "@/lib/dash/api/config";
 import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
 
-
 export function CreateOrderPage() {
-  const { drivers } = useAdminDrivers({ limit: 12 });
-  const selectedDriver = drivers[0];
+  const router = useRouter();
+  const { drivers, loading: driversLoading } = useAdminDrivers({ limit: 12 });
+  const [selectedDriverId, setSelectedDriverId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [firstName, setFirstName] = useState("Maria");
+  const [lastName, setLastName] = useState("Sanchez");
+  const [phone, setPhone] = useState("(555) 301-6542");
+  const [email, setEmail] = useState("maria.sanchez@acmemfg.com");
+  const [company, setCompany] = useState("Acme Manufacturing");
+  const [pickupName, setPickupName] = useState("Northside Pharmacy");
+  const [pickupAddress, setPickupAddress] = useState("4567 Medical Dr, Dallas, TX 75231");
+  const [deliveryAddress, setDeliveryAddress] = useState("123 Industrial Way, Dallas, TX 75201");
+  const [unit, setUnit] = useState("Suite 200 / Buzz 42");
+  const [area, setArea] = useState("Dallas Central");
+  const [instructions, setInstructions] = useState("Ring doorbell. Leave with front desk if no one available.");
+  const [deliveryDate, setDeliveryDate] = useState("Today, May 16, 2025");
+  const [deliveryTime, setDeliveryTime] = useState("9:00 AM - 12:00 PM");
+  const [externalOrderId, setExternalOrderId] = useState("ORD-55872");
+  const [notes, setNotes] = useState("Handle with care. High value equipment.");
+
+  const selectedDriver = useMemo(
+    () => drivers.find((d) => d.id === selectedDriverId) ?? null,
+    [drivers, selectedDriverId],
+  );
+
+  useEffect(() => {
+    if (drivers.length > 0 && !selectedDriverId) {
+      setSelectedDriverId(drivers[0].id);
+    }
+  }, [drivers, selectedDriverId]);
+
   const steps = [
     { n: 1, label: "Customer Details", active: true, done: false },
     { n: 2, label: "Delivery Details", done: false },
     { n: 3, label: "Order Details", done: false },
-    { n: 4, label: "Payment Details", done: false },
-    { n: 5, label: "Driver Assignment", done: false },
-    { n: 6, label: "Review & Create", done: false },
+    { n: 4, label: "Driver Assignment", done: false },
+    { n: 5, label: "Review & Create", done: false },
   ];
+
+  const handleCreateOrder = async () => {
+    if (!selectedDriverId) {
+      setError("Please select a driver before creating the order.");
+      return;
+    }
+    if (!isApiEnabled()) {
+      setError("API mode is required to create orders. Set NEXT_PUBLIC_USE_API=true.");
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      const { order } = await createOrderApi({
+        customerName: `${firstName} ${lastName}`.trim(),
+        customerPhone: phone,
+        customerEmail: email || undefined,
+        companyName: company || undefined,
+        pickupName,
+        pickupAddress,
+        deliveryAddress,
+        deliveryUnit: unit || undefined,
+        deliveryArea: area || undefined,
+        deliveryInstructions: instructions || undefined,
+        deliveryWindow: `${deliveryDate}, ${deliveryTime}`,
+        externalOrderId: externalOrderId || undefined,
+        notes: notes || undefined,
+        totalCents: 12850,
+        assignedDriverId: selectedDriverId,
+        source: "manual",
+      });
+      router.push(`/orders/${order.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create order");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <DashboardLayout title="Create Order">
       {/* stepper */}
@@ -38,70 +112,68 @@ export function CreateOrderPage() {
           <div className="grid gap-6 md:grid-cols-2">
             <SectionCard title="1. Customer Details" icon={<User2 className="h-4 w-4" />}>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="First Name *" value="Maria" />
-                <Input label="Last Name *" value="Sanchez" />
-                <Input label="Phone Number *" value="(555) 301-6542" />
-                <Input label="Email" value="maria.sanchez@acmemfg.com" />
-                <div className="col-span-2"><Input label="Company / Business Name" value="Acme Manufacturing" /></div>
+                <Input label="First Name *" value={firstName} onChange={setFirstName} />
+                <Input label="Last Name *" value={lastName} onChange={setLastName} />
+                <Input label="Phone Number *" value={phone} onChange={setPhone} />
+                <Input label="Email" value={email} onChange={setEmail} />
+                <div className="col-span-2"><Input label="Company / Business Name" value={company} onChange={setCompany} /></div>
               </div>
               <div className="mt-3 flex items-center gap-2 rounded-lg border border-info/30 bg-info-soft/60 px-3 py-2 text-xs text-info"><Info className="h-3.5 w-3.5" /> Customer will receive order tracking and delivery notifications.</div>
             </SectionCard>
             <SectionCard title="2. Delivery Details" icon={<MapPin className="h-4 w-4" />}>
               <div className="space-y-3">
-                <Select label="Pickup Location *" value="Northside Pharmacy - 4567 Medical Dr, Dallas, TX 75231" />
-                <Input label="Delivery Address *" value="123 Industrial Way, Dallas, TX 75201" />
+                <Input label="Pickup Location *" value={`${pickupName} - ${pickupAddress}`} onChange={(v) => {
+                  const [name, ...rest] = v.split(" - ");
+                  setPickupName(name ?? "");
+                  setPickupAddress(rest.join(" - "));
+                }} />
+                <Input label="Delivery Address *" value={deliveryAddress} onChange={setDeliveryAddress} />
                 <div className="grid grid-cols-2 gap-3">
-                  <Input label="Unit / Buzzer" value="Suite 200 / Buzz 42" />
-                  <Select label="Delivery Area *" value="Dallas Central" />
+                  <Input label="Unit / Buzzer" value={unit} onChange={setUnit} />
+                  <Input label="Delivery Area *" value={area} onChange={setArea} />
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium">Delivery Instructions</label>
-                  <textarea rows={2} className="w-full rounded-lg border border-input bg-card p-2 text-sm outline-none focus:border-primary/50" defaultValue="Ring doorbell. Leave with front desk if no one available." />
+                  <textarea
+                    rows={2}
+                    value={instructions}
+                    onChange={(e) => setInstructions(e.target.value)}
+                    className="w-full rounded-lg border border-input bg-card p-2 text-sm outline-none focus:border-primary/50"
+                  />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <Select label="Delivery Window *" value="Today, May 16, 2025" />
-                  <Select label="" value="9:00 AM - 12:00 PM" />
+                  <Input label="Delivery Window *" value={deliveryDate} onChange={setDeliveryDate} />
+                  <Input label="" value={deliveryTime} onChange={setDeliveryTime} />
                 </div>
               </div>
             </SectionCard>
           </div>
 
-          <div className="grid gap-6 md:grid-cols-2">
-            <SectionCard title="3. Order Details" icon={<Package className="h-4 w-4" />}>
-              <div className="grid grid-cols-2 gap-3">
-                <Input label="External Order #" value="ORD-55872" />
-                <div>
-                  <label className="mb-1 block text-xs font-medium">Item Summary *</label>
-                  <div className="rounded-lg border border-input p-2 text-xs"><div className="font-semibold">Industrial Pump Assembly</div><div className="text-muted-foreground">Qty: 1 · SKU: IPA-4000 · $459.00</div></div>
-                </div>
-                <div className="col-span-2">
-                  <label className="mb-1 block text-xs font-medium">Internal Notes</label>
-                  <textarea rows={2} className="w-full rounded-lg border border-input p-2 text-sm outline-none focus:border-primary/50" defaultValue="Handle with care. High value equipment." />
-                </div>
-                <Select label="Priority *" value="🟠 Medium" />
-                <Select label="Service Type *" value="Standard Delivery" />
+          <SectionCard title="3. Order Details" icon={<Package className="h-4 w-4" />}>
+            <div className="grid grid-cols-2 gap-3">
+              <Input label="External Order #" value={externalOrderId} onChange={setExternalOrderId} />
+              <div>
+                <label className="mb-1 block text-xs font-medium">Item Summary *</label>
+                <div className="rounded-lg border border-input p-2 text-xs"><div className="font-semibold">Industrial Pump Assembly</div><div className="text-muted-foreground">Qty: 1 · SKU: IPA-4000</div></div>
               </div>
-            </SectionCard>
-            <SectionCard title="4. Payment Details" icon={<DollarSign className="h-4 w-4" />}>
-              <div className="grid grid-cols-2 gap-3">
-                <Select label="Payment Status *" value="Unpaid" />
-                <Select label="Payment Method *" value="Invoice" />
+              <div className="col-span-2">
+                <label className="mb-1 block text-xs font-medium">Internal Notes</label>
+                <textarea
+                  rows={2}
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  className="w-full rounded-lg border border-input p-2 text-sm outline-none focus:border-primary/50"
+                />
               </div>
-              <div className="mt-3 space-y-1.5 text-sm">
-                <Row l="Subtotal" r="$459.00" />
-                <Row l="Delivery Fee" r="$12.50" />
-                <Row l="Tax (8.25%)" r="$38.02" />
-                <div className="my-2 border-t border-border/60" />
-                <Row l={<span className="text-base font-semibold">Total</span>} r={<span className="text-base font-bold">$509.52</span>} />
-              </div>
-              <div className="mt-3"><Input label="Amount to Collect *" value="$0.00" /></div>
-            </SectionCard>
-          </div>
+              <Select label="Priority *" value="🟠 Medium" />
+              <Select label="Service Type *" value="Standard Delivery" />
+            </div>
+          </SectionCard>
 
-          <SectionCard title="5. Driver Assignment" icon={<Users className="h-4 w-4" />} action={<a className="text-xs font-semibold text-primary hover:underline" href="#">View All Drivers</a>}>
+          <SectionCard title="4. Driver Assignment" icon={<Users className="h-4 w-4" />} action={<Link className="text-xs font-semibold text-primary hover:underline" href="/drivers">View All Drivers</Link>}>
             <div className="mb-3">
-              <label className="mb-1 block text-xs font-medium">Assign Driver *</label>
-              <div className="flex items-center gap-2 rounded-lg border border-input p-2">
+              <label className="mb-1 block text-xs font-medium" htmlFor="assign-driver">Assign Driver *</label>
+              <div className="relative flex items-center gap-2 rounded-lg border border-input p-2">
                 {selectedDriver && (
                   <>
                     <div className={`grid h-8 w-8 place-items-center rounded-full ${selectedDriver.avatarColor} text-xs font-semibold`}>{selectedDriver.initials}</div>
@@ -109,28 +181,57 @@ export function CreateOrderPage() {
                     <span className="text-xs text-muted-foreground">{selectedDriver.phone}</span>
                   </>
                 )}
+                <select
+                  id="assign-driver"
+                  value={selectedDriverId ?? ""}
+                  onChange={(e) => setSelectedDriverId(e.target.value || null)}
+                  disabled={driversLoading || drivers.length === 0}
+                  className="absolute inset-0 cursor-pointer opacity-0"
+                  aria-label="Assign driver"
+                >
+                  <option value="" disabled>Select a driver</option>
+                  {drivers.map((d) => (
+                    <option key={d.id} value={d.id}>{d.name} — {d.phone}</option>
+                  ))}
+                </select>
                 <ChevronDown className="ml-auto h-4 w-4 text-muted-foreground" />
               </div>
             </div>
             <div className="mb-2 text-xs font-semibold text-muted-foreground">Available Drivers</div>
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              {drivers.slice(0, 4).map((d, i) => (
-                <div key={d.id} className={`rounded-lg border p-3 text-center ${i===0?"border-primary ring-3 ring-primary/10":"border-border"}`}>
+              {drivers.slice(0, 4).map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => setSelectedDriverId(d.id)}
+                  className={`rounded-lg border p-3 text-center transition-colors hover:border-primary/50 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-primary/20 ${selectedDriverId === d.id ? "border-primary ring-3 ring-primary/10" : "border-border"}`}
+                >
                   <div className={`mx-auto grid h-10 w-10 place-items-center rounded-full ${d.avatarColor} text-sm font-semibold`}>{d.initials}</div>
                   <div className="mt-2 text-sm font-semibold">{d.name}</div>
                   <div className="text-xs text-muted-foreground">{d.phone}</div>
                   <div className="mt-1"><DriverStatusBadge status={d.status} /></div>
-                </div>
+                </button>
               ))}
             </div>
             <div className="mt-3 flex items-center gap-2 rounded-lg border border-success/30 bg-success-soft/60 px-3 py-2 text-xs text-success"><Info className="h-3.5 w-3.5" /> Driver will be notified via SMS and in-app.</div>
           </SectionCard>
 
+          {error && (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>
+          )}
+
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <button className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-4 py-2.5 text-sm font-medium hover:bg-secondary"><Save className="h-4 w-4" /> Save Draft</button>
+            <button type="button" className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-4 py-2.5 text-sm font-medium hover:bg-secondary"><Save className="h-4 w-4" /> Save Draft</button>
             <div className="flex items-center gap-2">
-              <button className="rounded-lg border border-input bg-card px-4 py-2.5 text-sm font-medium hover:bg-secondary">Cancel</button>
-              <button className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:bg-primary/90"><Plus className="h-4 w-4" /> Create Order</button>
+              <Link href="/orders" className="rounded-lg border border-input bg-card px-4 py-2.5 text-sm font-medium hover:bg-secondary">Cancel</Link>
+              <button
+                type="button"
+                onClick={handleCreateOrder}
+                disabled={submitting || !selectedDriverId}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Plus className="h-4 w-4" /> {submitting ? "Creating…" : "Create Order"}
+              </button>
             </div>
           </div>
         </div>
@@ -139,31 +240,25 @@ export function CreateOrderPage() {
         <aside className="lg:sticky lg:top-24 self-start">
           <SectionCard title="Review Summary" icon={<ClipboardCheck className="h-4 w-4" />} action={<span className="rounded-md bg-warning-soft px-2 py-0.5 text-xs font-medium text-warning-foreground">Draft</span>}>
             <div className="text-xs uppercase tracking-wide text-muted-foreground">Order Preview</div>
-            <div className="mt-1 flex items-center gap-2"><span className="text-lg font-bold">QRX-10100</span><span className="rounded-md bg-warning-soft px-2 py-0.5 text-xs font-medium text-warning-foreground">Draft</span></div>
+            <div className="mt-1 flex items-center gap-2"><span className="text-lg font-bold">New Order</span><span className="rounded-md bg-warning-soft px-2 py-0.5 text-xs font-medium text-warning-foreground">Draft</span></div>
             <Divider />
-            <FieldBlock label="Customer" primary="Maria Sanchez" secondary="(555) 301-6542" />
-            <FieldBlock label="Pickup" primary="Northside Pharmacy" secondary="4567 Medical Dr, Dallas, TX 75231" />
-            <FieldBlock label="Deliver To" primary="123 Industrial Way, Dallas, TX 75201" secondary="Suite 200 / Buzz 42" />
-            <FieldBlock label="Delivery Window" primary="Today, May 16, 2025" secondary="9:00 AM - 12:00 PM" />
+            <FieldBlock label="Customer" primary={`${firstName} ${lastName}`.trim()} secondary={phone} />
+            <FieldBlock label="Pickup" primary={pickupName} secondary={pickupAddress} />
+            <FieldBlock label="Deliver To" primary={deliveryAddress} secondary={unit} />
+            <FieldBlock label="Delivery Window" primary={deliveryDate} secondary={deliveryTime} />
             <FieldBlock label="Service Type" primary="Standard Delivery" />
             <div><div className="text-xs uppercase tracking-wide text-muted-foreground">Priority</div><span className="mt-1 inline-block rounded-md bg-warning-soft px-2 py-0.5 text-xs font-medium text-warning-foreground">Medium</span></div>
             <Divider />
-            <Row l="Items (1 item)" r="$459.00" />
-            <Row l="Subtotal" r="$459.00" />
-            <Row l="Delivery Fee" r="$12.50" />
-            <Row l="Tax (8.25%)" r="$38.02" />
-            <div className="my-2 border-t border-border/60" />
-            <Row l={<span className="text-sm font-semibold">Total</span>} r={<span className="text-sm font-bold">$509.52</span>} />
-            <Row l="Amount to Collect" r={<span className="font-semibold text-success">$0.00</span>} />
-            <Divider />
             <div className="text-xs uppercase tracking-wide text-muted-foreground">Assigned Driver</div>
             <div className="mt-2 flex items-center gap-2">
-              {selectedDriver && (
+              {selectedDriver ? (
                 <>
                   <div className={`grid h-8 w-8 place-items-center rounded-full ${selectedDriver.avatarColor} text-xs font-semibold`}>{selectedDriver.initials}</div>
                   <div className="text-sm"><div className="font-semibold">{selectedDriver.name}</div><div className="text-xs text-muted-foreground">{selectedDriver.phone}</div></div>
                   <span className="ml-auto rounded-md bg-success-soft px-2 py-0.5 text-xs font-medium text-success">{selectedDriver.status}</span>
                 </>
+              ) : (
+                <span className="text-sm text-muted-foreground">No driver selected</span>
               )}
             </div>
           </SectionCard>
@@ -173,11 +268,16 @@ export function CreateOrderPage() {
   );
 }
 
-function Input({ label, value }: { label: string; value: string }) {
+function Input({ label, value, onChange }: { label: string; value: string; onChange?: (v: string) => void }) {
   return (
     <div>
       {label && <label className="mb-1 block text-xs font-medium">{label}</label>}
-      <input defaultValue={value} className="h-9 w-full rounded-lg border border-input bg-card px-3 text-sm outline-none focus:border-primary/50 focus:ring-3 focus:ring-primary/10" />
+      <input
+        value={value}
+        onChange={onChange ? (e) => onChange(e.target.value) : undefined}
+        readOnly={!onChange}
+        className="h-9 w-full rounded-lg border border-input bg-card px-3 text-sm outline-none focus:border-primary/50 focus:ring-3 focus:ring-primary/10"
+      />
     </div>
   );
 }
@@ -185,15 +285,12 @@ function Select({ label, value }: { label: string; value: string }) {
   return (
     <div>
       {label && <label className="mb-1 block text-xs font-medium">{label}</label>}
-      <button className="flex h-9 w-full items-center justify-between rounded-lg border border-input bg-card px-3 text-sm">
+      <button type="button" className="flex h-9 w-full items-center justify-between rounded-lg border border-input bg-card px-3 text-sm">
         <span className="truncate">{value}</span>
         <ChevronDown className="h-4 w-4 text-muted-foreground" />
       </button>
     </div>
   );
-}
-function Row({ l, r }: { l: React.ReactNode; r: React.ReactNode }) {
-  return <div className="flex items-center justify-between text-sm"><span className="text-muted-foreground">{l}</span><span className="font-medium">{r}</span></div>;
 }
 function Divider() { return <div className="my-3 border-t border-border/60" />; }
 function FieldBlock({ label, primary, secondary }: { label: string; primary: string; secondary?: string }) {

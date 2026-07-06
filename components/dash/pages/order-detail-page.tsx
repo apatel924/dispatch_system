@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { ArrowLeft, Users, Send, Save, MoreVertical, FileText, MapPin, Package, User2, CreditCard, ClipboardList, CheckCircle2, Truck, Camera, PenTool, IdCard } from "lucide-react";
+import { ArrowLeft, Users, Send, Save, MoreVertical, FileText, MapPin, Package, User2, ClipboardList, CheckCircle2, Truck, Camera, PenTool, IdCard } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { SectionCard } from "@/components/dash/ui/section-card";
-import { OrderStatusBadge, PaymentBadge, DriverStatusBadge, ProofReviewBadge } from "@/components/dash/status-badge";
+import { OrderStatusBadge, DriverStatusBadge, ProofReviewBadge } from "@/components/dash/status-badge";
 import { reviewProofApi } from "@/lib/dash/api/client";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import { useAdminOrderDetail } from "@/lib/dash/hooks/use-admin-order-detail";
@@ -83,7 +83,6 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
         <div className="flex flex-wrap items-center gap-3">
           <h2 className="text-2xl font-bold tracking-tight">{d.id}</h2>
           <OrderStatusBadge status={d.status} />
-          <PaymentBadge status={d.payment} />
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <button className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary"><Users className="h-4 w-4" /> Assign Driver</button>
             <button className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary"><Send className="h-4 w-4" /> Resend Tracking Link</button>
@@ -91,7 +90,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
             <button className="rounded-lg border border-input bg-card p-2 hover:bg-secondary"><MoreVertical className="h-4 w-4" /></button>
           </div>
         </div>
-        <div className="mt-5 grid grid-cols-2 gap-6 md:grid-cols-4">
+        <div className="mt-5 grid grid-cols-2 gap-6 md:grid-cols-3">
           <div>
             <div className="text-xs uppercase tracking-wide text-muted-foreground">Assigned Driver</div>
             {d.driver ? (
@@ -116,11 +115,6 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
             <div className="mt-2 text-sm font-semibold">{d.updatedDate}</div>
             <div className="text-xs text-muted-foreground">{d.updatedTime}</div>
           </div>
-          <div>
-            <div className="text-xs uppercase tracking-wide text-muted-foreground">Payment</div>
-            <div className="mt-2"><PaymentBadge status={d.payment} /></div>
-            <div className="text-xs text-muted-foreground">{d.paymentMethod}</div>
-          </div>
         </div>
       </div>
 
@@ -133,17 +127,6 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
               <Field label="Phone" value={d.phone} />
               <Field label="Email" value={d.email} />
               <Field label="Address" value={[d.address, d.deliveryUnit].filter(Boolean).join(", ")} />
-            </div>
-          </SectionCard>
-          <SectionCard title="Payment Summary" icon={<CreditCard className="h-4 w-4" />} action={<button className="text-xs font-semibold text-primary hover:underline">Edit</button>}>
-            <div className="space-y-2 text-sm">
-              <Row l="Payment Status" r={<PaymentBadge status={d.payment} />} />
-              <Row l="Payment Method" r={d.paymentMethod} />
-              <Row l="Subtotal" r={d.subtotal} />
-              <Row l="Delivery Fee" r={d.deliveryFee} />
-              <Row l="Tax" r={d.tax} />
-              <div className="my-2 border-t border-border/60" />
-              <Row l={<span className="text-base font-semibold">Total</span>} r={<span className="text-base font-bold text-success">{d.total}</span>} />
             </div>
           </SectionCard>
           <SectionCard title="Notes" action={<button className="text-xs font-semibold text-primary hover:underline">Edit</button>}>
@@ -200,12 +183,12 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
         <div className="space-y-6">
           <SectionCard title="Status Timeline" icon={<ClipboardList className="h-4 w-4" />}>
             <ol className="space-y-4">
-              {d.statusEvents.map((s, i) => {
+              {d.statusEvents.map((s) => {
                 const Icon = TIMELINE_ICONS[s.status] ?? FileText;
                 const tone = TIMELINE_TONES[s.status] ?? "muted";
                 const toneBg: Record<string, string> = { purple: "bg-purple-soft text-purple", info: "bg-info-soft text-info", orange: "bg-orange-soft text-orange", success: "bg-success-soft text-success", muted: "bg-secondary text-muted-foreground" };
                 return (
-                  <li key={i} className="flex items-start gap-3">
+                  <li key={s.id} className="flex items-start gap-3">
                     <div className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${toneBg[tone]}`}><Icon className="h-4 w-4" /></div>
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-semibold">{s.title}</div>
@@ -297,7 +280,4 @@ function Field({ label, value }: { label: string; value: string }) {
       <div className="mt-0.5 text-sm">{value}</div>
     </div>
   );
-}
-function Row({ l, r }: { l: React.ReactNode; r: React.ReactNode }) {
-  return <div className="flex items-center justify-between"><span className="text-muted-foreground">{l}</span><span className="font-medium text-foreground">{r}</span></div>;
 }

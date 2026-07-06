@@ -1,6 +1,6 @@
 # Quick-Run Express — Backend Implementation Plan
 
-> **Status:** Phases 1–10 complete. Full backend plan implemented — tracking, reports, import, proofs, driver/admin UI all wired with mock fallbacks.
+> **Status:** Backend routes/services largely implemented (Phases 1–4, 8–9). Admin/driver UI hooks exist with mock fallbacks. **Auth UI + route guards wired (Phase 11).** Create-order submit, full API-only UI migration, and Twilio notifications remain unfinished.
 >
 > **Scope:** Backend stays inside this Next.js 16 App Router repo under `app/api`. No separate Express server. No separate backend repo.
 
@@ -8,34 +8,45 @@
 
 ## 1. Current State Summary
 
-Quick-Run Express is a **Next.js 16 App Router** front-end shell with **mock data only**. The app includes four UI surfaces:
+Quick-Run Express is a **Next.js 16 App Router** app with a **working backend layer** (`app/api/*`, Firestore services) and **UI that still defaults to mock data** unless `NEXT_PUBLIC_USE_API=true` and Firebase Auth is configured.
 
 | Surface | Routes | Data today |
 |---------|--------|------------|
-| **Admin / dispatch** | `/`, `/dashboard`, `/orders`, `/orders/[orderId]`, `/create-order`, `/drivers`, `/drivers/[driverId]`, `/reports`, `/settings` | `lib/dash/mock-data.ts` + hardcoded form/detail content |
-| **Driver mobile** | `/driver-login`, `/driver-dashboard`, `/driver-orders`, `/driver-orders/[orderId]`, `/driver-route`, `/driver-messages`, `/driver-account` | `lib/dash/driver-mock-data.ts` + `lib/dash/driver-store.ts` (localStorage) |
-| **Customer tracking** | `/track/[trackingId]`, `/main-website/track` | Hardcoded UI (`TrackPage`) + `data/trackingDemo.ts` demo |
-| **Marketing site** | `/main-website/*` | `data/content.ts`, `data/services.ts`, `data/workflow.ts` |
+| **Admin / dispatch** | `/`, `/dashboard`, `/orders`, `/orders/[orderId]`, `/create-order`, `/drivers`, `/drivers/[driverId]`, `/reports`, `/settings` | Hooks (`useAdminOrders`, etc.) with **mock fallback**; create-order form is static (no submit) |
+| **Driver mobile** | `/driver-login`, `/driver-dashboard`, `/driver-orders`, `/driver-orders/[orderId]`, `/driver-route`, `/driver-messages`, `/driver-account` | Hooks with mock fallback; proof flow merges API + `localStorage` |
+| **Customer tracking** | `/track/[trackingId]`, `/main-website/track` | `useTracking()` hook + demo fallback |
+| **Marketing site** | `/main-website/*` | Static content — unchanged |
 
-### What does **not** exist yet
+### What exists now
 
-- **API routes** — `app/api/` is empty (zero Route Handlers)
-- **Authentication** — login pages link directly to dashboards; no session, token, or role checks
-- **Database** — no Firestore, Prisma, or other persistence layer
-- **File storage** — proof images/signatures are base64 data URLs in `localStorage`
-- **Environment config** — no `.env` or `.env.example`
-- **Middleware** — no route protection
-- **External integrations** — no order import adapters
+- **API routes** — 15 Route Handlers under `app/api/` (orders, drivers, proofs, tracking, reports, import, health)
+- **Authentication (server)** — `lib/server/auth.ts` verifies Firebase ID tokens + roles in route handlers
+- **Authentication (client)** — Firebase email/password login on admin + driver pages; SMS login disabled
+- **Route protection** — `AdminAuthGuard` / `DriverAuthGuard` on protected pages; demo mode when Firebase unset
+- **Database** — Firestore services for orders, drivers, proofs, audit, import logs
+- **File storage** — Firebase Storage upload helper for proofs
+- **Environment config** — `.env.example` with placeholder Firebase vars
+- **Notifications** — `lib/server/services/notifications.ts` dev-log scaffold only (no Twilio)
 
-### Pre-implementation inspection notes
+### What is still incomplete
+
+- **Create order form** — no `POST /api/orders` from UI
+- **Full API-only UI** — pages show mock data when `NEXT_PUBLIC_USE_API` is false or API calls fail
+- **Driver proof sync** — driver detail page still relies on localStorage merge
+- **Driver messages** — mock only, no API
+- **Twilio / customer SMS** — future; dev-log notifications not wired into assign-driver yet
+- **Middleware** — using client-side guards instead (Firebase client state required)
+
+### Pre-implementation inspection notes (historical — partially resolved)
 
 | Item | Finding |
 |------|---------|
-| Existing frontend routes | 26 `page.tsx` files under `app/` (9 admin, 7 driver, 2 tracking, 8 marketing) |
-| Mock data files | `lib/dash/mock-data.ts`, `lib/dash/driver-mock-data.ts`, `data/trackingDemo.ts` |
-| Driver proof flow | `lib/dash/driver-store.ts` → `localStorage` key `qre-driver-proofs` |
-| Missing backend pieces | API, auth, DB, storage, validation, server helpers |
-| Order model split | Admin orders (`QRX-10098`…) and driver orders (`QRX-10190`…) are **separate arrays** with different shapes |
+| Existing frontend routes | 26 `page.tsx` files under `app/` |
+| Mock data files | Still retained as fallbacks — do not delete |
+| Driver proof flow | `lib/dash/driver-store.ts` → localStorage + optional API sync |
+| Order model | Unified in `lib/types/backend.ts` |
+| Order detail | Now uses `useAdminOrderDetail(orderId)` — still mock fallback by default |
+| Auth boundary | Client-side guards added; server routes require Bearer token |
 
 ### Files planned for creation (future phases)
 

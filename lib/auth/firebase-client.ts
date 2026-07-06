@@ -13,6 +13,8 @@ import {
   getFirebaseClientConfig,
   isFirebaseClientConfigured,
 } from "@/lib/auth/config";
+import { isUserRole } from "@/lib/server/roles";
+import type { UserRole } from "@/lib/types/backend";
 
 let firebaseApp: FirebaseApp | undefined;
 
@@ -57,20 +59,138 @@ export async function getCurrentIdToken(forceRefresh = false): Promise<string | 
   return user.getIdToken(forceRefresh);
 }
 
-export interface DriverAuthClaims {
+export interface AuthClaims {
   role?: string;
   driverId?: string;
+  active?: boolean;
 }
 
-export async function getDriverAuthClaims(): Promise<DriverAuthClaims | null> {
+/** @deprecated Use AuthClaims / getIdTokenClaims instead */
+export type DriverAuthClaims = AuthClaims;
+
+export async function getIdTokenClaims(forceRefresh = false): Promise<AuthClaims | null> {
   const user = getClientAuth().currentUser;
   if (!user) return null;
-  const result = await user.getIdTokenResult();
+  const result = await user.getIdTokenResult(forceRefresh);
   const claims = result.claims;
   return {
     role: typeof claims.role === "string" ? claims.role : undefined,
     driverId: typeof claims.driverId === "string" ? claims.driverId : undefined,
+    active: typeof claims.active === "boolean" ? claims.active : undefined,
   };
+}
+
+export async function getDriverAuthClaims(): Promise<AuthClaims | null> {
+  return getIdTokenClaims();
+}
+
+export async function getCurrentUserRole(): Promise<UserRole | null> {
+  const claims = await getIdTokenClaims();
+  if (!claims?.role || !isUserRole(claims.role)) return null;
+  return claims.role;
+}
+
+export interface AuthRedirectResult {
+  allowed: boolean;
+  redirectTo?: string;
+  error?: string;
+}
+
+function homePathForRole(role: UserRole): string {
+  return role === "driver" ? "/driver-dashboard" : "/dashboard";
+}
+
+function isAccountActive(claims: AuthClaims): boolean {
+  return claims.active !== false;
+}
+
+/**
+ * Resolve whether the signed-in user may access a route and where to redirect otherwise.
+ */
+export async function requireClientAuthRedirect(
+  allowedRoles: readonly UserRole[],
+  loginPath: string,
+  wrongRoleRedirect?: string,
+): Promise<AuthRedirectResult> {
+  if (!isAuthConfigured()) {
+    return { allowed: true };
+  }
+
+  const user = getClientAuth().currentUser;
+  if (!user) {
+    return { allowed: false, redirectTo: loginPath };
+  }
+
+  const claims = await getIdTokenClaims();
+  if (!claims?.role || !isUserRole(claims.role)) {
+    await signOutUser();
+    return {
+      allowed: false,
+      redirectTo: loginPath,
+      error: "This account has no assigned role. Contact your administrator.",
+    };
+  }
+
+  if (!isAccountActive(claims)) {
+    await signOutUser();
+    return {
+      allowed: false,
+      redirectTo: loginPath,
+      error: "This account has been deactivated.",
+    };
+  }
+
+  if (!allowedRoles.includes(claims.role)) {
+    return {
+      allowed: false,
+      redirectTo: wrongRoleRedirect ?? homePathForRole(claims.role),
+      error: "You do not have access to this area.",
+    };
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * After sign-in, resolve the dashboard path for the user's role or an error message.
+ */
+export async function resolvePostLoginRedirect(
+  context: "admin" | "driver",
+): Promise<{ redirectTo?: string; error?: string }> {
+  const claims = await getIdTokenClaims(true);
+  if (!claims?.role || !isUserRole(claims.role)) {
+    await signOutUser();
+    return { error: "This account has no assigned role. Contact your administrator." };
+  }
+
+  if (!isAccountActive(claims)) {
+    await signOutUser();
+    return { error: "This account has been deactivated." };
+  }
+
+  if (context === "admin") {
+    if (claims.role === "driver") {
+      return { redirectTo: "/driver-dashboard" };
+    }
+    if (claims.role === "admin" || claims.role === "dispatcher") {
+      return { redirectTo: "/dashboard" };
+    }
+  }
+
+  if (context === "driver") {
+    if (claims.role === "driver") {
+      return { redirectTo: "/driver-dashboard" };
+    }
+    if (claims.role === "admin" || claims.role === "dispatcher") {
+      return {
+        redirectTo: "/dashboard",
+        error: "Signed in as staff — redirected to the dispatch dashboard.",
+      };
+    }
+  }
+
+  await signOutUser();
+  return { error: "Unrecognized account role." };
 }
 
 export function subscribeToAuthState(

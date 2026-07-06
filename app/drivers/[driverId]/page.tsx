@@ -1,4 +1,5 @@
 import { DriverProfilePage } from '@/components/dash/pages/driver-profile-page'
+import { AdminAuthGuard } from '@/components/dash/auth/auth-guard'
 
 export default async function Page({
   params,
@@ -6,5 +7,9 @@ export default async function Page({
   params: Promise<{ driverId: string }>
 }) {
   const { driverId } = await params
-  return <DriverProfilePage driverId={driverId} />
+  return (
+    <AdminAuthGuard>
+      <DriverProfilePage driverId={driverId} />
+    </AdminAuthGuard>
+  )
 }

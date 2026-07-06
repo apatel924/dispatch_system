@@ -1,5 +1,10 @@
 import { ReportsPage } from '@/components/dash/pages/reports-page'
+import { AdminAuthGuard } from '@/components/dash/auth/auth-guard'
 
 export default function Page() {
-  return <ReportsPage />
+  return (
+    <AdminAuthGuard>
+      <ReportsPage />
+    </AdminAuthGuard>
+  )
 }

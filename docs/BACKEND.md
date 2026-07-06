@@ -8,7 +8,7 @@ Living documentation for the in-repo Next.js backend. **Update this file wheneve
 | **API base** | `/api/*` |
 | **Detailed plan** | [backend-implementation-plan.md](./backend-implementation-plan.md) |
 | **Types** | [`lib/types/backend.ts`](../lib/types/backend.ts) |
-| **Last updated** | Phase 10 — Tracking + reports API wired |
+| **Last updated** | Phase 11 — Auth UI wired, route guards, notification scaffold |
 
 ---
 
@@ -45,18 +45,36 @@ Firebase custom claims required on tokens:
 
 ## Implementation status
 
+**Honest snapshot (code vs docs):**
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Backend routes & services | ✅ Mostly done | 15 Route Handlers under `app/api/*`; Firestore services + Zod validation |
+| Auth UI (Firebase email/password) | ✅ Wired | Admin + driver login pages call Firebase; SMS login disabled |
+| Page protection | ✅ Added | `AdminAuthGuard` / `DriverAuthGuard` on protected routes; demo mode when Firebase unset |
+| Admin list/detail/create pages | ⚠️ Partial | Hooks exist (`useAdminOrders`, etc.) but default to mock unless `NEXT_PUBLIC_USE_API=true` + valid token |
+| Driver UI data layer | ⚠️ Partial | Hooks wired with mock fallback; proof flow still uses localStorage + optimistic sync |
+| Customer notifications | 🔧 Scaffold only | `lib/server/services/notifications.ts` — dev-log only, no Twilio |
+| Twilio / real SMS | ❌ Future | Reserved for customer delivery notifications only |
+| Create order form submit | ❌ Not wired | UI is static; no `POST /api/orders` from form yet |
+| Driver messages | ❌ Mock only | No API yet |
+
+### Phase checklist
+
 | Phase | Status | Notes |
 |-------|--------|-------|
 | 1 — Docs & scaffolding | ✅ Done | Plan, types, `.env.example` |
 | 2 — Firebase & health | ✅ Done | Admin SDK, auth helpers, `GET /api/health` |
-| 3 — Firestore services | ✅ Done | Services + Zod validation (this phase) |
-| 4 — API route handlers | ✅ Done | Orders, drivers, driver-orders routes |
-| 5 — Admin UI migration | ✅ Done | Orders, drivers, dashboard, detail pages |
-| 6 — Driver UI migration | ✅ Done | Driver dashboard, orders, route, account, detail |
-| 7 — Proof upload | ✅ Done | Storage upload + proofs API; localStorage offline fallback |
+| 3 — Firestore services | ✅ Done | Services + Zod validation |
+| 4 — API route handlers | ✅ Done | Orders, drivers, driver-orders, proofs, tracking, reports, import |
+| 5 — Admin UI migration | ⚠️ Partial | Hooks + API client exist; pages use mock by default |
+| 6 — Driver UI migration | ⚠️ Partial | Hooks exist; dashboard/route wired; messages still mock |
+| 7 — Proof upload | ⚠️ Partial | Storage + proofs API exist; driver detail still merges localStorage |
 | 8 — Admin proof review | ✅ Done | Proof gallery + approve/reject on order detail |
 | 9 — Mock order import | ✅ Done | Import API + settings integrations panel |
-| 10 — Tracking & reports | ✅ Done | Public tracking + admin reports pages |
+| 10 — Tracking & reports | ⚠️ Partial | APIs done; pages use hooks with mock fallback |
+| 11 — Auth UI & guards | ✅ Done | Firebase login, role redirects, client-side route guards |
+| 12 — Notifications | 🔧 Scaffold | Dev-log service only; not wired into assign-driver yet |
 
 ---
 
@@ -67,7 +85,9 @@ app/api/                    # HTTP Route Handlers (thin — delegate to services
 lib/
   auth/
     config.ts               # Client Firebase env config
-    firebase-client.ts      # Client sign-in helpers (use client)
+    firebase-client.ts      # Client sign-in, token claims, auth state (use client)
+  components/dash/auth/
+    auth-guard.tsx          # AdminAuthGuard / DriverAuthGuard (client-side)
   server/
     auth.ts                 # verifyIdToken, requireAuth, requireRole
     roles.ts                # Role constants
@@ -90,6 +110,7 @@ lib/
       tracking.ts
       reports.ts
       import.ts
+      notifications.ts    # Dev-log customer notifications (no Twilio yet)
       index.ts              # Re-exports
     validation/             # Zod schemas
       common.ts
@@ -126,7 +147,13 @@ lib/
 | `GET` | `/api/drivers/[id]` | admin, dispatcher, driver (self) | → `{ driver }` |
 | `PATCH` | `/api/drivers/[id]` | admin, driver (self) | Update driver → `{ driver }` |
 
-### Planned (Phase 5+)
+### Planned (future)
+
+| Method | Route | Auth | Service function(s) |
+|--------|-------|------|----------------------|
+| — | Customer SMS (Twilio) | — | `notifyCustomerOrderAssigned`, `notifyCustomerStatusUpdate` — **dev-log scaffold exists; Twilio future** |
+
+### Previously listed as planned — now implemented
 
 | Method | Route | Auth | Service function(s) |
 |--------|-------|------|----------------------|
@@ -225,6 +252,15 @@ Import from `@/lib/server/services` or the specific module.
 | `listImportLogs(query)` | Import history |
 | `MOCK_IMPORT_FIXTURES` | Example payloads for local testing |
 
+### `notifications.ts` (dev-log scaffold — no Twilio)
+
+| Function | Description |
+|----------|-------------|
+| `notifyCustomerOrderAssigned(order)` | Simulated SMS/email log when driver assigned |
+| `notifyCustomerStatusUpdate(order, status)` | Simulated status notification log |
+
+Returns `{ ok, provider: "dev-log", channel, messagePreview, trackingUrl }`. Not wired into `assignDriver` yet.
+
 ### `audit.ts`
 
 | Function | Description |
@@ -289,6 +325,45 @@ See [`.env.example`](../.env.example). Never commit `.env.local`.
 | `FIREBASE_PRIVATE_KEY` | Server | Admin SDK |
 | `NEXT_PUBLIC_APP_URL` | Client | Redirect URLs |
 | `NEXT_PUBLIC_USE_API` | Client | When `true`, admin + driver pages fetch `/api/*` (falls back to mock on error) |
+
+---
+
+## Auth UI & route protection (Phase 11)
+
+**Login:** `components/dash/pages/login-page.tsx` and `driver-login-page.tsx` call Firebase email/password via `lib/auth/firebase-client.ts`. SMS login buttons are disabled (Twilio reserved for future **customer** notifications only).
+
+**Custom claims** on ID tokens:
+
+| Claim | Type | Values |
+|-------|------|--------|
+| `role` | string | `admin` · `dispatcher` · `driver` |
+| `driverId` | string (optional) | e.g. `DRV-10012` — required for driver API routes |
+| `active` | boolean (optional) | `false` blocks sign-in |
+
+**Client helpers** (`lib/auth/firebase-client.ts`):
+
+| Function | Purpose |
+|----------|---------|
+| `signInWithEmail(email, password)` | Firebase sign-in |
+| `signOutUser()` | Sign out |
+| `getCurrentIdToken()` | Bearer token for API calls |
+| `getIdTokenClaims()` / `getDriverAuthClaims()` | Read custom claims |
+| `getCurrentUserRole()` | Resolved `UserRole` or null |
+| `subscribeToAuthState(callback)` | Auth state listener |
+| `isAuthConfigured()` | True when `NEXT_PUBLIC_FIREBASE_*` set |
+| `requireClientAuthRedirect(roles, loginPath)` | Used by auth guard |
+| `resolvePostLoginRedirect(context)` | Post-login dashboard path |
+
+**Route guards** (`components/dash/auth/auth-guard.tsx`):
+
+| Guard | Protects | Login redirect |
+|-------|----------|----------------|
+| `AdminAuthGuard` | `/dashboard`, `/orders`, `/create-order`, `/drivers`, `/reports`, `/settings` | `/` |
+| `DriverAuthGuard` | `/driver-dashboard`, `/driver-orders`, `/driver-route`, `/driver-messages`, `/driver-account` | `/driver-login` |
+
+When Firebase is **not** configured, guards pass through — demo/mock mode unchanged.
+
+**Public routes (no guard):** `/`, `/driver-login`, `/track/[trackingId]`, `/main-website/*`
 
 ---
 
@@ -394,6 +469,7 @@ Mock files remain as **fallback** when API is disabled or unavailable. **Do not 
 | — | 7 | Proof Storage upload + proofs API + optimistic driver-store sync |
 | — | 8 | Admin proof gallery + PATCH review route |
 | — | 9 | Mock order import API + settings integrations UI |
-| — | 10 | Public tracking + reports overview API + page wiring |
+| — | 10 | Public tracking + reports overview API + page hooks |
+| — | 11 | Firebase login UI, auth guards, notification dev-log scaffold |
 
 **When you ship changes:** add a row to the changelog and update the **Implementation status** table above.

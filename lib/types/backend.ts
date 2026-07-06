@@ -99,6 +99,10 @@ export interface Order {
   createdBy?: string;
   source: "manual" | "import" | string;
   importLogId?: string;
+  trackingUrl?: string;
+  notificationPreference?: "sms" | "email" | "both" | "none";
+  customerNotifiedAt?: string;
+  lastCustomerNotificationAt?: string;
 }
 
 export interface OrderStatusEvent {

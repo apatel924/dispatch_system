@@ -45,3 +45,12 @@ export {
   listImportLogs,
   MOCK_IMPORT_FIXTURES,
 } from "@/lib/server/services/import";
+
+export {
+  notifyCustomerOrderAssigned,
+  notifyCustomerStatusUpdate,
+} from "@/lib/server/services/notifications";
+export type {
+  NotificationResult,
+  NotificationChannel,
+} from "@/lib/server/services/notifications";

@@ -1,4 +1,5 @@
 import { DriverOrderDetail } from '@/components/dash/pages/driver-order-detail-page'
+import { DriverAuthGuard } from '@/components/dash/auth/auth-guard'
 
 export default async function Page({
   params,
@@ -6,5 +7,9 @@ export default async function Page({
   params: Promise<{ orderId: string }>
 }) {
   const { orderId } = await params
-  return <DriverOrderDetail orderId={orderId} />
+  return (
+    <DriverAuthGuard>
+      <DriverOrderDetail orderId={orderId} />
+    </DriverAuthGuard>
+  )
 }

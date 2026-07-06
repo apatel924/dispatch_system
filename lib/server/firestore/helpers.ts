@@ -31,6 +31,15 @@ export function initialsFromName(name: string): string {
     .join("");
 }
 
+/** Firestore rejects undefined field values — omit them before writes. */
+export function omitUndefined<T extends Record<string, unknown>>(obj: T): T {
+  const out = { ...obj };
+  for (const key of Object.keys(out)) {
+    if (out[key] === undefined) delete out[key];
+  }
+  return out;
+}
+
 function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }

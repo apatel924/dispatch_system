@@ -1,3 +1,9 @@
+import {
+  actorLabelForEvent,
+  compareStatusEventsForTimeline,
+  eventTitleForStatusEvent,
+  STATUS_TITLES,
+} from "@/lib/delivery-workflow";
 import type {
   DriverProfile,
   DriverStatus,
@@ -87,6 +93,7 @@ export interface AdminOrderDetail {
     vehicle: string;
   } | null;
   statusEvents: {
+    id: string;
     title: string;
     by: string;
     date: string;
@@ -380,24 +387,16 @@ export function mockDriverToAdminRow(driver: Driver): AdminDriverRow {
   };
 }
 
-const STATUS_TITLES: Record<OrderStatus, string> = {
-  New: "Order Created",
-  Assigned: "Assigned to Driver",
-  "Picked Up": "Picked Up",
-  "En Route": "En Route",
-  "Out for Delivery": "Out for Delivery",
-  Delivered: "Delivered",
-  Failed: "Delivery Failed",
-  Returned: "Returned",
-  Scheduled: "Scheduled",
-};
-
-function eventsToTimeline(events: OrderStatusEvent[]): AdminOrderDetail["statusEvents"] {
-  return events.map((e) => {
+function eventsToTimeline(
+  events: OrderStatusEvent[],
+  driverName?: string | null,
+): AdminOrderDetail["statusEvents"] {
+  return [...events].sort(compareStatusEventsForTimeline).map((e) => {
     const dt = formatDisplayDateTime(e.createdAt);
     return {
-      title: STATUS_TITLES[e.status] ?? e.status,
-      by: e.actorRole === "system" ? "System" : e.actorId,
+      id: e.id,
+      title: eventTitleForStatusEvent(e),
+      by: actorLabelForEvent(e, driverName),
       date: dt.date,
       time: dt.time,
       status: e.status,
@@ -461,7 +460,7 @@ export function orderToAdminDetail(
     updatedDate: updated.date,
     updatedTime: updated.time,
     driver,
-    statusEvents: eventsToTimeline(events),
+    statusEvents: eventsToTimeline(events, assignedDriver?.name ?? order.assignedDriverName),
   };
 }
 
@@ -512,11 +511,11 @@ export function mockOrderToAdminDetail(orderId: string): AdminOrderDetail | null
         }
       : null,
     statusEvents: [
-      { title: "Order Created", by: "Admin User", date: created.date, time: created.time, status: "New" },
+      { id: "mock-created", title: "Order Created", by: "Admin User", date: created.date, time: created.time, status: "New" },
       ...(row.driver
-        ? [{ title: "Assigned to Driver", by: "System", date: created.date, time: created.time, status: "Assigned" as OrderStatus }]
+        ? [{ id: "mock-assigned", title: "Assigned to Driver", by: "System", date: created.date, time: created.time, status: "Assigned" as OrderStatus }]
         : []),
-      { title: STATUS_TITLES[row.status], by: row.driver ?? "System", date: updated.date, time: updated.time, status: row.status },
+      { id: "mock-current", title: STATUS_TITLES[row.status], by: row.driver ?? "System", date: updated.date, time: updated.time, status: row.status },
     ],
   };
 }

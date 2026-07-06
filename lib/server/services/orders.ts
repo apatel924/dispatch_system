@@ -11,6 +11,7 @@ import {
   docToStatusEvent,
   formatCentsToDisplay,
   nowIso,
+  omitUndefined,
 } from "@/lib/server/firestore/helpers";
 import { getAdminFirestore } from "@/lib/server/firebase-admin";
 import { generateOrderId } from "@/lib/server/firestore/ids";
@@ -22,6 +23,7 @@ import type {
   ListOrdersQuery,
   UpdateOrderInput,
 } from "@/lib/server/validation/orders";
+import { resolveStatusAfterStep } from "@/lib/delivery-workflow";
 import type { DeliveryStepKey } from "@/lib/types/backend";
 
 const ACTIVE_STATUSES: OrderStatus[] = [
@@ -63,7 +65,7 @@ export async function addStatusEvent(
     createdAt,
   };
 
-  await ref.set(event);
+  await ref.set(omitUndefined(event));
   return { id: ref.id, ...event };
 }
 
@@ -130,7 +132,7 @@ export async function createOrder(
     source: input.source ?? "manual",
   };
 
-  await orderDoc(db, id).set(order);
+  await orderDoc(db, id).set(omitUndefined(order));
   await addStatusEvent(id, status, act, { note: "Order created" });
 
   await writeAuditLog({
@@ -308,16 +310,22 @@ export async function updateOrderStatus(
     completedSteps.push(options.stepKey);
   }
 
-  const patch: Record<string, unknown> = {
+  const effectiveStatus = resolveStatusAfterStep(
+    current.status,
+    options?.stepKey,
     status,
+  );
+
+  const patch: Record<string, unknown> = {
+    status: effectiveStatus,
     completedSteps,
     updatedAt: now,
   };
 
-  if (status === "Delivered") patch.deliveredAt = now;
+  if (effectiveStatus === "Delivered") patch.deliveredAt = now;
 
   await ref.update(patch);
-  const event = await addStatusEvent(orderId, status, act, options);
+  const event = await addStatusEvent(orderId, effectiveStatus, act, options);
 
   await writeAuditLog({
     action: "order.status",
@@ -325,7 +333,7 @@ export async function updateOrderStatus(
     entityId: orderId,
     actorId: act.uid,
     actorRole: act.role,
-    metadata: { status, stepKey: options?.stepKey },
+    metadata: { status: effectiveStatus, stepKey: options?.stepKey },
   });
 
   return { order: await getOrderById(orderId), event };
@@ -339,11 +347,12 @@ export async function listOrdersForDriver(
   const snap = await db
     .collection(COLLECTIONS.orders)
     .where("assignedDriverId", "==", driverId)
-    .orderBy("createdAt", "desc")
     .limit(100)
     .get();
 
-  let orders = snap.docs.map((doc) => docToOrder(doc.id, doc.data()));
+  let orders = snap.docs
+    .map((doc) => docToOrder(doc.id, doc.data()))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
   switch (query.scope) {
     case "active":

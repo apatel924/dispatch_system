@@ -1,6 +1,6 @@
 import type { AuditLog, UserRole } from "@/lib/types/backend";
 import { COLLECTIONS } from "@/lib/server/firestore/collections";
-import { docToAuditLog, nowIso } from "@/lib/server/firestore/helpers";
+import { docToAuditLog, nowIso, omitUndefined } from "@/lib/server/firestore/helpers";
 import { getAdminFirestore } from "@/lib/server/firebase-admin";
 
 export interface WriteAuditLogInput {
@@ -27,7 +27,7 @@ export async function writeAuditLog(input: WriteAuditLogInput): Promise<AuditLog
     createdAt,
   };
 
-  await ref.set(record);
+  await ref.set(omitUndefined(record));
   return { id: ref.id, ...record };
 }
 

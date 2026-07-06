@@ -1,5 +1,6 @@
 import type { OrderStatus } from "@/lib/types/backend";
 import { isApiEnabled } from "@/lib/dash/api/config";
+import { resolveStatusAfterStep } from "@/lib/delivery-workflow";
 import { postOrderProof, postOrderStatus } from "@/lib/dash/api/driver-client";
 import { uploadProofBlob } from "@/lib/auth/firebase-storage";
 import type { DeliveryStepKey, DriverOrder } from "./driver-mock-data";
@@ -85,7 +86,8 @@ export async function markStepCompleteAsync(
   if (!isApiEnabled()) return current;
 
   try {
-    await postOrderStatus(orderId, { status: currentStatus, stepKey: step });
+    const nextStatus = resolveStatusAfterStep(currentStatus, step, currentStatus);
+    await postOrderStatus(orderId, { status: nextStatus, stepKey: step });
   } catch {
     // Keep local state as offline fallback
   }

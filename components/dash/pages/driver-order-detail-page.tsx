@@ -42,6 +42,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
     proofs: apiProofs,
     source,
     loading,
+    refresh,
   } = useDriverOrder(orderId);
   const [completedSteps, setCompletedSteps] = useState<DeliveryStepKey[]>(DEFAULT_COMPLETED_STEPS);
   const [stepTimestamps, setStepTimestamps] = useState<Partial<Record<DeliveryStepKey, string>>>({});
@@ -94,6 +95,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
       const updated = await markStepCompleteAsync(orderId, key, order.status);
       setCompletedSteps(updated.completedSteps);
       setStepTimestamps(updated.stepTimestamps);
+      await refresh({ silent: true });
     } finally {
       setSyncing(false);
     }
@@ -113,6 +115,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
       setProofs(updated.proofs);
       setCompletedSteps(updated.completedSteps);
       setStepTimestamps(updated.stepTimestamps);
+      await refresh({ silent: true });
     } finally {
       setSyncing(false);
     }
@@ -143,6 +146,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
     setSyncing(true);
     try {
       await completeDeliveryAsync(orderId);
+      await refresh({ silent: true });
       setDelivered(true);
       setTimeout(() => router.push("/driver-dashboard"), 1500);
     } finally {

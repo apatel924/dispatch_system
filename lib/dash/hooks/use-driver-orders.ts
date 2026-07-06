@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DataSource } from "@/lib/dash/api/config";
 import { isApiEnabled } from "@/lib/dash/api/config";
+import { ORDER_SYNC_POLL_MS } from "@/lib/delivery-workflow";
 import {
   getMockActiveOrders,
   getMockCompletedOrders,
@@ -11,6 +12,7 @@ import {
 } from "@/lib/dash/api/driver-adapters";
 import { fetchDriverOrders } from "@/lib/dash/api/driver-client";
 import type { DriverOrder as UiDriverOrder } from "@/lib/dash/driver-mock-data";
+import { usePolling } from "@/lib/dash/hooks/use-polling";
 
 type CompletedRow = Pick<UiDriverOrder, "id" | "customer" | "eta">;
 
@@ -20,9 +22,10 @@ export function useDriverOrders() {
   const [source, setSource] = useState<DataSource>("mock");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const apiEnabled = isApiEnabled();
 
-  const load = useCallback(async () => {
-    if (!isApiEnabled()) {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!apiEnabled) {
       setActiveOrders(getMockActiveOrders());
       setCompletedOrders(getMockCompletedOrders());
       setSource("mock");
@@ -30,7 +33,7 @@ export function useDriverOrders() {
       return;
     }
 
-    setLoading(true);
+    if (!opts?.silent) setLoading(true);
     setError(null);
     try {
       const [activeRes, completedRes] = await Promise.all([
@@ -42,28 +45,38 @@ export function useDriverOrders() {
       const completedFromApi = completedRes.orders.map(orderToDriverOrder);
       const { completed: splitCompleted } = splitDriverOrders(completedFromApi);
 
-      setActiveOrders(active.length > 0 ? active : getMockActiveOrders());
+      setActiveOrders(active);
       setCompletedOrders(
-        splitCompleted.length > 0 ? splitCompleted : completedFromApi.map((o) => ({
-          id: o.id,
-          customer: o.customer,
-          eta: o.eta,
-        })),
+        splitCompleted.length > 0
+          ? splitCompleted
+          : completedFromApi.map((o) => ({
+              id: o.id,
+              customer: o.customer,
+              eta: o.eta,
+            })),
       );
       setSource("api");
     } catch (err) {
-      setActiveOrders(getMockActiveOrders());
-      setCompletedOrders(getMockCompletedOrders());
-      setSource("mock");
+      if (!opts?.silent) {
+        setActiveOrders(getMockActiveOrders());
+        setCompletedOrders(getMockCompletedOrders());
+        setSource("mock");
+      }
       setError(err instanceof Error ? err.message : "Failed to load driver orders");
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
-  }, []);
+  }, [apiEnabled]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
+
+  usePolling(
+    () => load({ silent: true }),
+    ORDER_SYNC_POLL_MS,
+    apiEnabled,
+  );
 
   return {
     activeOrders,
@@ -90,8 +103,7 @@ export function useDriverRouteOrders() {
     setLoading(true);
     try {
       const { orders } = await fetchDriverOrders("route");
-      const mapped = orders.map(orderToDriverOrder);
-      setStops(mapped.length > 0 ? mapped : getMockActiveOrders());
+      setStops(orders.map(orderToDriverOrder));
       setSource("api");
     } catch {
       setStops(getMockActiveOrders());

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DataSource } from "@/lib/dash/api/config";
 import { isApiEnabled } from "@/lib/dash/api/config";
+import { ORDER_SYNC_POLL_MS } from "@/lib/delivery-workflow";
 import {
   mockOrderToAdminDetail,
   orderToAdminDetail,
@@ -15,6 +16,7 @@ import {
   fetchOrderDetail,
   fetchOrderProofs,
 } from "@/lib/dash/api/client";
+import { usePolling } from "@/lib/dash/hooks/use-polling";
 
 export function useAdminOrderDetail(orderId: string) {
   const [detail, setDetail] = useState<AdminOrderDetail | null>(() =>
@@ -24,9 +26,10 @@ export function useAdminOrderDetail(orderId: string) {
   const [source, setSource] = useState<DataSource>("mock");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const apiEnabled = isApiEnabled();
 
-  const load = useCallback(async () => {
-    if (!isApiEnabled()) {
+  const load = useCallback(async (options?: { silent?: boolean }) => {
+    if (!apiEnabled) {
       setDetail(mockOrderToAdminDetail(orderId));
       setProofs([]);
       setSource("mock");
@@ -34,7 +37,7 @@ export function useAdminOrderDetail(orderId: string) {
       return;
     }
 
-    setLoading(true);
+    if (!options?.silent) setLoading(true);
     setError(null);
     try {
       const [{ order, statusEvents }, proofsRes] = await Promise.all([
@@ -56,18 +59,26 @@ export function useAdminOrderDetail(orderId: string) {
       setProofs(proofsRes.proofs.map(proofToAdminItem));
       setSource("api");
     } catch (err) {
-      setDetail(mockOrderToAdminDetail(orderId));
-      setProofs([]);
-      setSource("mock");
+      if (!options?.silent) {
+        setDetail(mockOrderToAdminDetail(orderId));
+        setProofs([]);
+        setSource("mock");
+      }
       setError(err instanceof Error ? err.message : "Failed to load order");
     } finally {
-      setLoading(false);
+      if (!options?.silent) setLoading(false);
     }
-  }, [orderId]);
+  }, [apiEnabled, orderId]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
+
+  usePolling(
+    () => load({ silent: true }),
+    ORDER_SYNC_POLL_MS,
+    apiEnabled,
+  );
 
   return { detail, proofs, source, loading, error, refresh: load };
 }

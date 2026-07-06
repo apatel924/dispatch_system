@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DataSource } from "@/lib/dash/api/config";
 import { isApiEnabled } from "@/lib/dash/api/config";
+import { ORDER_SYNC_POLL_MS } from "@/lib/delivery-workflow";
 import {
   getMockAdminOrders,
   orderToAdminRow,
@@ -10,6 +11,7 @@ import {
 } from "@/lib/dash/api/adapters";
 import { fetchOrdersList } from "@/lib/dash/api/client";
 import { drivers as mockDrivers } from "@/lib/dash/mock-data";
+import { usePolling } from "@/lib/dash/hooks/use-polling";
 
 function filterMockByDriverId(rows: AdminOrderRow[], driverId?: string): AdminOrderRow[] {
   if (!driverId) return rows;
@@ -23,19 +25,20 @@ export function useAdminOrders(options?: { driverId?: string; limit?: number }) 
   const [source, setSource] = useState<DataSource>("mock");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const apiEnabled = isApiEnabled();
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     const applyLimit = (rows: AdminOrderRow[]) =>
       options?.limit ? rows.slice(0, options.limit) : rows;
 
-    if (!isApiEnabled()) {
+    if (!apiEnabled) {
       setOrders(applyLimit(filterMockByDriverId(getMockAdminOrders(), options?.driverId)));
       setSource("mock");
       setError(null);
       return;
     }
 
-    setLoading(true);
+    if (!opts?.silent) setLoading(true);
     setError(null);
     try {
       const result = await fetchOrdersList({
@@ -45,19 +48,27 @@ export function useAdminOrders(options?: { driverId?: string; limit?: number }) 
       setOrders(result.orders.map(orderToAdminRow));
       setSource("api");
     } catch (err) {
-      setOrders(
-        applyLimit(filterMockByDriverId(getMockAdminOrders(), options?.driverId)),
-      );
-      setSource("mock");
+      if (!opts?.silent) {
+        setOrders(
+          applyLimit(filterMockByDriverId(getMockAdminOrders(), options?.driverId)),
+        );
+        setSource("mock");
+      }
       setError(err instanceof Error ? err.message : "Failed to load orders");
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
-  }, [options?.driverId, options?.limit]);
+  }, [apiEnabled, options?.driverId, options?.limit]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
+
+  usePolling(
+    () => load({ silent: true }),
+    ORDER_SYNC_POLL_MS,
+    apiEnabled,
+  );
 
   return { orders, source, loading, error, refresh: load };
 }

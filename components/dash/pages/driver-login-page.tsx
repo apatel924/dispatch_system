@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Mail, Lock, LogIn, MessageSquare, ShieldCheck, Loader2 } from "lucide-react";
 import { Logo } from "@/components/dash/brand/logo";
+import { DevDualLoginHint } from "@/components/dash/auth/dev-dual-login-hint";
 import {
+  AUTH_NOT_CONFIGURED_MESSAGE,
   isAuthConfigured,
   resolvePostLoginRedirect,
   signInWithEmail,
@@ -27,7 +29,7 @@ export function DriverLogin() {
     setInfo(null);
 
     if (!authConfigured) {
-      router.push("/driver-dashboard");
+      setError(AUTH_NOT_CONFIGURED_MESSAGE);
       return;
     }
 
@@ -71,9 +73,11 @@ export function DriverLogin() {
 
           {!authConfigured && (
             <p className="mt-4 rounded-lg border border-warning/30 bg-warning-soft/40 px-3 py-2 text-xs text-muted-foreground">
-              Firebase is not configured — demo mode uses direct navigation without sign-in.
+              {AUTH_NOT_CONFIGURED_MESSAGE}
             </p>
           )}
+
+          <DevDualLoginHint />
 
           {error && (
             <p className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

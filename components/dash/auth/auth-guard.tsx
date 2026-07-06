@@ -2,8 +2,9 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import {
+  AUTH_NOT_CONFIGURED_MESSAGE,
   isAuthConfigured,
   requireClientAuthRedirect,
   subscribeToAuthState,
@@ -18,6 +19,15 @@ interface AuthGuardProps {
   wrongRoleRedirect?: string;
 }
 
+function AuthNotConfiguredPanel() {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-background px-4 text-center">
+      <AlertTriangle className="h-8 w-8 text-warning" />
+      <p className="max-w-md text-sm text-muted-foreground">{AUTH_NOT_CONFIGURED_MESSAGE}</p>
+    </div>
+  );
+}
+
 export function AuthGuard({
   children,
   allowedRoles,
@@ -25,13 +35,13 @@ export function AuthGuard({
   wrongRoleRedirect,
 }: AuthGuardProps) {
   const router = useRouter();
-  const [checking, setChecking] = useState(isAuthConfigured());
-  const [allowed, setAllowed] = useState(!isAuthConfigured());
+  const [checking, setChecking] = useState(true);
+  const [allowed, setAllowed] = useState(false);
 
   useEffect(() => {
     if (!isAuthConfigured()) {
-      setAllowed(true);
       setChecking(false);
+      setAllowed(false);
       return;
     }
 
@@ -67,7 +77,7 @@ export function AuthGuard({
   }, [allowedRoles, loginPath, wrongRoleRedirect, router]);
 
   if (!isAuthConfigured()) {
-    return <>{children}</>;
+    return <AuthNotConfiguredPanel />;
   }
 
   if (checking || !allowed) {

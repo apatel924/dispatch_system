@@ -13,8 +13,17 @@ import {
   getFirebaseClientConfig,
   isFirebaseClientConfigured,
 } from "@/lib/auth/config";
+import {
+  clearTabSession,
+  getValidTabSession,
+  isTabSessionEnabled,
+  saveTabSession,
+} from "@/lib/auth/tab-session";
 import { isUserRole } from "@/lib/server/roles";
 import type { UserRole } from "@/lib/types/backend";
+
+export const AUTH_NOT_CONFIGURED_MESSAGE =
+  "Firebase auth is not configured. Check .env.local.";
 
 let firebaseApp: FirebaseApp | undefined;
 
@@ -41,22 +50,51 @@ export function getClientAuth(): Auth {
   return getAuth(getFirebaseApp());
 }
 
+async function persistTabSessionFromUser(user: User): Promise<void> {
+  if (!isTabSessionEnabled()) return;
+
+  const tokenResult = await user.getIdTokenResult(true);
+  const role = tokenResult.claims.role;
+  if (!isUserRole(role)) return;
+
+  saveTabSession({
+    idToken: tokenResult.token,
+    role,
+    expiresAt: new Date(tokenResult.expirationTime).getTime(),
+    driverId:
+      typeof tokenResult.claims.driverId === "string"
+        ? tokenResult.claims.driverId
+        : undefined,
+  });
+}
+
 export async function signInWithEmail(
   email: string,
   password: string,
 ): Promise<User> {
   const result = await signInWithEmailAndPassword(getClientAuth(), email, password);
+  await persistTabSessionFromUser(result.user);
   return result.user;
 }
 
 export async function signOutUser(): Promise<void> {
+  clearTabSession();
   await signOut(getClientAuth());
 }
 
 export async function getCurrentIdToken(forceRefresh = false): Promise<string | null> {
+  const tabSession = getValidTabSession();
+  if (isTabSessionEnabled() && tabSession && !forceRefresh) {
+    return tabSession.idToken;
+  }
+
   const user = getClientAuth().currentUser;
   if (!user) return null;
-  return user.getIdToken(forceRefresh);
+  const token = await user.getIdToken(forceRefresh);
+  if (isTabSessionEnabled() && !forceRefresh) {
+    await persistTabSessionFromUser(user);
+  }
+  return token;
 }
 
 export interface AuthClaims {
@@ -69,6 +107,15 @@ export interface AuthClaims {
 export type DriverAuthClaims = AuthClaims;
 
 export async function getIdTokenClaims(forceRefresh = false): Promise<AuthClaims | null> {
+  const tabSession = getValidTabSession();
+  if (isTabSessionEnabled() && tabSession && !forceRefresh) {
+    return {
+      role: tabSession.role,
+      driverId: tabSession.driverId,
+      active: true,
+    };
+  }
+
   const user = getClientAuth().currentUser;
   if (!user) return null;
   const result = await user.getIdTokenResult(forceRefresh);
@@ -113,6 +160,17 @@ export async function requireClientAuthRedirect(
   wrongRoleRedirect?: string,
 ): Promise<AuthRedirectResult> {
   if (!isAuthConfigured()) {
+    return { allowed: false, error: AUTH_NOT_CONFIGURED_MESSAGE };
+  }
+
+  const tabSession = getValidTabSession();
+  if (isTabSessionEnabled() && tabSession) {
+    if (!allowedRoles.includes(tabSession.role)) {
+      return {
+        allowed: false,
+        redirectTo: wrongRoleRedirect ?? homePathForRole(tabSession.role),
+      };
+    }
     return { allowed: true };
   }
 
@@ -146,6 +204,10 @@ export async function requireClientAuthRedirect(
       redirectTo: wrongRoleRedirect ?? homePathForRole(claims.role),
       error: "You do not have access to this area.",
     };
+  }
+
+  if (isTabSessionEnabled()) {
+    await persistTabSessionFromUser(user);
   }
 
   return { allowed: true };

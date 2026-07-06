@@ -12,7 +12,8 @@
     "build": "next build",
     "start": "next start",
     "optimize:images": "node scripts/optimize-public-media.mjs",
-    "process:knockout-backgrounds": "node scripts/knockout-white-background.mjs"
+    "process:knockout-backgrounds": "node scripts/knockout-white-background.mjs",
+    "seed:firebase": "node scripts/seed-firebase.mjs"
   },
   "dependencies": {
     "@radix-ui/react-tooltip": "^1.2.11",

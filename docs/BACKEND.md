@@ -28,6 +28,21 @@ npm run build
 curl http://localhost:3000/api/health
 ```
 
+### Firebase seed (Firestore + custom claims)
+
+Use this after Firebase Admin credentials and Auth users are in place. **Does not create Auth users or passwords** — only sets custom claims and Firestore documents.
+
+```bash
+# 1. Ensure .env.local has FIREBASE_* and SEED_* emails (see below)
+# 2. Create Auth users manually in Firebase Console (see "Firebase seed setup")
+# 3. Run seed (idempotent — safe to re-run)
+npm run seed:firebase
+```
+
+**After seeding:** each user must **sign out and sign back in** so their ID token includes the new `role` / `driverId` custom claims.
+
+See [Firebase seed setup](#firebase-seed-setup) for Auth user creation, env vars, and smoke tests.
+
 **Auth header for protected routes:**
 
 ```
@@ -325,6 +340,129 @@ See [`.env.example`](../.env.example). Never commit `.env.local`.
 | `FIREBASE_PRIVATE_KEY` | Server | Admin SDK |
 | `NEXT_PUBLIC_APP_URL` | Client | Redirect URLs |
 | `NEXT_PUBLIC_USE_API` | Client | When `true`, admin + driver pages fetch `/api/*` (falls back to mock on error) |
+| `SEED_ADMIN_EMAIL` | Seed script | Admin email — must exist in Firebase Auth |
+| `SEED_DRIVER_1_EMAIL` | Seed script | Driver 1 email — must exist in Firebase Auth |
+| `SEED_DISPATCHER_EMAIL` | Seed script | Optional dispatcher email |
+| `SEED_DRIVER_2_EMAIL` | Seed script | Optional second driver email |
+
+---
+
+## Firebase seed setup
+
+Script: `scripts/seed-firebase.mjs` · Command: `npm run seed:firebase`
+
+### 0. Prerequisites
+
+1. **Enable Firestore** — Firebase Console → **Build** → **Firestore Database** → create database (or enable the Cloud Firestore API in Google Cloud Console).
+2. **Enable Authentication** with Email/Password provider.
+3. Copy `.env.example` → `.env.local` and set **both** Admin SDK and **client** Firebase values.
+
+**Client Web API key (required for login):**
+
+1. Firebase Console → **Project settings** (gear) → **General**
+2. Under **Your apps**, select your **Web app** (or add one)
+3. Copy the `apiKey` value (starts with `AIza…`)
+4. Set in `.env.local`:
+
+```bash
+NEXT_PUBLIC_FIREBASE_API_KEY=AIza...your_real_key_here
+```
+
+Do **not** leave the placeholder `your_firebase_web_api_key` — login will fail with `auth/api-key-not-valid`.
+
+5. **Restart the dev server** after changing any `NEXT_PUBLIC_*` variable (Next.js reads them at startup).
+
+Example test accounts (create in Auth first):
+
+| Email | Role after seed |
+|-------|-----------------|
+| `admin@quickrun.test` | admin |
+| `driver1@quickrun.test` | driver (`DRV-10012`) |
+| `driver2@quickrun.test` | driver (`DRV-10013`) |
+
+Set matching values in `.env.local`:
+
+```bash
+SEED_ADMIN_EMAIL=admin@quickrun.test
+SEED_DRIVER_1_EMAIL=driver1@quickrun.test
+SEED_DRIVER_2_EMAIL=driver2@quickrun.test
+```
+
+### 1. Create users manually in Firebase Authentication
+
+The seed script **does not** create Auth users or set passwords. Create them first:
+
+1. Open [Firebase Console](https://console.firebase.google.com) → your project → **Authentication** → **Users**.
+2. Click **Add user** for each account you need:
+
+| Role | Env var | Custom claims set by seed |
+|------|---------|---------------------------|
+| Admin | `SEED_ADMIN_EMAIL` | `role: admin`, `active: true` |
+| Dispatcher (optional) | `SEED_DISPATCHER_EMAIL` | `role: dispatcher`, `active: true` |
+| Driver 1 (required) | `SEED_DRIVER_1_EMAIL` | `role: driver`, `driverId: DRV-10012`, `active: true` |
+| Driver 2 (optional) | `SEED_DRIVER_2_EMAIL` | `role: driver`, `driverId: DRV-10013`, `active: true` |
+
+3. Set a password for each user in the console (or use your preferred Auth provider).
+4. Add the same emails to `.env.local` (copy from `.env.example` placeholders).
+
+### 2. Configure `.env.local`
+
+Required for the seed script:
+
+| Variable | Purpose |
+|----------|---------|
+| `FIREBASE_PROJECT_ID` | Firebase Admin SDK |
+| `FIREBASE_CLIENT_EMAIL` | Service account email |
+| `FIREBASE_PRIVATE_KEY` | Service account private key |
+| `SEED_ADMIN_EMAIL` | Admin Auth user email |
+| `SEED_DRIVER_1_EMAIL` | Driver 1 Auth user email |
+
+Optional:
+
+| Variable | Purpose |
+|----------|---------|
+| `SEED_DISPATCHER_EMAIL` | Dispatcher Auth user email |
+| `SEED_DRIVER_2_EMAIL` | Second driver Auth user email |
+
+### 3. Run the seed
+
+```bash
+npm run seed:firebase
+```
+
+The script is **idempotent** — re-running updates existing `users`, `drivers`, `orders`, and `orders/{id}/events` docs instead of duplicating them.
+
+**What it creates:**
+
+| Collection | Documents |
+|------------|-----------|
+| `users/{uid}` | Profile + role for each seed email |
+| `drivers/DRV-10012` | Driver 1 roster record |
+| `drivers/DRV-10013` | Driver 2 (if `SEED_DRIVER_2_EMAIL` set) |
+| `orders/QRX-SEED-1001` | New, unassigned |
+| `orders/QRX-SEED-1002` | Assigned → DRV-10012 |
+| `orders/QRX-SEED-1003` | Out for Delivery → DRV-10012 |
+| `orders/QRX-SEED-1004` | Delivered → DRV-10012 |
+| `orders/{id}/events` | Status timeline events per order |
+
+### 4. Refresh Auth tokens
+
+Custom claims are embedded in ID tokens at sign-in. After seeding:
+
+1. Sign out of the admin and driver apps (or clear the session).
+2. Sign back in with the seeded accounts.
+3. Verify claims via browser devtools or `getIdTokenClaims()` in the client.
+
+### 5. Smoke test checklist
+
+- [ ] `npm run seed:firebase` exits with `✅ Seed complete`
+- [ ] Admin sign-in redirects to `/dashboard` (not blocked by guard)
+- [ ] Driver 1 sign-in redirects to `/driver-dashboard`
+- [ ] Admin **Orders** lists `QRX-SEED-1001` … `QRX-SEED-1004` when `NEXT_PUBLIC_USE_API=true`
+- [ ] Order detail for `QRX-SEED-1003` shows status timeline events
+- [ ] Driver 1 sees assigned orders (`QRX-SEED-1002`, `1003`, `1004`) on driver dashboard
+- [ ] Public tracking: `/track/QRX-SEED-1003` loads (when API enabled)
+- [ ] Re-run `npm run seed:firebase` — no duplicate orders or users
 
 ---
 
@@ -471,5 +609,6 @@ Mock files remain as **fallback** when API is disabled or unavailable. **Do not 
 | — | 9 | Mock order import API + settings integrations UI |
 | — | 10 | Public tracking + reports overview API + page hooks |
 | — | 11 | Firebase login UI, auth guards, notification dev-log scaffold |
+| — | 12 | Firebase seed script (`npm run seed:firebase`), docs for Auth setup + smoke tests |
 
 **When you ship changes:** add a row to the changelog and update the **Implementation status** table above.

@@ -67,7 +67,11 @@ export type DeliveryStepKey =
 export interface Order {
   id: string;
   trackingId: string;
+  externalProvider?: string;
   externalOrderId?: string;
+  externalOrderNumber?: string;
+  externalOrderRef?: string;
+  promotedAt?: string;
   customerName: string;
   customerPhone: string;
   customerEmail?: string;

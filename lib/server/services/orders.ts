@@ -102,7 +102,11 @@ export async function createOrder(
   const order: Order = {
     id,
     trackingId,
+    externalProvider: input.externalProvider,
     externalOrderId: input.externalOrderId,
+    externalOrderNumber: input.externalOrderNumber,
+    externalOrderRef: input.externalOrderRef,
+    promotedAt: input.promotedAt,
     customerName: input.customerName,
     customerPhone: input.customerPhone,
     customerEmail: input.customerEmail,
@@ -154,6 +158,38 @@ export async function getOrderById(id: string): Promise<Order> {
   const snap = await orderDoc(db, id).get();
   if (!snap.exists) throw notFoundError("Order", id);
   return docToOrder(snap.id, snap.data()!);
+}
+
+export async function findOrderByExternalReference(params: {
+  externalProvider: string;
+  externalOrderId: string;
+}): Promise<Order | null> {
+  const db = getAdminFirestore();
+  const snap = await db
+    .collection(COLLECTIONS.orders)
+    .where("externalProvider", "==", params.externalProvider)
+    .where("externalOrderId", "==", params.externalOrderId)
+    .limit(1)
+    .get();
+
+  if (snap.empty) return null;
+  const doc = snap.docs[0];
+  return docToOrder(doc.id, doc.data());
+}
+
+export async function findOrderByExternalOrderRef(
+  externalOrderRef: string,
+): Promise<Order | null> {
+  const db = getAdminFirestore();
+  const snap = await db
+    .collection(COLLECTIONS.orders)
+    .where("externalOrderRef", "==", externalOrderRef)
+    .limit(1)
+    .get();
+
+  if (snap.empty) return null;
+  const doc = snap.docs[0];
+  return docToOrder(doc.id, doc.data());
 }
 
 export async function getOrderByTrackingId(trackingId: string): Promise<Order> {

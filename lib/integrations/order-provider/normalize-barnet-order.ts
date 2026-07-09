@@ -1,20 +1,16 @@
 import type { BarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-client.server";
+import { diagnoseBarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-order-diagnostics";
+import {
+  classifyBarnetOrder,
+  isBarnetDeliveryOrder,
+} from "@/lib/integrations/order-provider/classify-barnet-order";
 import type {
+  ExternalOrderDelivery,
   ExternalProviderOrderItem,
   NormalizedExternalOrder,
 } from "@/lib/integrations/order-provider/types";
 
 const BARNET_PROVIDER = "barnet";
-
-function coerceBoolean(value: unknown): boolean {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    return normalized === "true" || normalized === "1" || normalized === "yes";
-  }
-  return false;
-}
 
 function coerceString(value: unknown): string | null {
   if (value === undefined || value === null) return null;
@@ -54,43 +50,43 @@ function resolvePlacedAt(order: BarnetOrderRaw, fallback: string): string {
   return timestamp ?? fallback;
 }
 
-function resolveCustomerName(order: BarnetOrderRaw): string | null {
-  const direct = coerceString(order.customer_name);
-  if (direct) return direct;
-
-  const customer = order.customer;
-  if (customer && typeof customer === "object" && !Array.isArray(customer)) {
-    const name = coerceString((customer as Record<string, unknown>).name);
-    if (name) return name;
-  }
-
-  return coerceString(order.name);
+function resolveCustomerId(order: BarnetOrderRaw): string | null {
+  return coerceString(order.customer_id);
 }
 
-function resolveCustomerPhone(order: BarnetOrderRaw): string | null {
-  const direct = coerceString(order.customer_phone);
-  if (direct) return direct;
+function buildDeliveryFields(order: BarnetOrderRaw): ExternalOrderDelivery {
+  const address1 = coerceString(order.address);
+  const city = coerceString(order.city);
+  const province = coerceString(order.state);
+  const postalCode = coerceString(order.zip);
+  const notes = coerceString(order.delivery_notes);
+  const parts = [address1, city, province, postalCode].filter(
+    (part): part is string => part !== null,
+  );
+  const formattedAddress =
+    parts.length > 0 ? parts.join(", ") : coerceString(order.delivery_address);
 
-  const customer = order.customer;
-  if (customer && typeof customer === "object" && !Array.isArray(customer)) {
-    const phone = coerceString((customer as Record<string, unknown>).phone);
-    if (phone) return phone;
-  }
-
-  return coerceString(order.phone);
+  return {
+    address1,
+    address2: null,
+    city,
+    province,
+    postalCode,
+    formattedAddress,
+    notes,
+  };
 }
 
 function buildDeliveryAddress(order: BarnetOrderRaw): string | null {
-  const parts = [
-    coerceString(order.address),
-    coerceString(order.city),
-    coerceString(order.state),
-    coerceString(order.zip),
-  ].filter((part): part is string => part !== null);
+  return buildDeliveryFields(order).formattedAddress;
+}
 
-  if (parts.length > 0) return parts.join(", ");
+function resolvePaymentStatus(order: BarnetOrderRaw): string | null {
+  return coerceString(order.p_status) ?? coerceString(order.payment_status);
+}
 
-  return coerceString(order.delivery_address);
+function resolveSourceLocationId(order: BarnetOrderRaw): string | null {
+  return coerceString(order.store_id) ?? coerceString(order.location_id);
 }
 
 function normalizeBarnetItems(rawItems: unknown): ExternalProviderOrderItem[] {
@@ -118,25 +114,18 @@ function normalizeBarnetItems(rawItems: unknown): ExternalProviderOrderItem[] {
       quantity,
       unitPrice: coerceNullableNumber(item.unit_price ?? item.price ?? item.unitPrice),
       notes: coerceString(item.notes ?? item.note),
+      sku: coerceString(item.sku ?? item.product_sku),
+      category: coerceString(item.category ?? item.product_category),
     };
   });
 }
 
-export type BarnetOrderKind = "delivery" | "pickup" | "unknown";
-
-/** Strict Barnet order classification based on is_delivery. */
-export function classifyBarnetOrder(order: BarnetOrderRaw): BarnetOrderKind {
-  if (order.is_delivery === undefined || order.is_delivery === null) return "unknown";
-  return coerceBoolean(order.is_delivery) ? "delivery" : "pickup";
-}
-
-export function isBarnetDeliveryOrder(order: BarnetOrderRaw): boolean {
-  return classifyBarnetOrder(order) === "delivery";
-}
+export type { BarnetOrderKind } from "@/lib/integrations/order-provider/classify-barnet-order";
+export { classifyBarnetOrder, isBarnetDeliveryOrder } from "@/lib/integrations/order-provider/classify-barnet-order";
 
 /**
  * Maps a Barnet order detail payload into the normalized internal shape.
- * Tolerant of missing fields; customer name/phone remain null when absent.
+ * Customer contact fields remain null until enrichment via GET /user/{customer_id}.
  */
 export function normalizeBarnetOrder(
   order: BarnetOrderRaw,
@@ -148,22 +137,53 @@ export function normalizeBarnetOrder(
   const now = options?.now ?? new Date().toISOString();
   const externalOrderId = coerceString(order.id) ?? "unknown";
   const items = normalizeBarnetItems(order.items);
+  const delivery = buildDeliveryFields(order);
+  const status = resolveStatus(order);
+  const diagnostics = diagnoseBarnetOrderRaw(order);
 
   return {
     provider: BARNET_PROVIDER,
     externalOrderId,
     externalOrderNumber: coerceString(order.number),
-    status: resolveStatus(order),
+    status,
+    sourceStatus: status,
     deliveryStatus: coerceString(order.delivery_status),
+    paymentStatus: resolvePaymentStatus(order),
     isDelivery: isBarnetDeliveryOrder(order),
     total: coerceNumber(order.total),
     placedAt: resolvePlacedAt(order, now),
-    customerName: resolveCustomerName(order),
-    customerPhone: resolveCustomerPhone(order),
+    sourceLocationId: resolveSourceLocationId(order),
+    externalCustomerId: resolveCustomerId(order),
+    customerName: null,
+    customerPhone: null,
+    customerEmail: null,
+    customer: { name: null, phone: null, email: null },
     pickupAddress: null,
-    deliveryAddress: buildDeliveryAddress(order),
-    deliveryInstructions: coerceString(order.delivery_notes),
+    deliveryAddress: delivery.formattedAddress,
+    deliveryInstructions: delivery.notes,
+    delivery,
+    totals: {
+      subtotal: coerceNullableNumber(order.subtotal),
+      tax: coerceNullableNumber(order.tax),
+      discount: coerceNullableNumber(order.discount),
+      total: coerceNumber(order.total),
+    },
     items,
+    customerMessagingReady: false,
+    customerEnrichmentStatus: null,
+    customerEnrichmentError: null,
+    dispatchReady: diagnostics.dispatchReady,
+    missingFields: diagnostics.missingFields,
+    assignmentStatus: "unassigned",
+    dispatchStatus: diagnostics.dispatchReady ? "ready" : "needs_review",
+    assignedDriverId: null,
+    assignedDriverName: null,
+    assignedAt: null,
+    assignedBy: null,
+    lastSyncedAt: null,
+    promoted: false,
+    promotedOrderId: null,
+    promotedAt: null,
     rawPayload: order,
     createdAt: options?.preserveTimestamps?.createdAt ?? now,
     updatedAt: options?.preserveTimestamps?.updatedAt ?? now,

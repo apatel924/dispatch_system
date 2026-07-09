@@ -64,7 +64,7 @@ Optional:
 
 - **Live location GET** (`fetchBarnetLocations`, Discover Locations) runs when mode is `live`, base credentials are configured, and `EXTERNAL_ORDER_LIVE_READS_ENABLED=true`. Does **not** require `EXTERNAL_ORDER_LOCATION_ID`.
 - **Live order GET** (`fetchBarnetOrders`, live-preview) requires base config **plus** `EXTERNAL_ORDER_LOCATION_ID`.
-- **Live Firestore sync** only runs when order config is complete, reads are enabled, **and** `EXTERNAL_ORDER_LIVE_SYNC_ENABLED=true`. Only **delivery** orders (`is_delivery=true`) are synced. Customer name/phone remain nullable; `rawPayload` is stored server-side only and is never returned in API/UI responses.
+- **Live Firestore sync** only runs when order config is complete, reads are enabled, **and** `EXTERNAL_ORDER_LIVE_SYNC_ENABLED=true`. Only **delivery** orders (`is_delivery=true`) are synced. During sync, orders with `customer_id` are enriched via read-only `GET /user/{id}`. Only safe customer fields (`customerName`, `customerPhone`, `customerEmail`, `externalCustomerId`) are stored in Firestore — never the raw Barnet user payload. `rawPayload` (order only) is stored server-side and is never returned in API/UI responses.
 - **Customer SMS** from synced external orders is blocked unless `EXTERNAL_ORDER_CUSTOMER_MESSAGING_ENABLED=true` **and** the order passes `customerMessagingReady` diagnostics (customer phone present).
 - If mode is `live` but reads are disabled, health reports `readsDisabled: true` and configured status without calling the API.
 - Admin routes never return API keys, passwords, OTPs, Authorization headers, webhook URLs, or webhook secrets. Discover Locations returns only safe location fields (`hasWebhookUrl` boolean instead of the raw URL).
@@ -75,6 +75,7 @@ Optional:
 
 - `GET {base}{prefix}/locations`
 - `GET {base}{prefix}/orders?location_id=...&items_on_page=...&p=...`
+- `GET {base}{prefix}/user/{id}?id={id}` (read-only customer enrichment during sync)
 
 Barnet may return **a single location object** (e.g. one store) or a list/array. `normalizeBarnetLocationsResponse` handles both and strips secrets before any API or UI response. **Never paste the raw `/locations` response** into docs, tickets, or chat — it can contain `network_key`, `api_key`, `webhook_url`, Stripe keys, WooCommerce secrets, and other credentials. Use **Discover Live Locations** or `GET /live-locations` instead.
 
@@ -96,9 +97,79 @@ Live order detail responses (confirmed) include:
 | `address`, `city`, `state`, `zip` | `deliveryAddress` (joined) |
 | `delivery_notes` | `deliveryInstructions` |
 | `items` | `items` (+ `itemsCount` in safe API metadata) |
+| `customer_id` | `externalCustomerId` (enrichment key; contact fields fetched via `GET /user/{id}`) |
 | `tracking_number`, `p_shipment_pin`, `processed` | preserved in server-side `rawPayload` only |
 
-**Confirmed missing** on the current Barnet order detail endpoint: customer name and customer phone.
+**Confirmed:** Barnet `GET /orders` includes `customer_id` on delivery orders (e.g. order `751883` → customer `7755`). Customer name, phone, and email are **not** on the order payload; they are fetched read-only from `GET /user/{customer_id}?id={customer_id}` during live sync, preview, and delivery scan.
+
+### Barnet customer enrichment flow
+
+```
+GET /orders  →  customer_id on delivery order
+                    ↓
+GET /user/{customer_id}?id={customer_id}  →  normalize safe fields only
+                    ↓
+Merge into NormalizedExternalOrder  →  Firestore externalOrders
+```
+
+Normalized customer fields (stored in Firestore, never exposed in diagnostics UI):
+
+| Barnet user field | Stored as |
+|-------------------|-----------|
+| `display_name`, `full_name`, or `first_name` + `last_name` | `customerName` |
+| `phone` or `ap_phone` | `customerPhone` |
+| `email` or `ap_email` | `customerEmail` |
+
+**Not stored:** raw Barnet user payload, saved card fields, full shipping address from user profile (dispatch uses order `address`/`city`/`state`/`zip`).
+
+Enrichment status on synced orders:
+
+| Field | Meaning |
+|-------|---------|
+| `customerEnrichmentStatus: "success"` | `GET /user` succeeded |
+| `customerEnrichmentStatus: "failed"` | `GET /user` failed; order still synced |
+| `customerEnrichmentStatus: "skipped"` | No `customer_id` on order |
+| `customerMessagingReady` | Enrichment succeeded **and** `customerPhone` is present |
+| `dispatchReady` | Delivery order with full address and items |
+
+Customer lookups are cached by `customer_id` within a single sync/preview/scan run.
+
+**Security:** Never log or expose raw customer payloads, phone, email, name values, Authorization headers, or API credentials. Settings diagnostics and `GET /live-customer-detail` return boolean presence flags and safe key lists only.
+
+### Customer-link diagnostics (false-positive filtering)
+
+Live order detail probes scan the raw Barnet payload for customer-looking key paths, then classify them:
+
+| Class | Paths | Meaning |
+|-------|-------|---------|
+| **Strong** | `user_id`, `customer_id`, `customer.id`, `user.id`, `phone`, `email`, `customer.phone`, `customer.email` | Actionable customer identifiers or contact fields |
+| **Weak** | `kiosk_customer_status` | Customer-related metadata, not enough to retrieve contact info |
+| **Ignore** | `items.*.displayname`, `items.*.productName`, `items.*.name`, `productName`, `product_name` | Product/item fields — **not** customer names |
+
+Diagnostics expose:
+
+- `possibleCustomerKeyPaths` — strong + weak paths only (ignored item/product fields excluded)
+- `ignoredCustomerLikePaths` — item/product paths that matched a customer-looking scan but were filtered out
+- `hasUserIdCandidate` — true only when a **strong** user/customer ID path is present
+- `hasPhoneCandidate` — true only for **strong** phone paths (`phone`, `customer.phone`), not product fields
+
+**Confirmed on order `751883`:** `customer_id` is present (`7755`). Item `displayname` / `productName` fields are product names, not customer names. `kiosk_customer_status` is weak metadata only.
+
+Settings shows enrichment diagnostics (customer ID present, enrichment available, messaging ready, missing fields) — **without** exposing phone, email, or name values.
+
+Probe order via **Settings → Probe Customer Link (sample order)** or:
+
+```bash
+curl "http://localhost:3000/api/integrations/order-provider/live-order-detail?id=751883" \
+  -H "Authorization: Bearer <firebase-id-token>"
+```
+
+Probe customer enrichment safely (no PII values returned):
+
+```bash
+curl "http://localhost:3000/api/integrations/order-provider/live-customer-detail?customerId=7755" \
+  -H "Authorization: Bearer <firebase-id-token>"
+```
 
 ### Dispatch vs customer messaging readiness
 
@@ -107,11 +178,14 @@ Diagnostics separate two concerns:
 | Flag | Meaning |
 |------|---------|
 | `dispatchReady` | Delivery order with address (`address`+`city`+`state`+`zip`), and at least one item |
-| `customerMessagingReady` | Customer phone is present on the order payload |
+| `customerMessagingReady` | Customer phone present after enrichment (or on mock orders) |
+| `customerEnrichmentStatus` | `success`, `failed`, or `skipped` |
+| `hasCustomerId` | `customer_id` present on Barnet order payload |
+| `customerEnrichmentAvailable` | Same as `hasCustomerId` — enrichment can be attempted |
 
-Settings **Preview Live Orders** and synced order tables show these flags plus `missingFields` — without exposing raw address or customer values in diagnostic panels.
+Settings **Preview Live Orders**, **Delivery Scan**, and synced order tables show these flags plus `missingFields` — without exposing raw address, phone, email, or name values in diagnostic panels.
 
-**Next provider question:** Which endpoint or webhook payload includes customer name and phone for delivery orders?
+Customer SMS from synced external orders remains blocked unless `EXTERNAL_ORDER_CUSTOMER_MESSAGING_ENABLED=true` **and** `customerMessagingReady` is true. No SMS is sent by this integration step — only readiness flags are prepared.
 
 ## Required Environment Variables
 
@@ -303,11 +377,16 @@ lib/integrations/order-provider/
   types.ts                    # Provider and normalized types
   env.server.ts               # Zod env validation + safety gates
   mock-client.server.ts       # Fake orders (no fetch)
-  barnet-client.server.ts     # Read-only live GET client
+  barnet-client.server.ts     # Read-only live GET client (orders, locations, users)
   barnet-order-diagnostics.ts # Dispatch vs messaging readiness checks
+  barnet-customer-enrichment.server.ts # GET /user enrichment + per-run cache
+  normalize-barnet-customer.ts # Barnet user → safe customer fields
+  live-customer-detail-diagnostics.ts # Safe customer probe diagnostics
+  find-customer-link-fields.ts # Classify customer-looking payload paths
+  live-order-detail-diagnostics.ts # Single-order probe + customer-link flags
   normalize-order.ts          # Mock provider → normalized mapping
   normalize-barnet-order.ts   # Barnet detail → normalized mapping
-  safe-external-order.ts      # Strip rawPayload for API/UI responses
+  safe-external-order.ts      # Strip rawPayload + customer PII for API/UI
   customer-messaging.server.ts # SMS feature gate for synced orders
   index.server.ts             # Sync orchestration + exports
 
@@ -318,6 +397,8 @@ app/api/integrations/order-provider/
   live-health/route.ts        # GET admin live config (+ optional probe)
   live-locations/route.ts   # GET admin discover locations (safe fields only)
   live-preview/route.ts     # GET admin live preview (read-only)
+  live-order-detail/route.ts # GET admin live order detail probe
+  live-customer-detail/route.ts # GET admin safe customer enrichment probe
   live-sync/route.ts          # POST admin live sync
 
 scripts/

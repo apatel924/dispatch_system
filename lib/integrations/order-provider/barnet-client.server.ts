@@ -50,7 +50,27 @@ export interface BarnetOrderRaw {
   customer?: { name?: string; phone?: string };
   name?: string;
   phone?: string;
+  customer_id?: number | string;
   delivery_address?: string;
+  [key: string]: unknown;
+}
+
+/** Read-only Barnet user shape (tolerant of missing fields). */
+export interface BarnetUserRaw {
+  id?: number | string;
+  display_name?: string;
+  full_name?: string;
+  first_name?: string;
+  last_name?: string;
+  phone?: string;
+  ap_phone?: string;
+  email?: string;
+  ap_email?: string;
+  shipping_address?: string | Record<string, unknown>;
+  shipping?: Record<string, unknown>;
+  shipping_city?: string;
+  shipping_state?: string;
+  shipping_zip?: string;
   [key: string]: unknown;
 }
 
@@ -372,4 +392,22 @@ export async function fetchBarnetOrderByNumber(
 
   const orders = extractOrderList(raw);
   return orders[0] ?? null;
+}
+
+/** GET /user/{id}?id={id} — read-only. */
+export async function fetchBarnetUserById(
+  customerId: string,
+): Promise<BarnetUserRaw | null> {
+  assertLiveReadsAllowed();
+
+  const trimmedId = customerId.trim();
+  if (!trimmedId) {
+    throw new Error("customerId is required for Barnet user lookup");
+  }
+
+  const raw = await barnetGet(`/user/${trimmedId}`, { id: trimmedId });
+
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw as BarnetUserRaw;
+  return null;
 }

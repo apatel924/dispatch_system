@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_EXTERNAL_ORDER_SYNC_PAGES } from "@/lib/integrations/order-provider/sync-pagination.server";
 import type {
   ExternalOrderProviderConfig,
   ExternalOrderProviderMode,
@@ -50,10 +51,16 @@ const EnvSchema = z.object({
     (value) => parseBoolEnv(value, false),
     z.boolean(),
   ),
-  EXTERNAL_ORDER_SYNC_PAGES: z.preprocess(
-    (value) => parsePositiveIntEnv(value, 5),
-    z.number().int().min(1).max(10),
-  ),
+  EXTERNAL_ORDER_SYNC_PAGES: z.preprocess((value) => {
+    const parsed = parsePositiveIntEnv(value, 5);
+    const clamped = Math.min(parsed, MAX_EXTERNAL_ORDER_SYNC_PAGES);
+    if (clamped !== parsed) {
+      console.warn(
+        `[order-provider] EXTERNAL_ORDER_SYNC_PAGES=${parsed} exceeds max ${MAX_EXTERNAL_ORDER_SYNC_PAGES}; using ${clamped}`,
+      );
+    }
+    return clamped;
+  }, z.number().int().min(1).max(MAX_EXTERNAL_ORDER_SYNC_PAGES)),
   EXTERNAL_ORDER_SYNC_ITEMS_PER_PAGE: z.preprocess(
     (value) => parsePositiveIntEnv(value, 20),
     z.number().int().min(1),

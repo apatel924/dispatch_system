@@ -1,5 +1,10 @@
 import type { BarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-client.server";
-import type { BarnetOrderDiagnostics } from "@/lib/integrations/order-provider/types";
+import { resolveBarnetCustomerId } from "@/lib/integrations/order-provider/barnet-customer-enrichment.server";
+import { isBarnetDeliveryOrder } from "@/lib/integrations/order-provider/classify-barnet-order";
+import type {
+  BarnetOrderDiagnostics,
+  CustomerEnrichmentStatus,
+} from "@/lib/integrations/order-provider/types";
 
 export type { BarnetOrderDiagnostics };
 
@@ -9,51 +14,57 @@ function coerceString(value: unknown): string | null {
   return text.length > 0 ? text : null;
 }
 
-function isBarnetDeliveryFlag(value: unknown): boolean {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    return normalized === "true" || normalized === "1" || normalized === "yes";
-  }
-  return false;
-}
-
-function resolveCustomerNameFromRaw(order: BarnetOrderRaw): string | null {
-  const direct = coerceString(order.customer_name);
-  if (direct) return direct;
-
-  const customer = order.customer;
-  if (customer && typeof customer === "object" && !Array.isArray(customer)) {
-    const name = coerceString((customer as Record<string, unknown>).name);
-    if (name) return name;
-  }
-
-  return coerceString(order.name);
-}
-
-function resolveCustomerPhoneFromRaw(order: BarnetOrderRaw): string | null {
-  const direct = coerceString(order.customer_phone);
-  if (direct) return direct;
-
-  const customer = order.customer;
-  if (customer && typeof customer === "object" && !Array.isArray(customer)) {
-    const phone = coerceString((customer as Record<string, unknown>).phone);
-    if (phone) return phone;
-  }
-
-  return coerceString(order.phone);
-}
-
 function hasRawItems(order: BarnetOrderRaw): boolean {
   return Array.isArray(order.items) && order.items.length > 0;
+}
+
+function buildMissingFields(params: {
+  hasAddress: boolean;
+  hasCity: boolean;
+  hasState: boolean;
+  hasZip: boolean;
+  hasDeliveryInstructions: boolean;
+  hasItems: boolean;
+  hasCustomerId: boolean;
+  hasCustomerName: boolean;
+  hasCustomerPhone: boolean;
+  hasCustomerEmail: boolean;
+  useOrderAddressKeys?: boolean;
+}): string[] {
+  const missingFields: string[] = [];
+  if (!params.hasAddress) {
+    missingFields.push(params.useOrderAddressKeys ? "address" : "delivery_address");
+  }
+  if (!params.hasCity) missingFields.push("city");
+  if (!params.hasState) missingFields.push("state");
+  if (!params.hasZip) missingFields.push("zip");
+  if (!params.hasDeliveryInstructions) {
+    missingFields.push(
+      params.useOrderAddressKeys ? "delivery_notes" : "delivery_instructions",
+    );
+  }
+  if (!params.hasItems) missingFields.push("items");
+  if (!params.hasCustomerId) missingFields.push("customer_id");
+  if (!params.hasCustomerName) missingFields.push("customer_name");
+  if (!params.hasCustomerPhone) missingFields.push("customer_phone");
+  if (!params.hasCustomerEmail) missingFields.push("customer_email");
+  return missingFields;
 }
 
 /**
  * Field-level diagnostics for a live Barnet order detail payload.
  * Uses raw address/city/state/zip and delivery_notes when available.
  */
-export function diagnoseBarnetOrderRaw(order: BarnetOrderRaw): BarnetOrderDiagnostics {
+export function diagnoseBarnetOrderRaw(
+  order: BarnetOrderRaw,
+  enrichment?: {
+    customerName?: string | null;
+    customerPhone?: string | null;
+    customerEmail?: string | null;
+    customerEnrichmentStatus?: CustomerEnrichmentStatus | null;
+    customerMessagingReady?: boolean;
+  },
+): BarnetOrderDiagnostics {
   const hasAddress = Boolean(coerceString(order.address));
   const hasCity = Boolean(coerceString(order.city));
   const hasState = Boolean(coerceString(order.state));
@@ -61,64 +72,104 @@ export function diagnoseBarnetOrderRaw(order: BarnetOrderRaw): BarnetOrderDiagno
   const hasDeliveryAddress = hasAddress && hasCity && hasState && hasZip;
   const hasDeliveryInstructions = Boolean(coerceString(order.delivery_notes));
   const hasItems = hasRawItems(order);
-  const hasCustomerName = Boolean(resolveCustomerNameFromRaw(order));
-  const hasCustomerPhone = Boolean(resolveCustomerPhoneFromRaw(order));
-  const isDelivery = isBarnetDeliveryFlag(order.is_delivery);
+  const hasCustomerId = Boolean(resolveBarnetCustomerId(order));
+  const hasCustomerName = Boolean(coerceString(enrichment?.customerName));
+  const hasCustomerPhone = Boolean(coerceString(enrichment?.customerPhone));
+  const hasCustomerEmail = Boolean(coerceString(enrichment?.customerEmail));
+  const isDelivery = isBarnetDeliveryOrder(order);
 
-  const missingFields: string[] = [];
-  if (!hasAddress) missingFields.push("address");
-  if (!hasCity) missingFields.push("city");
-  if (!hasState) missingFields.push("state");
-  if (!hasZip) missingFields.push("zip");
-  if (!hasDeliveryInstructions) missingFields.push("delivery_notes");
-  if (!hasItems) missingFields.push("items");
-  if (!hasCustomerName) missingFields.push("customer_name");
-  if (!hasCustomerPhone) missingFields.push("customer_phone");
+  const customerEnrichmentStatus =
+    enrichment?.customerEnrichmentStatus ??
+    (hasCustomerId ? null : "skipped");
+
+  const customerMessagingReady =
+    enrichment?.customerMessagingReady ?? hasCustomerPhone;
 
   return {
     hasDeliveryAddress,
     hasDeliveryInstructions,
     hasItems,
+    hasCustomerId,
+    customerEnrichmentAvailable: hasCustomerId,
     hasCustomerName,
     hasCustomerPhone,
+    hasCustomerEmail,
     dispatchReady: isDelivery && hasDeliveryAddress && hasItems,
-    customerMessagingReady: hasCustomerPhone,
-    missingFields,
+    customerMessagingReady,
+    customerEnrichmentStatus,
+    missingFields: buildMissingFields({
+      hasAddress,
+      hasCity,
+      hasState,
+      hasZip,
+      hasDeliveryInstructions,
+      hasItems,
+      hasCustomerId,
+      hasCustomerName,
+      hasCustomerPhone,
+      hasCustomerEmail,
+      useOrderAddressKeys: true,
+    }),
   };
 }
 
 /**
  * Diagnostics derived from a normalized external order (e.g. synced Firestore docs).
  */
-export function diagnoseNormalizedExternalOrder(order: {
-  isDelivery: boolean;
-  deliveryAddress: string | null;
-  deliveryInstructions: string | null;
-  items: unknown[];
-  customerName: string | null;
-  customerPhone: string | null;
-}): BarnetOrderDiagnostics {
+export function diagnoseNormalizedExternalOrder(
+  order: {
+    isDelivery: boolean;
+    deliveryAddress: string | null;
+    deliveryInstructions: string | null;
+    items: unknown[];
+    externalCustomerId?: string | null;
+    customerName?: string | null;
+    customerPhone?: string | null;
+    customerEmail?: string | null;
+    customerMessagingReady?: boolean;
+    customerEnrichmentStatus?: CustomerEnrichmentStatus | null;
+    dispatchReady?: boolean;
+  },
+): BarnetOrderDiagnostics {
   const hasDeliveryAddress = Boolean(coerceString(order.deliveryAddress));
   const hasDeliveryInstructions = Boolean(coerceString(order.deliveryInstructions));
   const hasItems = order.items.length > 0;
+  const hasCustomerId = Boolean(coerceString(order.externalCustomerId));
   const hasCustomerName = Boolean(coerceString(order.customerName));
   const hasCustomerPhone = Boolean(coerceString(order.customerPhone));
+  const hasCustomerEmail = Boolean(coerceString(order.customerEmail));
 
-  const missingFields: string[] = [];
-  if (!hasDeliveryAddress) missingFields.push("delivery_address");
-  if (!hasDeliveryInstructions) missingFields.push("delivery_instructions");
-  if (!hasItems) missingFields.push("items");
-  if (!hasCustomerName) missingFields.push("customer_name");
-  if (!hasCustomerPhone) missingFields.push("customer_phone");
+  const dispatchReady =
+    order.dispatchReady ?? (order.isDelivery && hasDeliveryAddress && hasItems);
+  const customerMessagingReady =
+    order.customerMessagingReady ?? hasCustomerPhone;
+  const customerEnrichmentStatus =
+    order.customerEnrichmentStatus ?? (hasCustomerId ? null : "skipped");
 
   return {
     hasDeliveryAddress,
     hasDeliveryInstructions,
     hasItems,
+    hasCustomerId,
+    customerEnrichmentAvailable: hasCustomerId,
     hasCustomerName,
     hasCustomerPhone,
-    dispatchReady: order.isDelivery && hasDeliveryAddress && hasItems,
-    customerMessagingReady: hasCustomerPhone,
-    missingFields,
+    hasCustomerEmail,
+    dispatchReady,
+    customerMessagingReady,
+    customerEnrichmentStatus,
+    missingFields: buildMissingFields({
+      hasAddress: hasDeliveryAddress,
+      hasCity: hasDeliveryAddress,
+      hasState: hasDeliveryAddress,
+      hasZip: hasDeliveryAddress,
+      hasDeliveryInstructions,
+      hasItems,
+      hasCustomerId,
+      hasCustomerName,
+      hasCustomerPhone,
+      hasCustomerEmail,
+      useOrderAddressKeys: false,
+    }),
   };
 }

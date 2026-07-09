@@ -1,3 +1,4 @@
+import { diagnoseNormalizedExternalOrder } from "@/lib/integrations/order-provider/barnet-order-diagnostics";
 import type {
   ExternalProviderOrder,
   NormalizedExternalOrder,
@@ -13,30 +14,81 @@ export function normalizeExternalOrder(
   options?: { now?: string; preserveTimestamps?: Partial<Pick<NormalizedExternalOrder, "createdAt" | "updatedAt">> },
 ): NormalizedExternalOrder {
   const now = options?.now ?? new Date().toISOString();
+  const items = order.items.map((item) => ({
+    name: item.name,
+    quantity: item.quantity,
+    unitPrice: item.unitPrice,
+    notes: item.notes,
+  }));
 
-  return {
+  const draft: NormalizedExternalOrder = {
     provider,
     externalOrderId: order.id,
     externalOrderNumber: order.orderNumber ?? null,
     status: order.status,
+    sourceStatus: order.status,
     deliveryStatus: order.deliveryStatus,
+    paymentStatus: null,
     isDelivery: order.isDelivery,
     total: order.total,
     placedAt: order.placedAt,
+    sourceLocationId: null,
+    externalCustomerId: null,
     customerName: order.customer.name,
     customerPhone: order.customer.phone,
+    customerEmail: null,
+    customer: {
+      name: order.customer.name,
+      phone: order.customer.phone,
+      email: null,
+    },
     pickupAddress: order.pickupAddress,
     deliveryAddress: order.deliveryAddress,
     deliveryInstructions: order.deliveryInstructions,
-    items: order.items.map((item) => ({
-      name: item.name,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      notes: item.notes,
-    })),
+    delivery: {
+      address1: order.deliveryAddress,
+      address2: null,
+      city: null,
+      province: null,
+      postalCode: null,
+      formattedAddress: order.deliveryAddress,
+      notes: order.deliveryInstructions,
+    },
+    totals: {
+      subtotal: null,
+      tax: null,
+      discount: null,
+      total: order.total,
+    },
+    items,
+    customerMessagingReady: false,
+    customerEnrichmentStatus: "skipped",
+    customerEnrichmentError: null,
+    dispatchReady: false,
+    missingFields: [],
+    assignmentStatus: "unassigned",
+    dispatchStatus: "pending",
+    assignedDriverId: null,
+    assignedDriverName: null,
+    assignedAt: null,
+    assignedBy: null,
+    lastSyncedAt: null,
+    promoted: false,
+    promotedOrderId: null,
+    promotedAt: null,
     rawPayload: order,
     createdAt: options?.preserveTimestamps?.createdAt ?? now,
     updatedAt: options?.preserveTimestamps?.updatedAt ?? now,
+  };
+
+  const diagnostics = diagnoseNormalizedExternalOrder(draft);
+
+  return {
+    ...draft,
+    dispatchReady: diagnostics.dispatchReady,
+    customerMessagingReady: diagnostics.customerMessagingReady,
+    missingFields: diagnostics.missingFields,
+    dispatchStatus: diagnostics.dispatchReady ? "ready" : "needs_review",
   };
 }
 

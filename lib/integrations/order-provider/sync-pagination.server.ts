@@ -1,4 +1,5 @@
-export const MAX_EXTERNAL_ORDER_SYNC_PAGES = 10;
+export const MAX_EXTERNAL_ORDER_SYNC_PAGES = 20;
+export const DEFAULT_EXTERNAL_ORDER_SYNC_PAGE_CONCURRENCY = 4;
 
 const DEFAULT_SYNC_PAGES = 5;
 const DEFAULT_ITEMS_PER_PAGE = 20;
@@ -27,4 +28,15 @@ export function getExternalOrderSyncPaginationConfig(): {
   );
 
   return { pages, itemsPerPage };
+}
+
+/** Parallel Barnet GET /orders requests per scan batch. */
+export function getExternalOrderSyncPageConcurrency(): number {
+  return Math.min(
+    parsePositiveInt(
+      process.env.EXTERNAL_ORDER_SYNC_PAGE_CONCURRENCY,
+      DEFAULT_EXTERNAL_ORDER_SYNC_PAGE_CONCURRENCY,
+    ),
+    MAX_EXTERNAL_ORDER_SYNC_PAGES,
+  );
 }

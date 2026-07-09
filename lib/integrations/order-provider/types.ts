@@ -5,7 +5,40 @@ export interface ExternalProviderOrderItem {
   quantity: number;
   unitPrice: number | null;
   notes: string | null;
+  sku?: string | null;
+  category?: string | null;
 }
+
+export interface ExternalOrderCustomer {
+  name: string | null;
+  phone: string | null;
+  email: string | null;
+}
+
+export interface ExternalOrderDelivery {
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  province: string | null;
+  postalCode: string | null;
+  formattedAddress: string | null;
+  notes: string | null;
+}
+
+export interface ExternalOrderTotals {
+  subtotal: number | null;
+  tax: number | null;
+  discount: number | null;
+  total: number;
+}
+
+export type ExternalOrderAssignmentStatus = "unassigned" | "assigned";
+export type ExternalOrderDispatchStatus =
+  | "pending"
+  | "needs_review"
+  | "ready"
+  | "assigned"
+  | "promoted";
 
 /** Raw order shape returned by a provider adapter (mock or live). */
 export interface ExternalProviderOrder {
@@ -26,25 +59,132 @@ export interface ExternalProviderOrder {
   items: ExternalProviderOrderItem[];
 }
 
+export type CustomerEnrichmentStatus = "success" | "failed" | "skipped";
+
 /** Normalized internal order shape stored in Firestore. */
 export interface NormalizedExternalOrder {
   provider: string;
   externalOrderId: string;
   externalOrderNumber: string | null;
+  /** Barnet/source order status */
   status: string;
+  sourceStatus: string;
   deliveryStatus: string | null;
+  paymentStatus: string | null;
   isDelivery: boolean;
   total: number;
   placedAt: string;
+  sourceLocationId: string | null;
+  externalCustomerId: string | null;
   customerName: string | null;
   customerPhone: string | null;
+  customerEmail: string | null;
+  customer: ExternalOrderCustomer;
   pickupAddress: string | null;
   deliveryAddress: string | null;
   deliveryInstructions: string | null;
+  delivery: ExternalOrderDelivery;
+  totals: ExternalOrderTotals;
   items: ExternalProviderOrderItem[];
+  customerMessagingReady: boolean;
+  customerEnrichmentStatus: CustomerEnrichmentStatus | null;
+  customerEnrichmentError: string | null;
+  dispatchReady: boolean;
+  missingFields: string[];
+  assignmentStatus: ExternalOrderAssignmentStatus;
+  dispatchStatus: ExternalOrderDispatchStatus;
+  assignedDriverId: string | null;
+  assignedDriverName: string | null;
+  assignedAt: string | null;
+  assignedBy: string | null;
+  lastSyncedAt: string | null;
+  promoted: boolean;
+  promotedOrderId: string | null;
+  promotedAt: string | null;
   rawPayload: unknown;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Admin intake list row — includes dispatch PII for manual assignment. */
+export interface ExternalOrderIntakeRow {
+  id: string;
+  provider: string;
+  externalOrderId: string;
+  externalOrderNumber: string | null;
+  customerName: string | null;
+  customerPhone: string | null;
+  deliveryAddress: string | null;
+  itemsCount: number;
+  total: number;
+  sourceStatus: string;
+  dispatchReady: boolean;
+  customerMessagingReady: boolean;
+  missingFields: string[];
+  assignmentStatus: ExternalOrderAssignmentStatus;
+  dispatchStatus: ExternalOrderDispatchStatus;
+  assignedDriverId: string | null;
+  assignedDriverName: string | null;
+  isPreview: boolean;
+  alreadyImported: boolean;
+  promoted: boolean;
+  promotedOrderId: string | null;
+  promotedAt: string | null;
+  updatedAt: string;
+  lastSyncedAt: string | null;
+}
+
+/** Admin intake detail — full dispatch fields without raw Barnet payload. */
+export interface ExternalOrderIntakeDetail {
+  id: string;
+  provider: string;
+  externalOrderId: string;
+  externalOrderNumber: string | null;
+  sourceLocationId: string | null;
+  sourceStatus: string;
+  deliveryStatus: string | null;
+  paymentStatus: string | null;
+  placedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  lastSyncedAt: string | null;
+  isDelivery: boolean;
+  customer: ExternalOrderCustomer & { externalCustomerId: string | null };
+  delivery: ExternalOrderDelivery;
+  items: ExternalProviderOrderItem[];
+  totals: ExternalOrderTotals;
+  dispatchReady: boolean;
+  customerMessagingReady: boolean;
+  customerEnrichmentStatus: CustomerEnrichmentStatus | null;
+  missingFields: string[];
+  assignmentStatus: ExternalOrderAssignmentStatus;
+  dispatchStatus: ExternalOrderDispatchStatus;
+  assignedDriverId: string | null;
+  assignedDriverName: string | null;
+  assignedAt: string | null;
+  assignedBy: string | null;
+  promoted: boolean;
+  promotedOrderId: string | null;
+  promotedAt: string | null;
+  dispatchChecks: {
+    deliveryOrderConfirmed: boolean;
+    customerNamePresent: boolean;
+    customerPhonePresent: boolean;
+    deliveryAddressPresent: boolean;
+    itemsPresent: boolean;
+    notAlreadyAssigned: boolean;
+  };
+}
+
+export interface ExternalOrderProviderSyncState {
+  lastSuccessfulSyncAt: string | null;
+  lastError: string | null;
+  lastSyncSummary: {
+    inserted: number;
+    updated: number;
+    deliveryOrdersFound: number;
+    pagesScanned: number;
+  } | null;
 }
 
 export interface ExternalOrderScanStats {
@@ -65,6 +205,7 @@ export interface LiveDeliveryScanResult {
   ok: boolean;
   mode: "live";
   orders: SafeExternalOrder[];
+  intakeOrders: ExternalOrderIntakeRow[];
   pagesScanned: number;
   totalOrdersSeen: number;
   deliveryOrdersFound: number;
@@ -121,14 +262,48 @@ export interface BarnetOrderDiagnostics {
   hasDeliveryAddress: boolean;
   hasDeliveryInstructions: boolean;
   hasItems: boolean;
+  hasCustomerId: boolean;
+  customerEnrichmentAvailable: boolean;
   hasCustomerName: boolean;
   hasCustomerPhone: boolean;
+  hasCustomerEmail: boolean;
   dispatchReady: boolean;
   customerMessagingReady: boolean;
+  customerEnrichmentStatus: CustomerEnrichmentStatus | null;
   missingFields: string[];
 }
 
-/** API/UI-safe external order — no rawPayload. */
+export interface LiveOrderDetailDiagnostics extends BarnetOrderDiagnostics {
+  externalOrderId: string;
+  externalOrderNumber: string | null;
+  topLevelKeys: string[];
+  possibleCustomerKeyPaths: string[];
+  ignoredCustomerLikePaths: string[];
+  hasUserIdCandidate: boolean;
+  hasPhoneCandidate: boolean;
+  hasUsableCustomerLink: boolean;
+}
+
+export interface LiveCustomerDetailResult {
+  ok: boolean;
+  mode: "live";
+  diagnostics: {
+    customerId: string;
+    hasCustomerName: boolean;
+    hasCustomerPhone: boolean;
+    hasCustomerEmail: boolean;
+    hasShippingAddress: boolean;
+    topLevelKeys: string[];
+  };
+}
+
+export interface LiveOrderDetailResult {
+  ok: boolean;
+  mode: "live";
+  diagnostics: LiveOrderDetailDiagnostics;
+}
+
+/** API/UI-safe external order — no rawPayload or customer PII. */
 export interface SafeExternalOrder {
   provider: string;
   externalOrderId: string;
@@ -138,12 +313,14 @@ export interface SafeExternalOrder {
   isDelivery: boolean;
   total: number;
   placedAt: string;
-  customerName: string | null;
-  customerPhone: string | null;
+  externalCustomerId: string | null;
   pickupAddress: string | null;
   deliveryAddress: string | null;
   deliveryInstructions: string | null;
   itemsCount: number;
+  customerMessagingReady: boolean;
+  customerEnrichmentStatus: CustomerEnrichmentStatus | null;
+  dispatchReady: boolean;
   createdAt: string;
   updatedAt: string;
   diagnostics: BarnetOrderDiagnostics;
@@ -153,6 +330,7 @@ export interface LiveOrderPreviewResult {
   ok: boolean;
   mode: "live";
   orders: SafeExternalOrder[];
+  intakeOrders: ExternalOrderIntakeRow[];
   total: number;
   pagesScanned: number;
   totalOrdersSeen: number;

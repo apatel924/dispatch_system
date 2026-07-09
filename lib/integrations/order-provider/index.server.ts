@@ -1,12 +1,31 @@
 import { getAdminFirestore } from "@/lib/server/firebase-admin";
 import { omitUndefined } from "@/lib/server/firestore/helpers";
+import type { AuthUser } from "@/lib/server/auth";
+import { writeAuditLog } from "@/lib/server/services/audit";
+import { getDriverById } from "@/lib/server/services/drivers";
+import { assignDriver } from "@/lib/server/services/orders";
+import { notFoundError } from "@/lib/server/errors";
+import { promoteExternalOrderToDispatch } from "@/lib/integrations/order-provider/promote-external-order.server";
 import {
   assertLiveOrdersReadsAllowed,
+  assertLiveReadsAllowed,
   assertLiveSyncAllowed,
   getExternalOrderProviderConfig,
 } from "@/lib/integrations/order-provider/env.server";
 import { diagnoseBarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-order-diagnostics";
-import { fetchBarnetOrders } from "@/lib/integrations/order-provider/barnet-client.server";
+import {
+  enrichBarnetDeliveryOrder,
+  resolveBarnetCustomerId,
+  type BarnetCustomerCache,
+} from "@/lib/integrations/order-provider/barnet-customer-enrichment.server";
+import {
+  fetchBarnetOrderById,
+  fetchBarnetOrderByNumber,
+  fetchBarnetUserById,
+  type BarnetOrderRaw,
+} from "@/lib/integrations/order-provider/barnet-client.server";
+import { diagnoseLiveCustomerDetail } from "@/lib/integrations/order-provider/live-customer-detail-diagnostics";
+import { diagnoseLiveOrderDetail } from "@/lib/integrations/order-provider/live-order-detail-diagnostics";
 import { scanBarnetOrderPages } from "@/lib/integrations/order-provider/scan-barnet-orders.server";
 import {
   fetchMockProviderOrders,
@@ -18,10 +37,20 @@ import {
   normalizeBarnetOrder,
 } from "@/lib/integrations/order-provider/normalize-barnet-order";
 import { toSafeExternalOrder } from "@/lib/integrations/order-provider/safe-external-order";
+import {
+  hydrateNormalizedExternalOrder,
+  toExternalOrderIntakeDetail,
+  toExternalOrderIntakeRow,
+} from "@/lib/integrations/order-provider/external-order-intake";
 import type {
+  ExternalOrderIntakeDetail,
+  ExternalOrderIntakeRow,
   ExternalOrderProviderHealth,
+  ExternalOrderProviderSyncState,
   ExternalOrderSyncResult,
+  LiveCustomerDetailResult,
   LiveDeliveryScanResult,
+  LiveOrderDetailResult,
   LiveOrderPreviewResult,
   LiveOrderProviderHealth,
   NormalizedExternalOrder,
@@ -29,6 +58,138 @@ import type {
 } from "@/lib/integrations/order-provider/types";
 
 const COLLECTION = "externalOrders";
+const SYNC_STATE_DOC = "integrationState/orderProvider";
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function preserveAssignmentFields(
+  toStore: NormalizedExternalOrder,
+  existing: NormalizedExternalOrder | null,
+): NormalizedExternalOrder {
+  if (!existing) return toStore;
+
+  return {
+    ...toStore,
+    assignmentStatus: existing.assignmentStatus ?? "unassigned",
+    assignedDriverId: existing.assignedDriverId ?? null,
+    assignedDriverName: existing.assignedDriverName ?? null,
+    assignedAt: existing.assignedAt ?? null,
+    assignedBy: existing.assignedBy ?? null,
+    promoted: existing.promoted ?? false,
+    promotedOrderId: existing.promotedOrderId ?? null,
+    promotedAt: existing.promotedAt ?? null,
+    status:
+      existing.assignmentStatus === "assigned"
+        ? "assigned"
+        : existing.promoted
+          ? "promoted"
+          : toStore.status,
+    dispatchStatus:
+      existing.assignmentStatus === "assigned"
+        ? "assigned"
+        : existing.promoted
+          ? "promoted"
+          : toStore.dispatchStatus,
+    createdAt: existing.createdAt ?? toStore.createdAt,
+  };
+}
+
+async function readSyncState(): Promise<ExternalOrderProviderSyncState> {
+  const db = getAdminFirestore();
+  const snap = await db.doc(SYNC_STATE_DOC).get();
+  if (!snap.exists) {
+    return {
+      lastSuccessfulSyncAt: null,
+      lastError: null,
+      lastSyncSummary: null,
+    };
+  }
+  const data = snap.data() as ExternalOrderProviderSyncState;
+  return {
+    lastSuccessfulSyncAt: data.lastSuccessfulSyncAt ?? null,
+    lastError: data.lastError ?? null,
+    lastSyncSummary: data.lastSyncSummary ?? null,
+  };
+}
+
+async function writeSyncState(state: ExternalOrderProviderSyncState): Promise<void> {
+  const db = getAdminFirestore();
+  await db.doc(SYNC_STATE_DOC).set(omitUndefined(state as unknown as Record<string, unknown>));
+}
+
+export async function getExternalOrderProviderSyncState(): Promise<ExternalOrderProviderSyncState> {
+  return readSyncState();
+}
+
+export function getOrderProviderHealthWithSyncState(): ExternalOrderProviderHealth & {
+  syncState: ExternalOrderProviderSyncState;
+} {
+  return {
+    ...getOrderProviderHealth(),
+    syncState: {
+      lastSuccessfulSyncAt: null,
+      lastError: null,
+      lastSyncSummary: null,
+    },
+  };
+}
+
+export async function getExternalOrderProviderHealthWithSyncState(): Promise<
+  ExternalOrderProviderHealth & { syncState: ExternalOrderProviderSyncState }
+> {
+  return {
+    ...getOrderProviderHealth(),
+    syncState: await readSyncState(),
+  };
+}
+
+function coerceExternalOrderId(order: BarnetOrderRaw): string {
+  const id = order.id;
+  if (id === undefined || id === null) return "unknown";
+  const text = String(id).trim();
+  return text.length > 0 ? text : "unknown";
+}
+
+async function buildEnrichedNormalizedOrder(
+  rawOrder: Parameters<typeof normalizeBarnetOrder>[0],
+  customerCache: BarnetCustomerCache,
+): Promise<NormalizedExternalOrder> {
+  const normalized = await enrichBarnetDeliveryOrder(
+    normalizeBarnetOrder(rawOrder),
+    rawOrder,
+    customerCache,
+  );
+  const diagnostics = diagnoseBarnetOrderRaw(rawOrder, {
+    customerName: normalized.customerName,
+    customerPhone: normalized.customerPhone,
+    customerEmail: normalized.customerEmail,
+    customerEnrichmentStatus: normalized.customerEnrichmentStatus,
+    customerMessagingReady: normalized.customerMessagingReady,
+  });
+  return {
+    ...normalized,
+    dispatchReady: diagnostics.dispatchReady,
+    missingFields: diagnostics.missingFields,
+    dispatchStatus: diagnostics.dispatchReady ? "ready" : "needs_review",
+  };
+}
+
+async function buildEnrichedSafeOrder(
+  rawOrder: Parameters<typeof normalizeBarnetOrder>[0],
+  customerCache: BarnetCustomerCache,
+): Promise<SafeExternalOrder> {
+  const normalized = await buildEnrichedNormalizedOrder(rawOrder, customerCache);
+  const diagnostics = diagnoseBarnetOrderRaw(rawOrder, {
+    customerName: normalized.customerName,
+    customerPhone: normalized.customerPhone,
+    customerEmail: normalized.customerEmail,
+    customerEnrichmentStatus: normalized.customerEnrichmentStatus,
+    customerMessagingReady: normalized.customerMessagingReady,
+  });
+  return toSafeExternalOrder(normalized, diagnostics);
+}
 
 export function getOrderProviderHealth(): ExternalOrderProviderHealth {
   const config = getExternalOrderProviderConfig();
@@ -59,6 +220,90 @@ export function getLiveOrderProviderHealth(): LiveOrderProviderHealth {
   };
 }
 
+/**
+ * Read-only live Barnet order detail probe with customer-link diagnostics.
+ */
+export async function probeLiveOrderDetail(params: {
+  id?: string;
+  number?: string;
+}): Promise<LiveOrderDetailResult> {
+  assertLiveOrdersReadsAllowed();
+
+  const id = params.id?.trim();
+  const number = params.number?.trim();
+
+  if (!id && !number) {
+    throw new Error("id or number is required for live order detail probe");
+  }
+
+  const rawOrder = id
+    ? await fetchBarnetOrderById(id)
+    : await fetchBarnetOrderByNumber(number!);
+
+  if (!rawOrder) {
+    throw new Error(
+      id
+        ? `Barnet order id ${id} was not found`
+        : `Barnet order number ${number} was not found`,
+    );
+  }
+
+  const customerId = resolveBarnetCustomerId(rawOrder);
+  const customerCache: BarnetCustomerCache = new Map();
+  let enrichment:
+    | {
+        customerName: string | null;
+        customerPhone: string | null;
+        customerEmail: string | null;
+        customerEnrichmentStatus: NormalizedExternalOrder["customerEnrichmentStatus"];
+        customerMessagingReady: boolean;
+      }
+    | undefined;
+
+  if (customerId) {
+    const enriched = await enrichBarnetDeliveryOrder(
+      normalizeBarnetOrder(rawOrder),
+      rawOrder,
+      customerCache,
+    );
+    enrichment = {
+      customerName: enriched.customerName,
+      customerPhone: enriched.customerPhone,
+      customerEmail: enriched.customerEmail,
+      customerEnrichmentStatus: enriched.customerEnrichmentStatus,
+      customerMessagingReady: enriched.customerMessagingReady,
+    };
+  }
+
+  return {
+    ok: true,
+    mode: "live",
+    diagnostics: diagnoseLiveOrderDetail(rawOrder, enrichment),
+  };
+}
+
+/**
+ * Read-only live Barnet customer detail probe with safe diagnostics only.
+ */
+export async function probeLiveCustomerDetail(
+  customerId: string,
+): Promise<LiveCustomerDetailResult> {
+  assertLiveReadsAllowed();
+
+  const trimmedId = customerId.trim();
+  if (!trimmedId) {
+    throw new Error("customerId is required for live customer detail probe");
+  }
+
+  const rawUser = await fetchBarnetUserById(trimmedId);
+
+  return {
+    ok: true,
+    mode: "live",
+    diagnostics: diagnoseLiveCustomerDetail(trimmedId, rawUser),
+  };
+}
+
 export async function previewLiveExternalOrders(): Promise<LiveOrderPreviewResult> {
   assertLiveOrdersReadsAllowed();
 
@@ -69,16 +314,31 @@ export async function previewLiveExternalOrders(): Promise<LiveOrderPreviewResul
   }
 
   const scan = await scanBarnetOrderPages();
-  const orders: SafeExternalOrder[] = scan.deliveryOrders.map((rawOrder) => {
-    const normalized = normalizeBarnetOrder(rawOrder);
-    const diagnostics = diagnoseBarnetOrderRaw(rawOrder);
-    return toSafeExternalOrder(normalized, diagnostics);
-  });
+  const customerCache: BarnetCustomerCache = new Map();
+  const normalizedOrders = await Promise.all(
+    scan.deliveryOrders.map((rawOrder) => buildEnrichedNormalizedOrder(rawOrder, customerCache)),
+  );
+  const orders: SafeExternalOrder[] = normalizedOrders.map((normalized, index) =>
+    toSafeExternalOrder(
+      normalized,
+      diagnoseBarnetOrderRaw(scan.deliveryOrders[index]!, {
+        customerName: normalized.customerName,
+        customerPhone: normalized.customerPhone,
+        customerEmail: normalized.customerEmail,
+        customerEnrichmentStatus: normalized.customerEnrichmentStatus,
+        customerMessagingReady: normalized.customerMessagingReady,
+      }),
+    ),
+  );
+  const intakeOrders = normalizedOrders.map((normalized) =>
+    toExternalOrderIntakeRow(normalized, { isPreview: true }),
+  );
 
   return {
     ok: true,
     mode: "live",
     orders,
+    intakeOrders,
     total: orders.length,
     pagesScanned: scan.pagesScanned,
     totalOrdersSeen: scan.totalOrdersSeen,
@@ -104,16 +364,31 @@ export async function scanLiveExternalDeliveryOrders(): Promise<LiveDeliveryScan
   }
 
   const scan = await scanBarnetOrderPages();
-  const orders: SafeExternalOrder[] = scan.deliveryOrders.map((rawOrder) => {
-    const normalized = normalizeBarnetOrder(rawOrder);
-    const diagnostics = diagnoseBarnetOrderRaw(rawOrder);
-    return toSafeExternalOrder(normalized, diagnostics);
-  });
+  const customerCache: BarnetCustomerCache = new Map();
+  const normalizedOrders = await Promise.all(
+    scan.deliveryOrders.map((rawOrder) => buildEnrichedNormalizedOrder(rawOrder, customerCache)),
+  );
+  const orders: SafeExternalOrder[] = normalizedOrders.map((normalized, index) =>
+    toSafeExternalOrder(
+      normalized,
+      diagnoseBarnetOrderRaw(scan.deliveryOrders[index]!, {
+        customerName: normalized.customerName,
+        customerPhone: normalized.customerPhone,
+        customerEmail: normalized.customerEmail,
+        customerEnrichmentStatus: normalized.customerEnrichmentStatus,
+        customerMessagingReady: normalized.customerMessagingReady,
+      }),
+    ),
+  );
+  const intakeOrders = normalizedOrders.map((normalized) =>
+    toExternalOrderIntakeRow(normalized, { isPreview: true }),
+  );
 
   return {
     ok: true,
     mode: "live",
     orders,
+    intakeOrders,
     pagesScanned: scan.pagesScanned,
     totalOrdersSeen: scan.totalOrdersSeen,
     deliveryOrdersFound: scan.deliveryOrdersFound,
@@ -132,55 +407,95 @@ export async function scanLiveExternalDeliveryOrders(): Promise<LiveDeliveryScan
 export async function syncLiveExternalOrders(): Promise<ExternalOrderSyncResult> {
   assertLiveSyncAllowed();
 
-  const scan = await scanBarnetOrderPages();
+  const config = getExternalOrderProviderConfig();
+  const locationId = config.locationId;
 
-  const db = getAdminFirestore();
-  const now = new Date().toISOString();
+  try {
+    const scan = await scanBarnetOrderPages();
 
-  let inserted = 0;
-  let updated = 0;
+    const db = getAdminFirestore();
+    const now = nowIso();
+    const customerCache: BarnetCustomerCache = new Map();
 
-  for (const rawOrder of scan.deliveryOrders) {
-    const normalized = normalizeBarnetOrder(rawOrder, { now });
-    const docRef = db.collection(COLLECTION).doc(barnetDocumentId(normalized.externalOrderId));
-    const existing = await docRef.get();
-    const preserve = existing.exists
-      ? {
-          createdAt: (existing.data()?.createdAt as string | undefined) ?? now,
-          updatedAt: now,
-        }
-      : undefined;
+    let inserted = 0;
+    let updated = 0;
 
-    const toStore = normalizeBarnetOrder(rawOrder, {
-      now,
-      preserveTimestamps: preserve,
+    const syncOutcomes = await Promise.all(
+      scan.deliveryOrders.map(async (rawOrder) => {
+        const docRef = db.collection(COLLECTION).doc(
+          barnetDocumentId(coerceExternalOrderId(rawOrder)),
+        );
+        const existingSnap = await docRef.get();
+        const existingData = existingSnap.exists
+          ? hydrateNormalizedExternalOrder(existingSnap.data() as Record<string, unknown>)
+          : null;
+        const preserve = existingData
+          ? {
+              createdAt: existingData.createdAt ?? now,
+              updatedAt: now,
+            }
+          : undefined;
+
+        const base = normalizeBarnetOrder(rawOrder, {
+          now,
+          preserveTimestamps: preserve,
+        });
+        const enriched = await enrichBarnetDeliveryOrder(base, rawOrder, customerCache);
+        const toStore = preserveAssignmentFields(
+          {
+            ...enriched,
+            sourceLocationId: enriched.sourceLocationId ?? locationId,
+            lastSyncedAt: now,
+            updatedAt: now,
+          },
+          existingData,
+        );
+
+        await docRef.set(omitUndefined(toStore as unknown as Record<string, unknown>));
+
+        return existingSnap.exists ? ("updated" as const) : ("inserted" as const);
+      }),
+    );
+
+    inserted = syncOutcomes.filter((outcome) => outcome === "inserted").length;
+    updated = syncOutcomes.filter((outcome) => outcome === "updated").length;
+
+    const result: ExternalOrderSyncResult = {
+      pagesScanned: scan.pagesScanned,
+      totalOrdersSeen: scan.totalOrdersSeen,
+      deliveryOrdersFound: scan.deliveryOrdersFound,
+      pickupOrdersIgnored: scan.pickupOrdersIgnored,
+      unknownOrdersIgnored: scan.unknownOrdersIgnored,
+      inserted,
+      updated,
+      total: inserted + updated,
+    };
+
+    await writeSyncState({
+      lastSuccessfulSyncAt: now,
+      lastError: null,
+      lastSyncSummary: {
+        inserted: result.inserted,
+        updated: result.updated,
+        deliveryOrdersFound: result.deliveryOrdersFound,
+        pagesScanned: result.pagesScanned,
+      },
     });
 
-    await docRef.set(omitUndefined(toStore as unknown as Record<string, unknown>));
+    console.info(
+      `[order-provider] live sync complete: pages=${result.pagesScanned} seen=${result.totalOrdersSeen} delivery=${result.deliveryOrdersFound} inserted=${result.inserted} updated=${result.updated}`,
+    );
 
-    if (existing.exists) {
-      updated += 1;
-    } else {
-      inserted += 1;
-    }
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Live sync failed";
+    await writeSyncState({
+      lastSuccessfulSyncAt: (await readSyncState()).lastSuccessfulSyncAt,
+      lastError: message,
+      lastSyncSummary: (await readSyncState()).lastSyncSummary,
+    });
+    throw err;
   }
-
-  const result: ExternalOrderSyncResult = {
-    pagesScanned: scan.pagesScanned,
-    totalOrdersSeen: scan.totalOrdersSeen,
-    deliveryOrdersFound: scan.deliveryOrdersFound,
-    pickupOrdersIgnored: scan.pickupOrdersIgnored,
-    unknownOrdersIgnored: scan.unknownOrdersIgnored,
-    inserted,
-    updated,
-    total: inserted + updated,
-  };
-
-  console.info(
-    `[order-provider] live sync complete: pages=${result.pagesScanned} seen=${result.totalOrdersSeen} delivery=${result.deliveryOrdersFound} inserted=${result.inserted} updated=${result.updated}`,
-  );
-
-  return result;
 }
 
 export async function listSyncedExternalOrders(
@@ -194,8 +509,114 @@ export async function listSyncedExternalOrders(
     .get();
 
   return snapshot.docs.map((doc) =>
-    toSafeExternalOrder(doc.data() as NormalizedExternalOrder),
+    toSafeExternalOrder(
+      hydrateNormalizedExternalOrder(doc.data() as Record<string, unknown>),
+    ),
   );
+}
+
+export async function listExternalOrderIntakeRows(
+  limit = 100,
+): Promise<ExternalOrderIntakeRow[]> {
+  const db = getAdminFirestore();
+  const snapshot = await db
+    .collection(COLLECTION)
+    .orderBy("updatedAt", "desc")
+    .limit(limit)
+    .get();
+
+  return snapshot.docs.map((doc) =>
+    toExternalOrderIntakeRow(
+      hydrateNormalizedExternalOrder(doc.data() as Record<string, unknown>),
+      { docId: doc.id },
+    ),
+  );
+}
+
+export async function getExternalOrderIntakeDetail(
+  docId: string,
+): Promise<ExternalOrderIntakeDetail> {
+  const db = getAdminFirestore();
+  const snap = await db.collection(COLLECTION).doc(docId).get();
+  if (!snap.exists) {
+    throw notFoundError("External order", docId);
+  }
+
+  return toExternalOrderIntakeDetail(
+    hydrateNormalizedExternalOrder(snap.data() as Record<string, unknown>),
+    { docId: snap.id },
+  );
+}
+
+export async function assignExternalOrderDriver(
+  docId: string,
+  driverId: string,
+  actor: AuthUser,
+  options?: { overrideMissingFields?: boolean },
+): Promise<ExternalOrderIntakeDetail> {
+  const db = getAdminFirestore();
+  const ref = db.collection(COLLECTION).doc(docId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw notFoundError("External order", docId);
+  }
+
+  const order = hydrateNormalizedExternalOrder(snap.data() as Record<string, unknown>);
+  if (order.assignmentStatus === "assigned" && order.assignedDriverId) {
+    throw new Error("This external order is already assigned to a driver");
+  }
+
+  const detail = toExternalOrderIntakeDetail(order, { docId });
+  const missingRequired = !detail.dispatchChecks.deliveryOrderConfirmed
+    || !detail.dispatchChecks.customerNamePresent
+    || !detail.dispatchChecks.customerPhonePresent
+    || !detail.dispatchChecks.deliveryAddressPresent
+    || !detail.dispatchChecks.itemsPresent;
+
+  if (missingRequired && !options?.overrideMissingFields) {
+    throw new Error(
+      "Required dispatch fields are missing. Confirm override to assign anyway.",
+    );
+  }
+
+  const promoteResult = await promoteExternalOrderToDispatch(docId, actor, {
+    overrideMissingFields: options?.overrideMissingFields,
+  });
+
+  const driver = await getDriverById(driverId);
+  const now = nowIso();
+
+  await assignDriver(promoteResult.order.id, driverId, actor);
+
+  await ref.update({
+    assignmentStatus: "assigned",
+    dispatchStatus: "assigned",
+    status: "assigned",
+    assignedDriverId: driverId,
+    assignedDriverName: driver.name,
+    assignedAt: now,
+    assignedBy: actor.uid,
+    promoted: true,
+    promotedOrderId: promoteResult.order.id,
+    promotedAt: promoteResult.order.promotedAt ?? promoteResult.order.createdAt,
+    updatedAt: now,
+  });
+
+  await writeAuditLog({
+    action: "external_order.assign_driver",
+    entityType: "order",
+    entityId: docId,
+    actorId: actor.uid,
+    actorRole: actor.role,
+    metadata: {
+      driverId,
+      dispatchOrderId: promoteResult.order.id,
+      externalOrderId: order.externalOrderId,
+      provider: order.provider,
+    },
+  });
+
+  return getExternalOrderIntakeDetail(docId);
 }
 
 /**
@@ -270,6 +691,7 @@ export {
   fetchBarnetOrderById,
   fetchBarnetOrderByNumber,
   fetchBarnetOrders,
+  fetchBarnetUserById,
   fetchSafeBarnetLocations,
   getBarnetProviderName,
   normalizeBarnetLocationsResponse,
@@ -286,6 +708,8 @@ export {
   diagnoseBarnetOrderRaw,
   diagnoseNormalizedExternalOrder,
 } from "@/lib/integrations/order-provider/barnet-order-diagnostics";
+export { findCustomerLinkFields } from "@/lib/integrations/order-provider/find-customer-link-fields";
+export { diagnoseLiveOrderDetail } from "@/lib/integrations/order-provider/live-order-detail-diagnostics";
 export { shouldTriggerExternalOrderCustomerSms } from "@/lib/integrations/order-provider/customer-messaging.server";
 export {
   toSafeExternalOrder,
@@ -301,6 +725,8 @@ export type {
   BarnetLocationsMeta,
   BarnetLocationsRawShape,
   BarnetOrderDiagnostics,
+  LiveOrderDetailDiagnostics,
+  LiveOrderDetailResult,
   ExternalOrderProviderConfig,
   ExternalOrderProviderHealth,
   ExternalOrderProviderMode,

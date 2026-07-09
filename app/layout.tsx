@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter } from 'next/font/google'
+import { QueryProvider } from '@/components/providers/query-provider'
 import './globals.css'
 
 const inter = Inter({
@@ -33,7 +34,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${inter.variable} bg-background`} data-scroll-behavior="smooth">
-      <body className="font-sans antialiased">{children}</body>
+      <body className="font-sans antialiased">
+        <QueryProvider>{children}</QueryProvider>
+      </body>
     </html>
   )
 }

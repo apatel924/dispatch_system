@@ -137,5 +137,8 @@ export function actorLabelForEvent(
   return event.actorId;
 }
 
-/** Default poll interval for live order sync (ms). */
+/** Poll interval for live order detail / driver views (ms). */
 export const ORDER_SYNC_POLL_MS = 5000;
+
+/** Poll interval for admin list pages (dashboard, orders, drivers) (ms). */
+export const LIST_SYNC_POLL_MS = 20_000;

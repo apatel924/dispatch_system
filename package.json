@@ -15,10 +15,12 @@
     "process:knockout-backgrounds": "node scripts/knockout-white-background.mjs",
     "seed:firebase": "node scripts/seed-firebase.mjs",
     "order-provider:health": "node scripts/check-order-provider-health.mjs",
-    "order-provider:live-config": "node scripts/check-live-order-provider-config.mjs"
+    "order-provider:live-config": "node scripts/check-live-order-provider-config.mjs",
+    "order-provider:live-scan": "node scripts/check-live-barnet-delivery-scan.mjs"
   },
   "dependencies": {
     "@radix-ui/react-tooltip": "^1.2.11",
+    "@tanstack/react-query": "^5.101.2",
     "clsx": "^2.1.1",
     "firebase": "^12.15.0",
     "firebase-admin": "^14.1.0",

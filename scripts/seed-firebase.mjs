@@ -418,7 +418,7 @@ async function main() {
     userId: driver1.uid,
     name: driver1.displayName,
     email: driver1.email,
-    status: "Busy",
+    status: "Available",
     metrics: { activeDeliveries: 2, completedToday: 1, totalDeliveries: 48 },
   });
 

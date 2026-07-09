@@ -10,7 +10,11 @@ import {
   parseJsonBody,
 } from "@/lib/server/route-utils";
 import { getDriverById, updateDriver } from "@/lib/server/services/drivers";
-import { UpdateDriverSchema } from "@/lib/server/validation/drivers";
+import {
+  DriverSelfStatusSchema,
+  UpdateDriverSchema,
+  type UpdateDriverInput,
+} from "@/lib/server/validation/drivers";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -53,13 +57,25 @@ export async function PATCH(request: Request, context: RouteContext) {
       if (isErrorResponse(driverId)) return driverId;
       if (driverId !== id) return forbidden();
 
-      // Drivers may only update profile fields — not status or metrics
-      const { name, phone, email, vehicle, avatarColor } = body;
-      const driver = await updateDriver(
-        id,
-        { name, phone, email, vehicle, avatarColor },
-        user,
-      );
+      // Drivers may update profile fields and their own availability (Available / Inactive)
+      const { name, phone, email, vehicle, avatarColor, status } = body;
+      const driverPatch: UpdateDriverInput = {};
+      if (name !== undefined) driverPatch.name = name;
+      if (phone !== undefined) driverPatch.phone = phone;
+      if (email !== undefined) driverPatch.email = email;
+      if (vehicle !== undefined) driverPatch.vehicle = vehicle;
+      if (avatarColor !== undefined) driverPatch.avatarColor = avatarColor;
+      if (status !== undefined) {
+        const parsed = DriverSelfStatusSchema.safeParse(status);
+        if (!parsed.success) {
+          return NextResponse.json(
+            { error: "Drivers may only set status to Available or Inactive" },
+            { status: 400 },
+          );
+        }
+        driverPatch.status = parsed.data;
+      }
+      const driver = await updateDriver(id, driverPatch, user);
       return NextResponse.json({ driver });
     }
 

@@ -1,8 +1,14 @@
-import type { DriverProfile } from "@/lib/types/backend";
+import type { DriverProfile, OrderStatus } from "@/lib/types/backend";
 import type { AuthUser } from "@/lib/server/auth";
 import { notFoundError } from "@/lib/server/errors";
 import { COLLECTIONS } from "@/lib/server/firestore/collections";
-import { docToDriver, initialsFromName, nowIso } from "@/lib/server/firestore/helpers";
+import {
+  docToDriver,
+  docToOrder,
+  initialsFromName,
+  nowIso,
+  omitUndefined,
+} from "@/lib/server/firestore/helpers";
 import { getAdminFirestore } from "@/lib/server/firebase-admin";
 import { writeAuditLog } from "@/lib/server/services/audit";
 import { generateDriverId } from "@/lib/server/firestore/ids";
@@ -12,11 +18,105 @@ import type {
   UpdateDriverInput,
 } from "@/lib/server/validation/drivers";
 
+const ACTIVE_ORDER_STATUSES: OrderStatus[] = [
+  "Assigned",
+  "Picked Up",
+  "En Route",
+  "Out for Delivery",
+  "Scheduled",
+];
+
+/** Statuses fetched in one query when batch-computing driver metrics. */
+const METRIC_ORDER_STATUSES: OrderStatus[] = [
+  ...ACTIVE_ORDER_STATUSES,
+  "Delivered",
+  "Failed",
+];
+
+export interface DriverMetrics {
+  activeDeliveries: number;
+  completedToday: number;
+  failedToday: number;
+}
+
+function emptyDriverMetrics(): DriverMetrics {
+  return { activeDeliveries: 0, completedToday: 0, failedToday: 0 };
+}
+
+function startOfTodayUtc(): Date {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+function isOnOrAfterToday(iso?: string): boolean {
+  if (!iso) return false;
+  return new Date(iso) >= startOfTodayUtc();
+}
+
+export async function computeDriverMetrics(driverId: string): Promise<DriverMetrics> {
+  const metrics = await computeDriverMetricsBatch([driverId]);
+  return metrics.get(driverId) ?? emptyDriverMetrics();
+}
+
+/**
+ * Compute delivery metrics for many drivers with a single Firestore read on
+ * orders (status in active + delivered + failed), then aggregate in memory.
+ * Avoids N+1 queries where each driver triggered its own orders lookup.
+ */
+export async function computeDriverMetricsBatch(
+  driverIds: Iterable<string>,
+): Promise<Map<string, DriverMetrics>> {
+  const metrics = new Map<string, DriverMetrics>();
+  for (const id of driverIds) {
+    metrics.set(id, emptyDriverMetrics());
+  }
+
+  if (metrics.size === 0) return metrics;
+
+  const db = getAdminFirestore();
+  const snap = await db
+    .collection(COLLECTIONS.orders)
+    .where("status", "in", METRIC_ORDER_STATUSES)
+    .get();
+
+  for (const doc of snap.docs) {
+    const order = docToOrder(doc.id, doc.data());
+    const driverId = order.assignedDriverId;
+    if (!driverId || !metrics.has(driverId)) continue;
+
+    const row = metrics.get(driverId)!;
+
+    if (ACTIVE_ORDER_STATUSES.includes(order.status)) {
+      row.activeDeliveries += 1;
+    }
+    if (
+      order.status === "Delivered" &&
+      isOnOrAfterToday(order.deliveredAt ?? order.updatedAt)
+    ) {
+      row.completedToday += 1;
+    }
+    if (order.status === "Failed" && isOnOrAfterToday(order.updatedAt)) {
+      row.failedToday += 1;
+    }
+  }
+
+  return metrics;
+}
+
+function applyMetrics(
+  driver: DriverProfile,
+  metricsMap: Map<string, DriverMetrics>,
+): DriverProfile {
+  return { ...driver, ...(metricsMap.get(driver.id) ?? emptyDriverMetrics()) };
+}
+
 export async function getDriverById(id: string): Promise<DriverProfile> {
   const db = getAdminFirestore();
   const snap = await db.collection(COLLECTIONS.drivers).doc(id).get();
   if (!snap.exists) throw notFoundError("Driver", id);
-  return docToDriver(snap.id, snap.data()!);
+  const driver = docToDriver(snap.id, snap.data()!);
+  const metricsMap = await computeDriverMetricsBatch([driver.id]);
+  return applyMetrics(driver, metricsMap);
 }
 
 export async function getDriverByUserId(userId: string): Promise<DriverProfile | null> {
@@ -29,7 +129,9 @@ export async function getDriverByUserId(userId: string): Promise<DriverProfile |
 
   if (snap.empty) return null;
   const doc = snap.docs[0];
-  return docToDriver(doc.id, doc.data());
+  const driver = docToDriver(doc.id, doc.data());
+  const metricsMap = await computeDriverMetricsBatch([driver.id]);
+  return applyMetrics(driver, metricsMap);
 }
 
 function matchesDriverSearch(driver: DriverProfile, search: string): boolean {
@@ -61,6 +163,10 @@ export async function listDrivers(
 
   const snap = await ref.limit(fetchLimit).get();
   let drivers = snap.docs.map((doc) => docToDriver(doc.id, doc.data()));
+
+  // One batched orders read for all drivers on this page — not one query per driver.
+  const metricsMap = await computeDriverMetricsBatch(drivers.map((d) => d.id));
+  drivers = drivers.map((driver) => applyMetrics(driver, metricsMap));
 
   if (query.search) {
     drivers = drivers.filter((d) => matchesDriverSearch(d, query.search!));
@@ -123,10 +229,10 @@ export async function updateDriver(
   const existing = await ref.get();
   if (!existing.exists) throw notFoundError("Driver", id);
 
-  const patch: Record<string, unknown> = {
+  const patch: Record<string, unknown> = omitUndefined({
     ...input,
     updatedAt: nowIso(),
-  };
+  });
 
   if (input.name) patch.initials = initialsFromName(input.name);
 

@@ -8,6 +8,9 @@ export const DriverStatusSchema = z.enum([
   "Suspended",
 ]);
 
+/** Status values a driver may set for themselves via the availability toggle. */
+export const DriverSelfStatusSchema = z.enum(["Available", "Inactive"]);
+
 export const CreateDriverSchema = z.object({
   userId: z.string().min(1),
   name: z.string().min(1),

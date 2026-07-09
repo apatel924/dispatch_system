@@ -1,23 +1,65 @@
 'use client'
 
 import Link from "next/link";
-import { Bell, ClipboardList, CheckCircle2, Package, Clock, MapPin, ChevronRight, Truck, Inbox } from "lucide-react";
-import { useState } from "react";
+import { Bell, ClipboardList, CheckCircle2, Package, Clock, MapPin, ChevronRight, Truck, Inbox, XCircle } from "lucide-react";
+import { useCallback, useState } from "react";
 import { Logo } from "@/components/dash/brand/logo";
 import { OrderStatusBadge } from "@/components/dash/status-badge";
 import { DriverBottomNav } from "@/components/dash/driver/bottom-nav";
-import { pickActiveOrder } from "@/lib/dash/api/driver-adapters";
+import { isApiEnabled } from "@/lib/dash/api/config";
+import { updateDriverApi } from "@/lib/dash/api/client";
+import { isDriverOnline, pickActiveOrder } from "@/lib/dash/api/driver-adapters";
 import { useDriverSession } from "@/lib/dash/hooks/use-driver-session";
 import { useDriverOrders } from "@/lib/dash/hooks/use-driver-orders";
 import { getOrderProofs, orderMapsUrl, getDeliveryLocation } from "@/lib/dash/driver-store";
 
+function formatTodayHeader(): string {
+  return new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 export function DriverDashboard() {
-  const [available, setAvailable] = useState(true);
-  const { driver } = useDriverSession();
+  const apiEnabled = isApiEnabled();
+  const { driver, refresh: refreshDriver } = useDriverSession();
   const { activeOrders, completedOrders, loading } = useDriverOrders();
+  const [statusUpdating, setStatusUpdating] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [mockOnline, setMockOnline] = useState(true);
+
+  const online = apiEnabled ? isDriverOnline(driver.status) : mockOnline;
+  const availabilityLabel = !online
+    ? "Offline"
+    : driver.status === "Busy"
+      ? "Busy"
+      : "Available";
+  const assignedCount = apiEnabled ? driver.activeDeliveries : activeOrders.length;
+  const completedCount = apiEnabled ? driver.completedToday : completedOrders.length;
+  const failedCount = apiEnabled ? driver.failedToday : 0;
 
   const active = pickActiveOrder(activeOrders);
   const assignments = active ? activeOrders.filter((o) => o.id !== active.id) : [];
+
+  const toggleAvailability = useCallback(async () => {
+    if (!apiEnabled) {
+      setMockOnline((v) => !v);
+      return;
+    }
+    const nextStatus = online ? "Inactive" : "Available";
+    setStatusUpdating(true);
+    setStatusError(null);
+    try {
+      await updateDriverApi(driver.id, { status: nextStatus });
+      await refreshDriver();
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : "Could not update availability");
+    } finally {
+      setStatusUpdating(false);
+    }
+  }, [apiEnabled, driver.id, online, refreshDriver]);
 
   return (
     <div className="min-h-screen bg-background pb-24">
@@ -26,7 +68,7 @@ export function DriverDashboard() {
           <div className="h-12 w-12 shrink-0"><Logo collapsed /></div>
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-xl font-bold">Driver Dashboard</h1>
-            <div className="text-xs text-muted-foreground">Friday, May 16, 2025</div>
+            <div className="text-xs text-muted-foreground">{formatTodayHeader()}</div>
           </div>
           <button className="relative rounded-full p-2 text-muted-foreground hover:bg-secondary" aria-label="Notifications">
             <Bell className="h-5 w-5" />
@@ -37,24 +79,29 @@ export function DriverDashboard() {
         <div className="mt-4 flex items-center gap-3 rounded-2xl border border-border bg-card p-4">
           <div className="flex-1">
             <div className="text-lg font-bold">Good morning, {driver.name.split(" ")[0]}</div>
-            <div className="text-xs text-muted-foreground">{activeOrders.length} deliveries assigned today</div>
+            <div className="text-xs text-muted-foreground">{assignedCount} deliveries assigned today</div>
           </div>
           <button
-            onClick={() => setAvailable(!available)}
-            className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${available ? "border-success/40 bg-success-soft text-success" : "border-border bg-secondary text-muted-foreground"}`}
+            type="button"
+            disabled={statusUpdating}
+            onClick={() => void toggleAvailability()}
+            className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold disabled:opacity-60 ${online ? "border-success/40 bg-success-soft text-success" : "border-border bg-secondary text-muted-foreground"}`}
           >
-            <span className={`h-2 w-2 rounded-full ${available ? "bg-success" : "bg-muted-foreground"}`} />
-            {available ? "Available" : "Offline"}
-            <span className={`ml-1 inline-block h-5 w-9 rounded-full ${available ? "bg-success" : "bg-secondary"}`}>
-              <span className={`mt-0.5 block h-4 w-4 rounded-full bg-white transition-transform ${available ? "translate-x-4" : "translate-x-0.5"}`} />
+            <span className={`h-2 w-2 rounded-full ${online ? "bg-success" : "bg-muted-foreground"}`} />
+            {availabilityLabel}
+            <span className={`ml-1 inline-block h-5 w-9 rounded-full ${online ? "bg-success" : "bg-secondary"}`}>
+              <span className={`mt-0.5 block h-4 w-4 rounded-full bg-white transition-transform ${online ? "translate-x-4" : "translate-x-0.5"}`} />
             </span>
           </button>
         </div>
+        {statusError && (
+          <p className="mt-2 text-xs text-destructive">{statusError}</p>
+        )}
 
         <div className="mt-4 grid grid-cols-3 gap-2">
-          <MiniStat icon={ClipboardList} tone="bg-purple-soft text-purple" value={activeOrders.length} label="Assigned" />
-          <MiniStat icon={CheckCircle2} tone="bg-success-soft text-success" value={completedOrders.length} label="Completed" />
-          <MiniStat icon={CheckCircle2} tone="bg-primary/10 text-primary" value={0} label="Failed" />
+          <MiniStat icon={ClipboardList} tone="bg-purple-soft text-purple" value={assignedCount} label="Assigned" />
+          <MiniStat icon={CheckCircle2} tone="bg-success-soft text-success" value={completedCount} label="Completed" />
+          <MiniStat icon={XCircle} tone="bg-primary/10 text-primary" value={failedCount} label="Failed" />
         </div>
 
         {loading && !active ? (

@@ -28,18 +28,14 @@ export function StatCard({
     primary: "bg-primary/10 text-primary",
   };
   return (
-    <div className="rounded-xl border border-border bg-card p-5 shadow-[0_1px_2px_0_rgb(0_0_0/0.03)]">
-      <div className="flex items-start justify-between gap-3">
-        <div className={cn("grid h-11 w-11 shrink-0 place-items-center rounded-lg", toneMap[tone])}>
-          <Icon className="h-5 w-5" />
-        </div>
-        <div className="min-w-0 flex-1 text-right">
-          <div className="truncate text-sm text-muted-foreground">{label}</div>
-          <div className="mt-1 text-2xl font-bold tracking-tight text-foreground">{value}</div>
-        </div>
+    <div className="rounded-xl border border-border bg-card p-4 shadow-[0_1px_2px_0_rgb(0_0_0/0.03)]">
+      <div className={cn("grid h-10 w-10 place-items-center rounded-lg", toneMap[tone])}>
+        <Icon className="h-5 w-5" />
       </div>
+      <div className="mt-3 text-2xl font-bold tracking-tight text-foreground">{value}</div>
+      <div className="mt-1 text-xs leading-snug text-muted-foreground">{label}</div>
       {delta && (
-        <div className="mt-3 flex items-center gap-1.5 text-xs">
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
           {trend === "up" ? (
             <ArrowUp className="h-3.5 w-3.5 text-success" />
           ) : (

@@ -1,15 +1,16 @@
 'use client'
 
 import { useRouter } from "next/navigation";
-import { Search, Filter, Bookmark, Download, MoreVertical, Calendar, ChevronDown, X } from "lucide-react";
+import { Search, Filter, Bookmark, Download, Calendar, ChevronDown, X } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { OrderStatusBadge } from "@/components/dash/status-badge";
+import { OrderActionsMenu } from "@/components/dash/order-actions-menu";
 import { useAdminOrders } from "@/lib/dash/hooks/use-admin-orders";
 
 export function OrdersPage() {
   const router = useRouter();
-  const { orders, loading } = useAdminOrders();
+  const { orders, loading, refresh } = useAdminOrders();
 
   const filters = [
     { icon: Calendar, label: "Date Range", value: "May 10 – May 16, 2024" },
@@ -90,13 +91,10 @@ export function OrdersPage() {
                     <td className="px-3 py-3 text-xs text-muted-foreground">{o.created}</td>
                     <td className="px-3 py-3 text-xs text-muted-foreground">{o.updated}</td>
                     <td className="px-5 py-3 text-right">
-                      <button
-                        type="button"
-                        className="rounded p-1 text-muted-foreground hover:bg-secondary"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <MoreVertical className="h-4 w-4" />
-                      </button>
+                      <OrderActionsMenu
+                        order={o}
+                        onStatusChanged={() => void refresh({ silent: true })}
+                      />
                     </td>
                   </tr>
                 ))

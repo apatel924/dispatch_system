@@ -1,6 +1,7 @@
 'use client'
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { Users, UserCheck, UserCog, Truck, XCircle, Clock, Search, Filter, Download, ChevronDown, MoreVertical, UserPlus } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
@@ -11,10 +12,11 @@ import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
 
 
 export function DriversPage() {
+  const router = useRouter();
   const { drivers, loading } = useAdminDrivers();
   return (
     <DashboardLayout title="Drivers">
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-6">
         <StatCard label="Total Drivers" value={drivers.length || 48} icon={Users} tone="info" delta="8%" />
         <StatCard label="Available Drivers" value={drivers.filter(d => d.status === "Available").length || 22} icon={UserCheck} tone="success" delta="5%" />
         <StatCard label="Busy Drivers" value={drivers.filter(d => d.status === "Busy").length || 18} icon={UserCog} tone="orange" delta="12%" />
@@ -23,29 +25,29 @@ export function DriversPage() {
         <StatCard label="Average Delivery Time" value="28m" icon={Clock} tone="warning" delta="5%" trend="down" />
       </div>
 
-      <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <SectionCard title="All Drivers" padded={false} action={
+      <div className="mt-6 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <SectionCard className="min-w-0" title="All Drivers" padded={false} action={
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><input placeholder="Search drivers…" className="h-9 w-[200px] rounded-lg border border-input bg-card pl-9 pr-3 text-sm outline-none" /></div>
+            <div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><input placeholder="Search drivers…" className="h-9 w-full min-w-[160px] rounded-lg border border-input bg-card pl-9 pr-3 text-sm outline-none sm:w-[200px]" /></div>
             <button className="inline-flex items-center gap-1 rounded-lg border border-input bg-card px-3 py-2 text-xs font-medium"><Filter className="h-3.5 w-3.5" /> Filter</button>
             <button className="inline-flex items-center gap-1 rounded-lg border border-input bg-card px-3 py-2 text-xs font-medium">Status <ChevronDown className="h-3 w-3" /></button>
             <button className="inline-flex items-center gap-1 rounded-lg border border-input bg-card px-3 py-2 text-xs font-medium"><Download className="h-3.5 w-3.5" /> Export <ChevronDown className="h-3 w-3" /></button>
           </div>
         }>
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[1040px] text-sm">
               <thead className="bg-secondary/30 text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <tr>
                   <th className="px-5 py-3 font-medium">Driver</th>
                   <th className="px-3 py-3 font-medium">Phone</th>
                   <th className="px-3 py-3 font-medium">Email</th>
                   <th className="px-3 py-3 font-medium">Status</th>
-                  <th className="px-3 py-3 font-medium">Active Deliveries</th>
-                  <th className="px-3 py-3 font-medium">Completed Today</th>
-                  <th className="px-3 py-3 font-medium">Failed Today</th>
-                  <th className="px-3 py-3 font-medium">Average Time</th>
-                  <th className="px-3 py-3 font-medium">Last Active</th>
-                  <th className="px-5 py-3 font-medium">Actions</th>
+                  <th className="px-3 py-3 font-medium whitespace-nowrap">Active</th>
+                  <th className="px-3 py-3 font-medium whitespace-nowrap">Completed</th>
+                  <th className="px-3 py-3 font-medium whitespace-nowrap">Failed</th>
+                  <th className="px-3 py-3 font-medium whitespace-nowrap">Avg Time</th>
+                  <th className="px-3 py-3 font-medium whitespace-nowrap">Last Active</th>
+                  <th className="px-5 py-3 font-medium text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
@@ -53,29 +55,42 @@ export function DriversPage() {
                   <tr><td colSpan={10} className="px-5 py-8 text-center text-muted-foreground">Loading drivers…</td></tr>
                 ) : (
                   drivers.map((d) => (
-                    <tr key={d.id} className="hover:bg-secondary/30">
+                    <tr
+                      key={d.id}
+                      className="cursor-pointer hover:bg-secondary/30"
+                      onClick={() => router.push(`/drivers/${d.id}`)}
+                    >
                       <td className="px-5 py-3">
-                        <Link href={`/drivers/${d.id}`} className="flex items-center gap-3">
-                          <div className={`grid h-9 w-9 place-items-center rounded-full ${d.avatarColor} text-xs font-semibold`}>{d.initials}</div>
-                          <span className="font-medium hover:text-primary">{d.name}</span>
-                        </Link>
+                        <div className="flex items-center gap-3">
+                          <div className={`grid h-9 w-9 shrink-0 place-items-center rounded-full ${d.avatarColor} text-xs font-semibold`}>{d.initials}</div>
+                          <span className="font-medium">{d.name}</span>
+                        </div>
                       </td>
-                      <td className="px-3 py-3 text-muted-foreground">{d.phone}</td>
-                      <td className="px-3 py-3 text-muted-foreground">{d.email}</td>
-                      <td className="px-3 py-3"><DriverStatusBadge status={d.status} /></td>
-                      <td className="px-3 py-3">{d.activeDeliveries}</td>
-                      <td className="px-3 py-3">{d.completedToday}</td>
-                      <td className="px-3 py-3">{d.failedToday}</td>
-                      <td className="px-3 py-3 text-muted-foreground">{d.averageTime}</td>
-                      <td className="px-3 py-3 text-muted-foreground">{d.lastActive}</td>
-                      <td className="px-5 py-3 text-right"><button className="rounded p-1 text-muted-foreground hover:bg-secondary"><MoreVertical className="h-4 w-4" /></button></td>
+                      <td className="px-3 py-3 whitespace-nowrap text-muted-foreground">{d.phone}</td>
+                      <td className="max-w-[200px] truncate px-3 py-3 text-muted-foreground">{d.email}</td>
+                      <td className="px-3 py-3 whitespace-nowrap"><DriverStatusBadge status={d.status} /></td>
+                      <td className="px-3 py-3 whitespace-nowrap">{d.activeDeliveries}</td>
+                      <td className="px-3 py-3 whitespace-nowrap">{d.completedToday}</td>
+                      <td className="px-3 py-3 whitespace-nowrap">{d.failedToday}</td>
+                      <td className="px-3 py-3 whitespace-nowrap text-muted-foreground">{d.averageTime}</td>
+                      <td className="px-3 py-3 whitespace-nowrap text-muted-foreground">{d.lastActive}</td>
+                      <td className="px-5 py-3 text-right">
+                        <button
+                          type="button"
+                          className="rounded p-1 text-muted-foreground hover:bg-secondary"
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label={`Actions for ${d.name}`}
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </button>
+                      </td>
                     </tr>
                   ))
                 )}
               </tbody>
             </table>
           </div>
-          <div className="flex items-center justify-between border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
             <span>Showing 1 to {drivers.length} of {drivers.length} drivers</span>
             <div className="flex items-center gap-1">{[1,2,3,4,5].map((n) => (<button key={n} className={`h-7 w-7 rounded ${n===1?"border border-primary/40 text-primary":"hover:bg-secondary"}`}>{n}</button>))}</div>
           </div>
@@ -110,7 +125,7 @@ export function DriversPage() {
           <SectionCard title="Top Performers" action={<a className="text-xs font-semibold text-primary hover:underline" href="#">View All</a>}>
             <div className="space-y-3">
               {drivers.filter(d => d.successRate).slice(0, 5).map((d, i) => (
-                <Link href={`/drivers/${d.id}`} key={d.id} className="flex items-center gap-3">
+                <Link href={`/drivers/${d.id}`} key={d.id} className="flex items-center gap-3 rounded-lg px-1 py-1 transition-colors hover:bg-secondary/30">
                   <div className="grid h-6 w-6 place-items-center rounded-full bg-secondary text-xs font-semibold text-muted-foreground">{i + 1}</div>
                   <div className={`grid h-9 w-9 place-items-center rounded-full ${d.avatarColor} text-xs font-semibold`}>{d.initials}</div>
                   <div className="min-w-0 flex-1">

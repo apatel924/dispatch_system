@@ -10,7 +10,6 @@ import {
   CheckCircle2,
   XCircle,
   Filter,
-  MoreVertical,
   CheckCircle,
   RefreshCw,
   FileEdit,
@@ -20,6 +19,7 @@ import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { StatCard } from "@/components/dash/ui/stat-card";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { OrderStatusBadge } from "@/components/dash/status-badge";
+import { OrderActionsMenu } from "@/components/dash/order-actions-menu";
 import { useAdminOrders } from "@/lib/dash/hooks/use-admin-orders";
 import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
 
@@ -27,7 +27,7 @@ const ACTIVE_STATUSES = new Set(["Assigned", "Picked Up", "En Route", "Out for D
 
 export function DashboardPage() {
   const router = useRouter();
-  const { orders, loading: ordersLoading } = useAdminOrders({ limit: 50 });
+  const { orders, loading: ordersLoading, refresh: refreshOrders } = useAdminOrders({ limit: 50 });
   const { drivers, loading: driversLoading } = useAdminDrivers({ limit: 20 });
 
   const stats = useMemo(() => {
@@ -120,13 +120,10 @@ export function DashboardPage() {
                       <td className="px-3 py-3 text-xs text-muted-foreground">{o.created}</td>
                       <td className="px-3 py-3 text-xs text-muted-foreground">{o.updated}</td>
                       <td className="px-5 py-3 text-right">
-                        <button
-                          type="button"
-                          className="rounded p-1 text-muted-foreground hover:bg-secondary"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <MoreVertical className="h-4 w-4" />
-                        </button>
+                        <OrderActionsMenu
+                          order={o}
+                          onStatusChanged={() => void refreshOrders({ silent: true })}
+                        />
                       </td>
                     </tr>
                   ))

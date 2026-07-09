@@ -1,9 +1,34 @@
 import { NextResponse } from "next/server";
 import { serverError } from "@/lib/server/api-response";
-import { getOrderProviderHealth } from "@/lib/integrations/order-provider/index.server";
+import { requireRole } from "@/lib/server/auth";
+import {
+  ensureFirebaseConfigured,
+  isErrorResponse,
+} from "@/lib/server/route-utils";
+import {
+  getExternalOrderProviderSyncState,
+  getOrderProviderHealth,
+} from "@/lib/integrations/order-provider/index.server";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const url = new URL(request.url);
+    const includeSyncState = url.searchParams.get("includeSyncState") === "true";
+
+    if (includeSyncState) {
+      const configError = ensureFirebaseConfigured();
+      if (configError) return configError;
+
+      const user = await requireRole(request, ["admin"]);
+      if (isErrorResponse(user)) return user;
+
+      const [health, syncState] = await Promise.all([
+        Promise.resolve(getOrderProviderHealth()),
+        getExternalOrderProviderSyncState(),
+      ]);
+      return NextResponse.json({ ...health, syncState });
+    }
+
     const health = getOrderProviderHealth();
     return NextResponse.json(health);
   } catch (err) {

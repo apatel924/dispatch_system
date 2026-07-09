@@ -7,6 +7,7 @@ import { signOutUser } from "@/lib/auth/firebase-client";
 import {
   LayoutDashboard,
   ClipboardList,
+  Radio,
   PlusCircle,
   Users,
   BarChart3,
@@ -24,6 +25,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 const nav = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/orders", label: "Orders", icon: ClipboardList },
+  { to: "/live-intake", label: "Live Intake", icon: Radio },
   { to: "/create-order", label: "Create Order", icon: PlusCircle },
   { to: "/drivers", label: "Drivers", icon: Users },
   { to: "/reports", label: "Reports", icon: BarChart3 },
@@ -55,7 +57,7 @@ export function DashboardLayout({ title, children, actions }: { title: string; c
             collapsed ? "w-[76px]" : "w-[240px]",
           )}
         >
-          <div className={cn("flex h-[88px] items-center border-b border-sidebar-border", collapsed ? "justify-center px-2" : "px-5")}>
+          <div className={cn("flex items-start border-b border-sidebar-border pt-4 pb-4", collapsed ? "justify-center px-2" : "px-5")}>
             <Logo collapsed={collapsed} />
           </div>
           <nav className="flex-1 space-y-1 p-3">

@@ -8,11 +8,13 @@ import {
   fetchOrderProviderHealth,
   fetchSyncedExternalOrders,
   previewLiveExternalOrdersApi,
+  probeLiveOrderDetailApi,
   runLiveOrderProviderSync,
   runOrderProviderMockSync,
   scanLiveDeliveryOrdersApi,
   type ExternalOrderRow,
   type LiveDeliveryScanResponse,
+  type LiveOrderDetailDiagnostics,
   type LiveOrderProviderHealthResponse,
   type OrderProviderHealthResponse,
   type BarnetLocationsMeta,
@@ -49,6 +51,9 @@ export function useExternalOrderProvider() {
   const [livePreviewing, setLivePreviewing] = useState(false);
   const [liveScanning, setLiveScanning] = useState(false);
   const [liveSyncing, setLiveSyncing] = useState(false);
+  const [liveProbing, setLiveProbing] = useState(false);
+  const [orderDetailDiagnostics, setOrderDetailDiagnostics] =
+    useState<LiveOrderDetailDiagnostics | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [liveMessage, setLiveMessage] = useState<string | null>(null);
@@ -266,6 +271,35 @@ export function useExternalOrderProvider() {
     }
   }, [loadOrders]);
 
+  const probeLiveOrderDetail = useCallback(async (params?: { id?: string; number?: string }) => {
+    if (!isApiEnabled()) {
+      const message = "Enable NEXT_PUBLIC_USE_API=true to probe live order detail";
+      setLiveMessage(message);
+      return { ok: false as const, message };
+    }
+
+    setLiveProbing(true);
+    setLiveMessage(null);
+    setError(null);
+    try {
+      const result = await probeLiveOrderDetailApi({
+        id: params?.id ?? "751883",
+        number: params?.number,
+      });
+      setOrderDetailDiagnostics(result.diagnostics);
+      const message = `Probed order ${result.diagnostics.externalOrderNumber ?? result.diagnostics.externalOrderId}`;
+      setLiveMessage(message);
+      return { ok: true as const, message, result };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Live order detail probe failed";
+      setOrderDetailDiagnostics(null);
+      setError(message);
+      return { ok: false as const, message };
+    } finally {
+      setLiveProbing(false);
+    }
+  }, []);
+
   const isMockMode = health?.mode !== "live";
   const liveReadsEnabled = health?.liveReadsEnabled ?? false;
   const liveSyncEnabled = health?.liveSyncEnabled ?? false;
@@ -287,6 +321,8 @@ export function useExternalOrderProvider() {
     livePreviewing,
     liveScanning,
     liveSyncing,
+    liveProbing,
+    orderDetailDiagnostics,
     error,
     syncMessage,
     liveMessage,
@@ -300,6 +336,7 @@ export function useExternalOrderProvider() {
     discoverLiveLocations,
     previewLiveOrders,
     scanLiveDeliveryOrders,
+    probeLiveOrderDetail,
     runLiveSync,
     formatTotal: formatCents,
   };

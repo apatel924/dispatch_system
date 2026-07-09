@@ -43,6 +43,7 @@ export interface Driver {
   rating?: number;
   successRate?: number;
   deliveries?: number;
+  vehicle?: string;
 }
 
 export const orders: Order[] = [
@@ -64,7 +65,7 @@ export const orders: Order[] = [
 ];
 
 export const drivers: Driver[] = [
-  { id: "DRV-10012", name: "James Carter", phone: "(555) 234-9876", email: "james.carter@qre.com", status: "Available", activeDeliveries: 1, completedToday: 8, failedToday: 0, averageTime: "24m", lastActive: "2m ago", avatarColor: "bg-info-soft text-info", initials: "JC", rating: 4.9, successRate: 95.8, deliveries: 48 },
+  { id: "DRV-10012", name: "James Carter", phone: "(555) 234-9876", email: "james.carter@qre.com", status: "Available", activeDeliveries: 1, completedToday: 8, failedToday: 0, averageTime: "24m", lastActive: "2m ago", avatarColor: "bg-info-soft text-info", initials: "JC", rating: 4.9, successRate: 95.8, deliveries: 48, vehicle: "White Ford Transit (QRX-21)" },
   { id: "DRV-10013", name: "Maria Sanchez", phone: "(555) 301-6542", email: "maria.sanchez@qre.com", status: "Busy", activeDeliveries: 3, completedToday: 7, failedToday: 0, averageTime: "26m", lastActive: "4m ago", avatarColor: "bg-warning-soft text-warning-foreground", initials: "MS", rating: 4.8, successRate: 92.9, deliveries: 42 },
   { id: "DRV-10014", name: "Derrick Brown", phone: "(555) 610-8392", email: "derrick.brown@qre.com", status: "Busy", activeDeliveries: 2, completedToday: 6, failedToday: 1, averageTime: "31m", lastActive: "1m ago", avatarColor: "bg-purple-soft text-purple", initials: "DB", rating: 4.7, successRate: 90.3, deliveries: 36 },
   { id: "DRV-10015", name: "Kevin Johnson", phone: "(555) 442-7711", email: "kevin.johnson@qre.com", status: "Busy", activeDeliveries: 2, completedToday: 5, failedToday: 0, averageTime: "27m", lastActive: "3m ago", avatarColor: "bg-orange-soft text-orange", initials: "KJ", rating: 4.8, successRate: 93.8, deliveries: 32 },

@@ -56,6 +56,7 @@ export interface AdminDriverRow {
   successRate?: number;
   deliveries?: number;
   vehicle?: string;
+  joinedDate?: string;
 }
 
 export interface AdminOrderDetail {
@@ -311,7 +312,7 @@ export function orderToAdminRow(order: Order): AdminOrderRow {
   const updated = formatDisplayDateTime(order.updatedAt);
   return {
     id: order.id,
-    external: order.externalOrderId ?? "—",
+    external: order.externalOrderNumber ?? order.externalOrderId ?? "—",
     customer: order.customerName,
     phone: order.customerPhone,
     address: order.deliveryAddress,
@@ -364,6 +365,9 @@ export function driverToAdminRow(driver: DriverProfile): AdminDriverRow {
     successRate: driver.successRate,
     deliveries: driver.totalDeliveries,
     vehicle: driver.vehicle,
+    joinedDate: driver.createdAt
+      ? formatDisplayDateTime(driver.createdAt).date
+      : undefined,
   };
 }
 
@@ -384,6 +388,7 @@ export function mockDriverToAdminRow(driver: Driver): AdminDriverRow {
     rating: driver.rating,
     successRate: driver.successRate,
     deliveries: driver.deliveries,
+    vehicle: driver.vehicle,
   };
 }
 
@@ -438,7 +443,7 @@ export function orderToAdminDetail(
     id: order.id,
     status: order.status,
     payment: order.paymentStatus,
-    external: order.externalOrderId ?? "—",
+    external: order.externalOrderNumber ?? order.externalOrderId ?? "—",
     customerName: order.customerName,
     companyName: order.companyName ?? order.customerName,
     contactName: order.customerName,

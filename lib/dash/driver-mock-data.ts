@@ -1,4 +1,4 @@
-import type { OrderStatus, PaymentStatus } from "./mock-data";
+import type { OrderStatus, PaymentStatus, DriverStatus } from "./mock-data";
 
 export interface DriverOrder {
   id: string;
@@ -25,6 +25,10 @@ export interface DriverProfile {
   vehicle: string;
   initials: string;
   avatarColor: string;
+  status: DriverStatus;
+  activeDeliveries: number;
+  completedToday: number;
+  failedToday: number;
 }
 
 export interface DriverMessage {
@@ -34,16 +38,6 @@ export interface DriverMessage {
   time: string;
   unread: boolean;
 }
-
-export const CURRENT_DRIVER: DriverProfile = {
-  id: "DRV-10012",
-  name: "James Carter",
-  phone: "(555) 234-9876",
-  email: "james.carter@qre.com",
-  vehicle: "White Ford Transit",
-  initials: "JC",
-  avatarColor: "bg-info-soft text-info",
-};
 
 /** James Carter's 4 active orders for today */
 export const driverOrders: DriverOrder[] = [
@@ -112,6 +106,20 @@ export const completedOrders: Pick<DriverOrder, "id" | "customer" | "eta">[] = [
   { id: "QRX-10188", customer: "Seaside Coffee Co.", eta: "9:05 AM" },
   { id: "QRX-10187", customer: "West End Hardware", eta: "8:21 AM" },
 ];
+
+export const CURRENT_DRIVER: DriverProfile = {
+  id: "DRV-10012",
+  name: "James Carter",
+  phone: "(555) 234-9876",
+  email: "james.carter@qre.com",
+  vehicle: "White Ford Transit",
+  initials: "JC",
+  avatarColor: "bg-info-soft text-info",
+  status: "Available",
+  activeDeliveries: driverOrders.length,
+  completedToday: completedOrders.length,
+  failedToday: 0,
+};
 
 export const driverMessages: DriverMessage[] = [
   { id: "m1", from: "Dispatch", preview: "QRX-10191 priority — customer requested early delivery", time: "10:02 AM", unread: true },

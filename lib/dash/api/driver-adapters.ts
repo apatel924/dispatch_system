@@ -51,7 +51,16 @@ export function apiDriverToUiProfile(driver: ApiDriverProfile): UiDriverProfile 
     vehicle: driver.vehicle ?? "—",
     initials: driver.initials,
     avatarColor: driver.avatarColor,
+    status: driver.status,
+    activeDeliveries: driver.activeDeliveries,
+    completedToday: driver.completedToday,
+    failedToday: driver.failedToday,
   };
+}
+
+/** Driver is online when status is Available or Busy (set by admin). */
+export function isDriverOnline(status: UiDriverProfile["status"]): boolean {
+  return status === "Available" || status === "Busy";
 }
 
 export function getMockDriverProfile(): UiDriverProfile {

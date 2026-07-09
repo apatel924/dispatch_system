@@ -2,6 +2,7 @@ import type {
   DriverProfile,
   ImportLog,
   Order,
+  OrderStatus,
   OrderStatusEvent,
   ProofAsset,
 } from "@/lib/types/backend";
@@ -75,6 +76,16 @@ export async function fetchOrderDetail(
   return adminFetch(`/api/orders/${encodeURIComponent(id)}`);
 }
 
+export async function updateOrderStatusApi(
+  orderId: string,
+  body: { status: OrderStatus; note?: string },
+): Promise<{ order: Order; event: OrderStatusEvent }> {
+  return adminFetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export async function createOrderApi(
   body: Record<string, unknown>,
 ): Promise<{ order: Order }> {
@@ -97,6 +108,23 @@ export async function fetchDriverDetail(
   id: string,
 ): Promise<{ driver: DriverProfile }> {
   return adminFetch(`/api/drivers/${encodeURIComponent(id)}`);
+}
+
+export async function updateDriverApi(
+  id: string,
+  body: {
+    name?: string;
+    phone?: string;
+    email?: string;
+    vehicle?: string;
+    avatarColor?: string;
+    status?: "Available" | "Inactive" | "Busy" | "Suspended";
+  },
+): Promise<{ driver: DriverProfile }> {
+  return adminFetch(`/api/drivers/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
 }
 
 export async function fetchOrderProofs(
@@ -187,6 +215,7 @@ export interface LiveOrderPreviewResponse {
   ok: boolean;
   mode: "live";
   orders: ExternalOrderRow[];
+  intakeOrders: ExternalOrderIntakeRow[];
   total: number;
   pagesScanned: number;
   totalOrdersSeen: number;
@@ -202,6 +231,7 @@ export interface LiveDeliveryScanResponse {
   ok: boolean;
   mode: "live";
   orders: ExternalOrderRow[];
+  intakeOrders: ExternalOrderIntakeRow[];
   pagesScanned: number;
   totalOrdersSeen: number;
   deliveryOrdersFound: number;
@@ -262,7 +292,48 @@ export interface OrderProviderSyncResponse {
 export interface ExternalOrderDiagnostics {
   dispatchReady: boolean;
   customerMessagingReady: boolean;
+  customerEnrichmentStatus: "success" | "failed" | "skipped" | null;
+  hasCustomerId: boolean;
+  customerEnrichmentAvailable: boolean;
+  hasCustomerName: boolean;
+  hasCustomerPhone: boolean;
+  hasCustomerEmail: boolean;
   missingFields: string[];
+}
+
+export interface LiveOrderDetailDiagnostics extends ExternalOrderDiagnostics {
+  externalOrderId: string;
+  externalOrderNumber: string | null;
+  topLevelKeys: string[];
+  possibleCustomerKeyPaths: string[];
+  ignoredCustomerLikePaths: string[];
+  hasUserIdCandidate: boolean;
+  hasPhoneCandidate: boolean;
+  hasUsableCustomerLink: boolean;
+  hasDeliveryAddress: boolean;
+  hasDeliveryInstructions: boolean;
+  hasItems: boolean;
+}
+
+export interface LiveCustomerDetailDiagnostics {
+  customerId: string;
+  hasCustomerName: boolean;
+  hasCustomerPhone: boolean;
+  hasCustomerEmail: boolean;
+  hasShippingAddress: boolean;
+  topLevelKeys: string[];
+}
+
+export interface LiveCustomerDetailResponse {
+  ok: boolean;
+  mode: "live";
+  diagnostics: LiveCustomerDetailDiagnostics;
+}
+
+export interface LiveOrderDetailResponse {
+  ok: boolean;
+  mode: "live";
+  diagnostics: LiveOrderDetailDiagnostics;
 }
 
 export interface ExternalOrderRow {
@@ -274,12 +345,14 @@ export interface ExternalOrderRow {
   isDelivery: boolean;
   total: number;
   placedAt: string;
-  customerName: string | null;
-  customerPhone: string | null;
+  externalCustomerId: string | null;
   pickupAddress: string | null;
   deliveryAddress: string | null;
   deliveryInstructions: string | null;
   itemsCount: number;
+  customerMessagingReady: boolean;
+  customerEnrichmentStatus: "success" | "failed" | "skipped" | null;
+  dispatchReady: boolean;
   createdAt: string;
   updatedAt: string;
   diagnostics: ExternalOrderDiagnostics;
@@ -328,10 +401,201 @@ export async function scanLiveDeliveryOrdersApi(): Promise<LiveDeliveryScanRespo
   return adminFetch("/api/integrations/order-provider/live-delivery-scan");
 }
 
+export async function probeLiveOrderDetailApi(params: {
+  id?: string;
+  number?: string;
+}): Promise<LiveOrderDetailResponse> {
+  const qs = new URLSearchParams();
+  if (params.id) qs.set("id", params.id);
+  if (params.number) qs.set("number", params.number);
+  const query = qs.toString();
+  return adminFetch(
+    `/api/integrations/order-provider/live-order-detail${query ? `?${query}` : ""}`,
+  );
+}
+
+export async function probeLiveCustomerDetailApi(params: {
+  customerId: string;
+}): Promise<LiveCustomerDetailResponse> {
+  const qs = new URLSearchParams();
+  qs.set("customerId", params.customerId);
+  return adminFetch(
+    `/api/integrations/order-provider/live-customer-detail?${qs.toString()}`,
+  );
+}
+
 export async function fetchLiveLocations(): Promise<LiveLocationsResponse> {
   return adminFetch("/api/integrations/order-provider/live-locations");
 }
 
 export async function runLiveOrderProviderSync(): Promise<OrderProviderSyncResponse> {
   return adminFetch("/api/integrations/order-provider/live-sync", { method: "POST" });
+}
+
+export interface ExternalOrderProviderSyncState {
+  lastSuccessfulSyncAt: string | null;
+  lastError: string | null;
+  lastSyncSummary: {
+    inserted: number;
+    updated: number;
+    deliveryOrdersFound: number;
+    pagesScanned: number;
+  } | null;
+}
+
+export interface ExternalOrderIntakeRow {
+  id: string;
+  provider: string;
+  externalOrderId: string;
+  externalOrderNumber: string | null;
+  customerName: string | null;
+  customerPhone: string | null;
+  deliveryAddress: string | null;
+  itemsCount: number;
+  total: number;
+  sourceStatus: string;
+  dispatchReady: boolean;
+  customerMessagingReady: boolean;
+  missingFields: string[];
+  assignmentStatus: "unassigned" | "assigned";
+  dispatchStatus: "pending" | "needs_review" | "ready" | "assigned" | "promoted";
+  assignedDriverId: string | null;
+  assignedDriverName: string | null;
+  isPreview: boolean;
+  alreadyImported: boolean;
+  promoted: boolean;
+  promotedOrderId: string | null;
+  promotedAt: string | null;
+  updatedAt: string;
+  lastSyncedAt: string | null;
+}
+
+export interface ExternalOrderIntakeSummary {
+  ordersScanned: number;
+  deliveryOrdersFound: number;
+  readyToDispatch: number;
+  needsReview: number;
+  alreadyImported: number;
+  assigned: number;
+}
+
+export interface ExternalOrderIntakeDetail {
+  id: string;
+  provider: string;
+  externalOrderId: string;
+  externalOrderNumber: string | null;
+  sourceLocationId: string | null;
+  sourceStatus: string;
+  deliveryStatus: string | null;
+  paymentStatus: string | null;
+  placedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  lastSyncedAt: string | null;
+  isDelivery: boolean;
+  customer: {
+    externalCustomerId: string | null;
+    name: string | null;
+    phone: string | null;
+    email: string | null;
+  };
+  delivery: {
+    address1: string | null;
+    address2: string | null;
+    city: string | null;
+    province: string | null;
+    postalCode: string | null;
+    formattedAddress: string | null;
+    notes: string | null;
+  };
+  items: Array<{
+    name: string;
+    quantity: number;
+    unitPrice: number | null;
+    notes: string | null;
+    sku?: string | null;
+    category?: string | null;
+  }>;
+  totals: {
+    subtotal: number | null;
+    tax: number | null;
+    discount: number | null;
+    total: number;
+  };
+  dispatchReady: boolean;
+  customerMessagingReady: boolean;
+  customerEnrichmentStatus: "success" | "failed" | "skipped" | null;
+  missingFields: string[];
+  assignmentStatus: "unassigned" | "assigned";
+  dispatchStatus: "pending" | "needs_review" | "ready" | "assigned" | "promoted";
+  assignedDriverId: string | null;
+  assignedDriverName: string | null;
+  assignedAt: string | null;
+  assignedBy: string | null;
+  promoted: boolean;
+  promotedOrderId: string | null;
+  promotedAt: string | null;
+  dispatchChecks: {
+    deliveryOrderConfirmed: boolean;
+    customerNamePresent: boolean;
+    customerPhonePresent: boolean;
+    deliveryAddressPresent: boolean;
+    itemsPresent: boolean;
+    notAlreadyAssigned: boolean;
+  };
+}
+
+export interface OrderProviderHealthWithSync extends OrderProviderHealthResponse {
+  syncState?: ExternalOrderProviderSyncState;
+}
+
+export async function fetchOrderProviderHealthWithSync(): Promise<OrderProviderHealthWithSync> {
+  return adminFetch("/api/integrations/order-provider/health?includeSyncState=true");
+}
+
+export async function fetchExternalOrderIntakeList(params?: {
+  limit?: number;
+}): Promise<{
+  orders: ExternalOrderIntakeRow[];
+  syncState: ExternalOrderProviderSyncState;
+  summary: ExternalOrderIntakeSummary;
+  total: number;
+}> {
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set("limit", String(params.limit));
+  const query = qs.toString();
+  return adminFetch(`/api/integrations/order-provider/intake${query ? `?${query}` : ""}`);
+}
+
+export async function fetchExternalOrderIntakeDetail(
+  id: string,
+): Promise<{ order: ExternalOrderIntakeDetail }> {
+  return adminFetch(`/api/integrations/order-provider/orders/${encodeURIComponent(id)}`);
+}
+
+export async function assignExternalOrderDriverApi(
+  id: string,
+  body: { driverId: string; overrideMissingFields?: boolean },
+): Promise<{ order: ExternalOrderIntakeDetail }> {
+  return adminFetch(
+    `/api/integrations/order-provider/orders/${encodeURIComponent(id)}/assign-driver`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function promoteExternalOrderApi(
+  id: string,
+  body?: { overrideMissingFields?: boolean },
+): Promise<{
+  order: Order;
+  externalOrder: ExternalOrderIntakeDetail;
+  alreadyPromoted: boolean;
+}> {
+  return adminFetch(`/api/external-orders/${encodeURIComponent(id)}/promote`, {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  });
 }

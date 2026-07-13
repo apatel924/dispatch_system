@@ -12,6 +12,7 @@ import {
   getStatusEvents,
   updateOrder,
 } from "@/lib/server/services/orders";
+import { getConsumerNotes } from "@/lib/server/services/consumer-tracking";
 import { UpdateOrderSchema } from "@/lib/server/validation/orders";
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -26,11 +27,12 @@ export async function GET(request: Request, context: RouteContext) {
   const { id } = await context.params;
 
   try {
-    const [order, statusEvents] = await Promise.all([
+    const [order, statusEvents, consumerNotes] = await Promise.all([
       getOrderById(id),
       getStatusEvents(id),
+      getConsumerNotes(id),
     ]);
-    return NextResponse.json({ order, statusEvents });
+    return NextResponse.json({ order, statusEvents, consumerNotes });
   } catch (err) {
     return handleServiceError(err);
   }

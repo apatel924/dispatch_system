@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireRole } from "@/lib/server/auth";
 import { requireDriverId, resolveDriverId } from "@/lib/server/driver-context";
-import { forbidden } from "@/lib/server/api-response";
+import { badRequest, forbidden } from "@/lib/server/api-response";
 import { handleServiceError } from "@/lib/server/handle-service-error";
 import { ADMIN_ROLES } from "@/lib/server/roles";
 import {
@@ -9,14 +9,27 @@ import {
   isErrorResponse,
   parseJsonBody,
 } from "@/lib/server/route-utils";
-import { getDriverById, updateDriver } from "@/lib/server/services/drivers";
 import {
-  DriverSelfStatusSchema,
-  UpdateDriverSchema,
-  type UpdateDriverInput,
+  getDriverById,
+  toDriverDto,
+  updateDriverAdmin,
+  updateDriverSelf,
+} from "@/lib/server/services/drivers";
+import {
+  AdminUpdateDriverSchema,
+  DriverIdParamSchema,
+  DriverSelfUpdateSchema,
 } from "@/lib/server/validation/drivers";
 
 type RouteContext = { params: Promise<{ id: string }> };
+
+function parseDriverId(id: string): string | NextResponse {
+  const parsed = DriverIdParamSchema.safeParse(id);
+  if (!parsed.success) {
+    return badRequest(parsed.error.issues[0]?.message ?? "Invalid driver ID");
+  }
+  return parsed.data;
+}
 
 export async function GET(request: Request, context: RouteContext) {
   const configError = ensureFirebaseConfigured();
@@ -26,14 +39,16 @@ export async function GET(request: Request, context: RouteContext) {
   if (isErrorResponse(user)) return user;
 
   const { id } = await context.params;
+  const driverId = parseDriverId(id);
+  if (driverId instanceof NextResponse) return driverId;
 
   try {
     if (user.role === "driver") {
-      const driverId = await resolveDriverId(user);
-      if (driverId !== id) return forbidden();
+      const selfDriverId = await resolveDriverId(user);
+      if (selfDriverId !== driverId) return forbidden();
     }
 
-    const driver = await getDriverById(id);
+    const driver = toDriverDto(await getDriverById(driverId));
     return NextResponse.json({ driver });
   } catch (err) {
     return handleServiceError(err);
@@ -48,38 +63,26 @@ export async function PATCH(request: Request, context: RouteContext) {
   if (isErrorResponse(user)) return user;
 
   const { id } = await context.params;
-  const body = await parseJsonBody(request, UpdateDriverSchema);
-  if (isErrorResponse(body)) return body;
+  const driverId = parseDriverId(id);
+  if (driverId instanceof NextResponse) return driverId;
 
   try {
     if (user.role === "driver") {
-      const driverId = await requireDriverId(user);
-      if (isErrorResponse(driverId)) return driverId;
-      if (driverId !== id) return forbidden();
+      const selfDriverId = await requireDriverId(user);
+      if (isErrorResponse(selfDriverId)) return selfDriverId;
+      if (selfDriverId !== driverId) return forbidden();
 
-      // Drivers may update profile fields and their own availability (Available / Inactive)
-      const { name, phone, email, vehicle, avatarColor, status } = body;
-      const driverPatch: UpdateDriverInput = {};
-      if (name !== undefined) driverPatch.name = name;
-      if (phone !== undefined) driverPatch.phone = phone;
-      if (email !== undefined) driverPatch.email = email;
-      if (vehicle !== undefined) driverPatch.vehicle = vehicle;
-      if (avatarColor !== undefined) driverPatch.avatarColor = avatarColor;
-      if (status !== undefined) {
-        const parsed = DriverSelfStatusSchema.safeParse(status);
-        if (!parsed.success) {
-          return NextResponse.json(
-            { error: "Drivers may only set status to Available or Inactive" },
-            { status: 400 },
-          );
-        }
-        driverPatch.status = parsed.data;
-      }
-      const driver = await updateDriver(id, driverPatch, user);
+      const body = await parseJsonBody(request, DriverSelfUpdateSchema);
+      if (isErrorResponse(body)) return body;
+
+      const driver = await updateDriverSelf(driverId, body, user);
       return NextResponse.json({ driver });
     }
 
-    const driver = await updateDriver(id, body, user);
+    const body = await parseJsonBody(request, AdminUpdateDriverSchema);
+    if (isErrorResponse(body)) return body;
+
+    const driver = await updateDriverAdmin(driverId, body, user);
     return NextResponse.json({ driver });
   } catch (err) {
     return handleServiceError(err);

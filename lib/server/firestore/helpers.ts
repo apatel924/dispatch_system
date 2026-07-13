@@ -1,8 +1,8 @@
 import type {
   AuditLog,
+  ConsumerNote,
   DeliveryStepKey,
   DriverProfile,
-  DriverStatus,
   ImportLog,
   Order,
   OrderStatus,
@@ -11,8 +11,10 @@ import type {
   ProofAsset,
   ProofReviewStatus,
   ProofType,
+  TrackingLink,
   UserRole,
 } from "@/lib/types/backend";
+import { normalizeDriverStatus } from "@/lib/driver-status";
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -42,6 +44,19 @@ export function omitUndefined<T extends Record<string, unknown>>(obj: T): T {
 
 function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function asIsoString(value: unknown, fallback = ""): string {
+  if (typeof value === "string") return value;
+  if (
+    value &&
+    typeof value === "object" &&
+    "toDate" in value &&
+    typeof (value as { toDate: () => Date }).toDate === "function"
+  ) {
+    return (value as { toDate: () => Date }).toDate().toISOString();
+  }
+  return fallback;
 }
 
 function asNumber(value: unknown, fallback = 0): number {
@@ -95,23 +110,47 @@ export function docToOrder(id: string, data: FirebaseFirestore.DocumentData): Or
     createdAt: asString(data.createdAt),
     updatedAt: asString(data.updatedAt),
     assignedAt: data.assignedAt ? asString(data.assignedAt) : undefined,
+    pickedUpAt: data.pickedUpAt ? asString(data.pickedUpAt) : undefined,
     deliveredAt: data.deliveredAt ? asString(data.deliveredAt) : undefined,
+    failedAt: data.failedAt ? asString(data.failedAt) : undefined,
+    returnedAt: data.returnedAt ? asString(data.returnedAt) : undefined,
     scheduledFor: data.scheduledFor ? asString(data.scheduledFor) : undefined,
     createdBy: data.createdBy ? asString(data.createdBy) : undefined,
     source: asString(data.source, "manual"),
     importLogId: data.importLogId ? asString(data.importLogId) : undefined,
+  trackingUrl: data.trackingUrl ? asString(data.trackingUrl) : undefined,
+    trackingLinkVersion:
+      data.trackingLinkVersion !== undefined ? asNumber(data.trackingLinkVersion) : undefined,
+    trackingLinkIssuedAt: data.trackingLinkIssuedAt
+      ? asString(data.trackingLinkIssuedAt)
+      : undefined,
   };
 }
 
+export function resolveDriverAuthUid(
+  data: FirebaseFirestore.DocumentData,
+): string | undefined {
+  const authUid = typeof data.authUid === "string" ? data.authUid.trim() : "";
+  if (authUid) return authUid;
+  const userId = typeof data.userId === "string" ? data.userId.trim() : "";
+  return userId || undefined;
+}
+
 export function docToDriver(id: string, data: FirebaseFirestore.DocumentData): DriverProfile {
+  const authUid = resolveDriverAuthUid(data);
+  const rawStatus = asString(data.status, "Inactive");
+  const status = normalizeDriverStatus(rawStatus) ?? "Inactive";
+
   return {
     id,
-    userId: asString(data.userId),
+    userId: authUid ?? asString(data.userId),
+    authUid,
     name: asString(data.name),
     phone: asString(data.phone),
     email: asString(data.email),
-    status: asString(data.status, "Inactive") as DriverStatus,
+    status,
     vehicle: data.vehicle ? asString(data.vehicle) : undefined,
+    adminNote: data.adminNote ? asString(data.adminNote) : undefined,
     avatarColor: asString(data.avatarColor, "bg-muted text-muted-foreground"),
     initials: asString(data.initials),
     activeDeliveries: asNumber(data.activeDeliveries),
@@ -125,9 +164,15 @@ export function docToDriver(id: string, data: FirebaseFirestore.DocumentData): D
     successRate: data.successRate !== undefined ? asNumber(data.successRate) : undefined,
     totalDeliveries:
       data.totalDeliveries !== undefined ? asNumber(data.totalDeliveries) : undefined,
-    lastActiveAt: data.lastActiveAt ? asString(data.lastActiveAt) : undefined,
-    createdAt: asString(data.createdAt),
-    updatedAt: asString(data.updatedAt),
+    lastActiveAt: data.lastActiveAt ? asIsoString(data.lastActiveAt) : undefined,
+    accountDisabled: data.accountDisabled === true ? true : undefined,
+    accountUpdatedAt: data.accountUpdatedAt ? asIsoString(data.accountUpdatedAt) : undefined,
+    accountUpdatedByUid: data.accountUpdatedByUid
+      ? asString(data.accountUpdatedByUid)
+      : undefined,
+    createdAt: asIsoString(data.createdAt),
+    updatedAt: asIsoString(data.updatedAt),
+    updatedByUid: data.updatedByUid ? asString(data.updatedByUid) : undefined,
   };
 }
 
@@ -154,7 +199,6 @@ export function docToProof(id: string, data: FirebaseFirestore.DocumentData): Pr
     type: asString(data.type) as ProofType,
     stepKey: asString(data.stepKey) as DeliveryStepKey,
     storagePath: asString(data.storagePath),
-    downloadUrl: data.downloadUrl ? asString(data.downloadUrl) : undefined,
     mimeType: asString(data.mimeType),
     fileSizeBytes: data.fileSizeBytes !== undefined ? asNumber(data.fileSizeBytes) : undefined,
     uploadedBy: asString(data.uploadedBy),
@@ -196,5 +240,40 @@ export function docToAuditLog(id: string, data: FirebaseFirestore.DocumentData):
         ? (data.metadata as Record<string, unknown>)
         : undefined,
     createdAt: asString(data.createdAt),
+  };
+}
+
+export function docToTrackingLink(
+  id: string,
+  data: FirebaseFirestore.DocumentData,
+): TrackingLink {
+  return {
+    id,
+    orderId: asString(data.orderId),
+    publicReference: asString(data.publicReference),
+    version: asNumber(data.version, 1),
+    expiresAt: data.expiresAt ? asString(data.expiresAt) : undefined,
+    revokedAt: data.revokedAt ? asString(data.revokedAt) : undefined,
+    replacedByVersion:
+      data.replacedByVersion !== undefined ? asNumber(data.replacedByVersion) : undefined,
+    createdAt: asString(data.createdAt),
+    tokenHash: data.tokenHash ? asString(data.tokenHash) : undefined,
+    legacyInsecure: data.legacyInsecure === true,
+  };
+}
+
+export function docToConsumerNote(
+  id: string,
+  data: FirebaseFirestore.DocumentData,
+): ConsumerNote {
+  return {
+    id,
+    orderId: asString(data.orderId),
+    source: "consumer",
+    text: asString(data.text),
+    createdAt: asString(data.createdAt),
+    trackingLinkVersion: asNumber(data.trackingLinkVersion, 1),
+    acknowledgedAt: data.acknowledgedAt ? asString(data.acknowledgedAt) : undefined,
+    acknowledgedByUid: data.acknowledgedByUid ? asString(data.acknowledgedByUid) : undefined,
   };
 }

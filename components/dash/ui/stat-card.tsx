@@ -34,15 +34,21 @@ export function StatCard({
       </div>
       <div className="mt-3 text-2xl font-bold tracking-tight text-foreground">{value}</div>
       <div className="mt-1 text-xs leading-snug text-muted-foreground">{label}</div>
-      {delta && (
+      {(delta || compareLabel) && (
         <div className="mt-2.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
-          {trend === "up" ? (
-            <ArrowUp className="h-3.5 w-3.5 text-success" />
-          ) : (
-            <ArrowDown className="h-3.5 w-3.5 text-primary" />
+          {delta && (
+            <>
+              {trend === "up" ? (
+                <ArrowUp className="h-3.5 w-3.5 text-success" />
+              ) : (
+                <ArrowDown className="h-3.5 w-3.5 text-primary" />
+              )}
+              <span className={cn("font-semibold", trend === "up" ? "text-success" : "text-primary")}>{delta}</span>
+            </>
           )}
-          <span className={cn("font-semibold", trend === "up" ? "text-success" : "text-primary")}>{delta}</span>
-          <span className="text-muted-foreground">{compareLabel}</span>
+          {compareLabel && (
+            <span className="text-muted-foreground">{compareLabel}</span>
+          )}
         </div>
       )}
     </div>

@@ -19,7 +19,7 @@ export function SectionCard({
   padded?: boolean;
 }) {
   return (
-    <section className={cn("rounded-xl border border-border bg-card shadow-[0_1px_2px_0_rgb(0_0_0/0.03)]", className)}>
+    <section className={cn("min-w-0 rounded-xl border border-border bg-card shadow-[0_1px_2px_0_rgb(0_0_0/0.03)]", className)}>
       {(title || action) && (
         <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 px-5 py-4">
           <div className="flex min-w-0 items-center gap-2.5">

@@ -1,6 +1,6 @@
 import type { Order, OrderStatus, OrderStatusEvent, UserRole } from "@/lib/types/backend";
 import type { AuthUser } from "@/lib/server/auth";
-import { notFoundError } from "@/lib/server/errors";
+import { notFoundError, ServiceError } from "@/lib/server/errors";
 import {
   COLLECTIONS,
   orderDoc,
@@ -16,7 +16,11 @@ import {
 import { getAdminFirestore } from "@/lib/server/firebase-admin";
 import { generateOrderId } from "@/lib/server/firestore/ids";
 import { writeAuditLog } from "@/lib/server/services/audit";
-import { getDriverById } from "@/lib/server/services/drivers";
+import { getDriverById, validateDriverForAssignment } from "@/lib/server/services/drivers";
+import { ACTIVE_DELIVERY_ORDER_STATUSES } from "@/lib/order-status-groups";
+import { createTrackingLinkForOrder } from "@/lib/server/services/tracking-links";
+import { notifyCustomerOrderAssigned } from "@/lib/server/services/notifications";
+import type { TrackingLinkNotificationResult } from "@/lib/server/services/notifications";
 import type {
   CreateOrderInput,
   DriverOrdersQuery,
@@ -26,13 +30,12 @@ import type {
 import { resolveStatusAfterStep } from "@/lib/delivery-workflow";
 import type { DeliveryStepKey } from "@/lib/types/backend";
 
-const ACTIVE_STATUSES: OrderStatus[] = [
-  "Assigned",
-  "Picked Up",
-  "En Route",
-  "Out for Delivery",
-  "Scheduled",
-];
+export interface AssignDriverResult {
+  order: Order;
+  trackingNotification: TrackingLinkNotificationResult;
+}
+
+const ACTIVE_STATUSES: OrderStatus[] = [...ACTIVE_DELIVERY_ORDER_STATUSES];
 
 const COMPLETED_STATUSES: OrderStatus[] = ["Delivered", "Failed", "Returned"];
 
@@ -94,6 +97,7 @@ export async function createOrder(
 
   if (assignedDriverId) {
     const driver = await getDriverById(assignedDriverId);
+    validateDriverForAssignment(driver);
     assignedDriverName = driver.name;
     assignedAt = now;
     status = "Assigned";
@@ -139,8 +143,23 @@ export async function createOrder(
     source: input.source ?? "manual",
   };
 
-  await orderDoc(db, id).set(omitUndefined(order));
+  await orderDoc(db, id).set(omitUndefined(order as unknown as Record<string, unknown>));
   await addStatusEvent(id, status, act, { note: "Order created" });
+
+  const trackingLink = await createTrackingLinkForOrder(id, trackingId);
+  await orderDoc(db, id).update(
+    omitUndefined({
+      trackingLinkVersion: trackingLink.version,
+      trackingLinkIssuedAt: trackingLink.createdAt,
+      updatedAt: nowIso(),
+    }),
+  );
+  order.trackingLinkVersion = trackingLink.version;
+  order.trackingLinkIssuedAt = trackingLink.createdAt;
+
+  if (assignedDriverId) {
+    await notifyCustomerOrderAssigned(order);
+  }
 
   await writeAuditLog({
     action: "order.create",
@@ -188,19 +207,6 @@ export async function findOrderByExternalOrderRef(
     .get();
 
   if (snap.empty) return null;
-  const doc = snap.docs[0];
-  return docToOrder(doc.id, doc.data());
-}
-
-export async function getOrderByTrackingId(trackingId: string): Promise<Order> {
-  const db = getAdminFirestore();
-  const snap = await db
-    .collection(COLLECTIONS.orders)
-    .where("trackingId", "==", trackingId)
-    .limit(1)
-    .get();
-
-  if (snap.empty) throw notFoundError("Tracking", trackingId);
   const doc = snap.docs[0];
   return docToOrder(doc.id, doc.data());
 }
@@ -300,8 +306,9 @@ export async function assignDriver(
   orderId: string,
   driverId: string,
   actor: AuthUser | ActorContext,
-): Promise<Order> {
+): Promise<AssignDriverResult> {
   const driver = await getDriverById(driverId);
+  validateDriverForAssignment(driver);
   const act = actorFromUser(actor);
   const db = getAdminFirestore();
   const ref = orderDoc(db, orderId);
@@ -327,7 +334,10 @@ export async function assignDriver(
     metadata: { driverId },
   });
 
-  return getOrderById(orderId);
+  const order = await getOrderById(orderId);
+  const trackingNotification = await notifyCustomerOrderAssigned(order);
+
+  return { order, trackingNotification };
 }
 
 export async function updateOrderStatus(
@@ -362,7 +372,21 @@ export async function updateOrderStatus(
     updatedAt: now,
   };
 
-  if (effectiveStatus === "Delivered") patch.deliveredAt = now;
+  if (effectiveStatus === "Picked Up" && !current.pickedUpAt) {
+    patch.pickedUpAt = now;
+  }
+  if (options?.stepKey === "pickedUp" && !current.pickedUpAt) {
+    patch.pickedUpAt = now;
+  }
+  if (effectiveStatus === "Delivered" && !current.deliveredAt) {
+    patch.deliveredAt = now;
+  }
+  if (effectiveStatus === "Failed" && !current.failedAt) {
+    patch.failedAt = now;
+  }
+  if (effectiveStatus === "Returned" && !current.returnedAt) {
+    patch.returnedAt = now;
+  }
 
   await ref.update(patch);
   const event = await addStatusEvent(orderId, effectiveStatus, act, options);

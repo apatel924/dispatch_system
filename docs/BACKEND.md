@@ -68,7 +68,7 @@ Firebase custom claims required on tokens:
 | Auth UI (Firebase email/password) | ✅ Wired | Admin + driver login pages call Firebase; SMS login disabled |
 | Page protection | ✅ Added | `AdminAuthGuard` / `DriverAuthGuard` on protected routes; demo mode when Firebase unset |
 | Admin list/detail/create pages | ⚠️ Partial | Hooks exist (`useAdminOrders`, etc.) but default to mock unless `NEXT_PUBLIC_USE_API=true` + valid token |
-| Driver UI data layer | ⚠️ Partial | Hooks wired with mock fallback; proof flow still uses localStorage + optimistic sync |
+| Driver UI data layer | ⚠️ Partial | Hooks wired with mock fallback; proofs sync via API with localStorage offline fallback |
 | Customer notifications | 🔧 Scaffold only | `lib/server/services/notifications.ts` — dev-log only, no Twilio |
 | Twilio / real SMS | ❌ Future | Reserved for customer delivery notifications only |
 | Create order form submit | ❌ Not wired | UI is static; no `POST /api/orders` from form yet |
@@ -84,7 +84,7 @@ Firebase custom claims required on tokens:
 | 4 — API route handlers | ✅ Done | Orders, drivers, driver-orders, proofs, tracking, reports, import |
 | 5 — Admin UI migration | ⚠️ Partial | Hooks + API client exist; pages use mock by default |
 | 6 — Driver UI migration | ⚠️ Partial | Hooks exist; dashboard/route wired; messages still mock |
-| 7 — Proof upload | ⚠️ Partial | Storage + proofs API exist; driver detail still merges localStorage |
+| 7 — Proof upload | ✅ Done | Client prepare + Admin SDK upload, validation, rate limits, retry UI; localStorage offline fallback |
 | 8 — Admin proof review | ✅ Done | Proof gallery + approve/reject on order detail |
 | 9 — Mock order import | ✅ Done | Import API + settings integrations panel |
 | 10 — Tracking & reports | ⚠️ Partial | APIs done; pages use hooks with mock fallback |
@@ -267,9 +267,19 @@ Import from `@/lib/server/services` or the specific module.
 | Function | Description |
 |----------|-------------|
 | `listProofs(orderId)` | List with signed download URLs |
-| `createProof(orderId, input, actor)` | Save metadata after Storage upload |
+| `uploadProofFile(orderId, type, dataUrl)` | Validate + decode + Admin SDK Storage write |
+| `createProof(orderId, input, actor, driverId)` | Rate-limit → upload → metadata; deletes Storage object if metadata fails |
+| `deleteProofFile(storagePath)` | Compensating cleanup after failed metadata write |
 | `reviewProof(orderId, proofId, input, actor)` | Approve/reject |
 | `getSignedDownloadUrl(storagePath)` | Short-lived signed URL (default 15 min, `PROOF_SIGNED_URL_TTL_MS`) |
+
+Supporting modules:
+
+| Module | Role |
+|--------|------|
+| `lib/server/proof-limits.ts` | Server-only env ceilings (bytes, dataUrl chars, rate limits) |
+| `lib/server/proof-validation.ts` | MIME allow-list, magic bytes, size checks before decode/upload |
+| `lib/dash/proof-image-prepare.ts` | Client EXIF/orientation, resize, JPEG/PNG encode per proof type |
 
 ### `tracking-links.ts` + `consumer-tracking.ts`
 
@@ -391,6 +401,14 @@ Set these in the Vercel project environment:
 | `NEXT_PUBLIC_ENABLE_TRACKING_DEMO` | *(unset / false)* | Must **not** be enabled |
 
 `APP_TIMEZONE` is server-only. Admin date displays use `America/Edmonton` by default on the client.
+
+### Deployment verification
+
+The production build must not bypass TypeScript or tests. Until GitHub branch protection
+requires the `Verify` workflow in `.github/workflows/verify.yml`, set the Vercel Build
+Command to `npm run verify`. After that workflow is required for pull requests and pushes
+to `main`, Vercel may use `npm run build` because CI has already run `npm run typecheck`
+and `npm test`.
 
 ### Timezone & reporting
 
@@ -609,21 +627,52 @@ lib/dash/hooks/                 — React hooks above
 
 ### Proof sync (Phase 7)
 
-Driver proof capture uses **optimistic localStorage** plus background API sync when `NEXT_PUBLIC_USE_API=true`:
+Driver proof capture uses **client-side image preparation**, optimistic localStorage, and protected API sync when `NEXT_PUBLIC_USE_API=true`:
 
-1. Capture → save to `qre-driver-proofs` immediately
-2. `POST /api/orders/[id]/proofs` with a base64 `dataUrl` — server uploads via Admin SDK to `orders/{orderId}/proofs/{type}-{ts}.{ext}`
-3. Same route records Firestore metadata + updates `order.completedSteps`
-4. Tap steps → `POST /api/orders/[id]/status` with current status + `stepKey`
-5. Complete delivery → `POST /api/orders/[id]/status` with `Delivered`
+1. Capture photo/signature → **prepare** (resize/compress; EXIF orientation for photos) in `lib/dash/proof-image-prepare.ts`
+2. Show prepared size → attach → clear temporary capture preview
+3. Save prepared `dataUrl` to `qre-driver-proofs` immediately (offline fallback)
+4. `POST /api/orders/[id]/proofs` (maxDuration 30s) with base64 `dataUrl`
+5. Server validates (MIME, magic bytes, max encoded/decoded size) → Admin SDK upload to `orders/{orderId}/proofs/{type}-{ts}.{ext}`
+6. Firestore proof metadata + `order.completedSteps`; if metadata fails, Storage object is deleted
+7. Rate limits: per driver/hour, per order/minute, and per order+type duplicate window
+8. Tap steps → `POST /api/orders/[id]/status` with current status + `stepKey`
+9. Complete delivery → `POST /api/orders/[id]/status` with `Delivered`
+10. Failed sync surfaces retry UI on the driver order detail page
+
+**Client prepare defaults**
+
+| Proof type | Max dimension | Encode | Quality |
+|------------|---------------|--------|---------|
+| `idVerification` | 2048 | JPEG | 0.85 |
+| `exteriorPhoto` (also location/drop-off) | 1920 | JPEG | 0.82 |
+| `signature` | 1600 | PNG | light only |
+
+**Server limits (defaults; override via server-only env — never `NEXT_PUBLIC_`)**
+
+| Variable | Default |
+|----------|---------|
+| `PROOF_MAX_UPLOAD_BYTES` | 2621440 (~2.5 MB decoded) |
+| `PROOF_MAX_DATA_URL_CHARS` | 3500000 (~3.5 MB encoded) |
+| `PROOF_MAX_IMAGE_DIMENSION` | 2048 (documented; client enforces) |
+| `PROOF_SIGNED_URL_TTL_MS` | 900000 (15 min) |
+| `PROOF_RATE_LIMIT_PER_DRIVER_PER_HOUR` | 60 |
+| `PROOF_RATE_LIMIT_PER_ORDER_PER_MINUTE` | 10 |
+| `PROOF_DUPLICATE_WINDOW_MS` | 5000 |
+
+Oversized payloads return **413** (`PAYLOAD_TOO_LARGE`). Mobile QA: `docs/proof-upload-mobile-qa.md`.
 
 | Function | File |
 |----------|------|
-| `uploadProofFile()`, `createProof()` | `lib/server/services/proofs.ts` |
+| `uploadProofFile()`, `createProof()`, `deleteProofFile()` | `lib/server/services/proofs.ts` |
+| `validateAndDecodeProofDataUrl()` | `lib/server/proof-validation.ts` |
+| `prepareProofImage()` | `lib/dash/proof-image-prepare.ts` |
 | `saveProofAsync()`, `markStepCompleteAsync()`, `completeDeliveryAsync()` | `lib/dash/driver-store.ts` |
 | `postOrderProof()`, `postOrderStatus()` | `lib/dash/api/driver-client.ts` |
 
 **Firebase Storage rules:** deny-all client access (`storage.rules`). Proof files are never readable or writable through the browser Firebase SDK. Deploy with `npm run firebase:deploy:rules` — see `docs/FIREBASE_RULES_DEPLOYMENT.md`.
+
+**Architecture note:** Prepared base64 through the protected API remains suitable for production under these limits. A signed GCS upload URL flow is reserved only if measured payloads again exceed serverless body/memory constraints.
 
 ---
 
@@ -661,6 +710,7 @@ Mock files remain as **fallback** when API is disabled or unavailable. **Do not 
 | — | 5 | Admin UI hooks + API wiring with mock fallback |
 | — | 6 | Driver UI hooks + API wiring with mock fallback |
 | — | 7 | Proof Storage upload + proofs API + optimistic driver-store sync |
+| 2026-07-13 | 7 | Client image prepare, server MIME/size validation, rate limits, upload compensation, retry UI |
 | — | 8 | Admin proof gallery + PATCH review route |
 | — | 9 | Mock order import API + settings integrations UI |
 | — | 10 | Opaque-token public tracking + reports overview API + consumer hooks |

@@ -1,7 +1,12 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera, Eraser, IdCard, PenTool, X } from "lucide-react";
+import { Camera, Eraser, IdCard, Loader2, PenTool, X } from "lucide-react";
+import {
+  formatProofByteSize,
+  prepareProofImage,
+  type ClientProofType,
+} from "@/lib/dash/proof-image-prepare";
 
 type CaptureMode = "photo" | "signature" | "id";
 
@@ -10,41 +15,95 @@ interface ProofCaptureSheetProps {
   mode: CaptureMode;
   title: string;
   onClose: () => void;
-  onSave: (dataUrl: string) => void;
+  onSave: (dataUrl: string) => void | Promise<void>;
+  saving?: boolean;
 }
 
-export function ProofCaptureSheet({ open, mode, title, onClose, onSave }: ProofCaptureSheetProps) {
+export function ProofCaptureSheet({ open, mode, title, onClose, onSave, saving }: ProofCaptureSheetProps) {
   if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background">
       <header className="flex items-center gap-3 border-b border-border bg-card p-4">
-        <button onClick={onClose} className="rounded-full p-1.5 hover:bg-secondary" aria-label="Close">
+        <button
+          onClick={onClose}
+          disabled={saving}
+          className="rounded-full p-1.5 hover:bg-secondary disabled:opacity-50"
+          aria-label="Close"
+        >
           <X className="h-5 w-5" />
         </button>
         <h2 className="flex-1 text-base font-bold">{title}</h2>
       </header>
       <div className="flex-1 overflow-y-auto p-4">
         {mode === "signature" ? (
-          <SignatureCapture onSave={onSave} onCancel={onClose} />
+          <SignatureCapture onSave={onSave} onCancel={onClose} saving={saving} />
         ) : (
-          <PhotoCapture mode={mode} onSave={onSave} onCancel={onClose} />
+          <PhotoCapture mode={mode} onSave={onSave} onCancel={onClose} saving={saving} />
         )}
       </div>
     </div>
   );
 }
 
-function PhotoCapture({ mode, onSave, onCancel }: { mode: "photo" | "id"; onSave: (url: string) => void; onCancel: () => void }) {
+function PhotoCapture({
+  mode,
+  onSave,
+  onCancel,
+  saving,
+}: {
+  mode: "photo" | "id";
+  onSave: (url: string) => void | Promise<void>;
+  onCancel: () => void;
+  saving?: boolean;
+}) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const [preparedSize, setPreparedSize] = useState<string | null>(null);
+  const [preparing, setPreparing] = useState(false);
+  const [prepareError, setPrepareError] = useState<string | null>(null);
+  const [attaching, setAttaching] = useState(false);
 
-  const handleFile = (file: File | undefined) => {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setPreview(reader.result as string);
-    reader.readAsDataURL(file);
+  const proofType: ClientProofType = mode === "id" ? "idVerification" : "exteriorPhoto";
+
+  const clearPreview = () => {
+    setPreview(null);
+    setPreparedSize(null);
+    setPrepareError(null);
+    if (inputRef.current) inputRef.current.value = "";
   };
+
+  const handleFile = async (file: File | undefined) => {
+    if (!file) return;
+    setPreparing(true);
+    setPrepareError(null);
+    setPreview(null);
+    setPreparedSize(null);
+
+    try {
+      const prepared = await prepareProofImage(file, proofType);
+      setPreview(prepared.dataUrl);
+      setPreparedSize(formatProofByteSize(prepared.byteSize));
+    } catch {
+      setPrepareError("Could not prepare photo. Try another image or retake.");
+    } finally {
+      setPreparing(false);
+    }
+  };
+
+  const handleAttach = async () => {
+    if (!preview || attaching || saving) return;
+    setAttaching(true);
+    try {
+      const dataUrl = preview;
+      clearPreview();
+      await onSave(dataUrl);
+    } finally {
+      setAttaching(false);
+    }
+  };
+
+  const busy = preparing || attaching || saving;
 
   return (
     <div className="mx-auto flex max-w-md flex-col gap-4">
@@ -64,47 +123,87 @@ function PhotoCapture({ mode, onSave, onCancel }: { mode: "photo" | "id"; onSave
         accept="image/*"
         capture="environment"
         className="hidden"
-        onChange={(e) => handleFile(e.target.files?.[0])}
+        disabled={busy}
+        onChange={(e) => void handleFile(e.target.files?.[0])}
       />
+
+      {preparing && (
+        <div className="flex h-48 items-center justify-center gap-2 rounded-2xl border border-border bg-secondary/30 text-sm text-muted-foreground">
+          <Loader2 className="h-5 w-5 animate-spin" /> Preparing photo…
+        </div>
+      )}
+
+      {prepareError && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          {prepareError}
+        </div>
+      )}
 
       {preview ? (
         <div className="space-y-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={preview} alt="Preview" className="w-full rounded-2xl border border-border object-cover" />
+          {preparedSize && (
+            <div className="text-center text-xs text-muted-foreground">Prepared size: {preparedSize}</div>
+          )}
           <div className="grid grid-cols-2 gap-2">
             <button
-              onClick={() => { setPreview(null); inputRef.current && (inputRef.current.value = ""); }}
-              className="flex h-12 items-center justify-center gap-1.5 rounded-xl border border-border text-sm font-semibold hover:bg-secondary"
+              disabled={busy}
+              onClick={clearPreview}
+              className="flex h-12 items-center justify-center gap-1.5 rounded-xl border border-border text-sm font-semibold hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
             >
               Retake
             </button>
             <button
-              onClick={() => onSave(preview)}
-              className="flex h-12 items-center justify-center rounded-xl bg-primary text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+              disabled={busy}
+              onClick={() => void handleAttach()}
+              className="flex h-12 items-center justify-center gap-1.5 rounded-xl bg-primary text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Attach Photo
+              {attaching || saving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Uploading…
+                </>
+              ) : (
+                "Attach Photo"
+              )}
             </button>
           </div>
         </div>
-      ) : (
+      ) : !preparing ? (
         <button
+          disabled={busy}
           onClick={() => inputRef.current?.click()}
-          className="flex h-48 flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 hover:bg-primary/10"
+          className="flex h-48 flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Camera className="h-10 w-10 text-primary" />
           <span className="text-sm font-semibold text-primary">Open Camera / Gallery</span>
         </button>
-      )}
+      ) : null}
 
-      <button onClick={onCancel} className="text-center text-sm text-muted-foreground hover:text-foreground">Cancel</button>
+      <button
+        disabled={busy}
+        onClick={onCancel}
+        className="text-center text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+      >
+        Cancel
+      </button>
     </div>
   );
 }
 
-function SignatureCapture({ onSave, onCancel }: { onSave: (url: string) => void; onCancel: () => void }) {
+function SignatureCapture({
+  onSave,
+  onCancel,
+  saving,
+}: {
+  onSave: (url: string) => void | Promise<void>;
+  onCancel: () => void;
+  saving?: boolean;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawing = useRef(false);
   const [hasStroke, setHasStroke] = useState(false);
+  const [savingLocal, setSavingLocal] = useState(false);
 
   const getPos = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current!;
@@ -116,7 +215,7 @@ function SignatureCapture({ onSave, onCancel }: { onSave: (url: string) => void;
 
   const startDraw = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const ctx = canvasRef.current?.getContext("2d");
-    if (!ctx) return;
+    if (!ctx || savingLocal || saving) return;
     drawing.current = true;
     const { x, y } = getPos(e);
     ctx.beginPath();
@@ -162,11 +261,20 @@ function SignatureCapture({ onSave, onCancel }: { onSave: (url: string) => void;
     setHasStroke(false);
   };
 
-  const save = () => {
+  const save = async () => {
     const canvas = canvasRef.current;
-    if (!canvas || !hasStroke) return;
-    onSave(canvas.toDataURL("image/png"));
+    if (!canvas || !hasStroke || savingLocal || saving) return;
+    setSavingLocal(true);
+    try {
+      const raw = canvas.toDataURL("image/png");
+      const prepared = await prepareProofImage(raw, "signature");
+      await onSave(prepared.dataUrl);
+    } finally {
+      setSavingLocal(false);
+    }
   };
+
+  const busy = savingLocal || saving;
 
   return (
     <div className="mx-auto flex max-w-md flex-col gap-4">
@@ -197,18 +305,26 @@ function SignatureCapture({ onSave, onCancel }: { onSave: (url: string) => void;
       </div>
 
       <div className="grid grid-cols-3 gap-2">
-        <button onClick={clear} className="flex h-12 items-center justify-center gap-1.5 rounded-xl border border-border text-sm font-semibold hover:bg-secondary">
+        <button
+          disabled={busy}
+          onClick={clear}
+          className="flex h-12 items-center justify-center gap-1.5 rounded-xl border border-border text-sm font-semibold hover:bg-secondary disabled:opacity-50"
+        >
           <Eraser className="h-4 w-4" /> Clear
         </button>
-        <button onClick={onCancel} className="flex h-12 items-center justify-center rounded-xl border border-border text-sm font-semibold hover:bg-secondary">
+        <button
+          disabled={busy}
+          onClick={onCancel}
+          className="flex h-12 items-center justify-center rounded-xl border border-border text-sm font-semibold hover:bg-secondary disabled:opacity-50"
+        >
           Cancel
         </button>
         <button
-          disabled={!hasStroke}
-          onClick={save}
-          className="flex h-12 items-center justify-center rounded-xl bg-primary text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={!hasStroke || busy}
+          onClick={() => void save()}
+          className="flex h-12 items-center justify-center gap-1.5 rounded-xl bg-primary text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Save
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
         </button>
       </div>
     </div>
@@ -222,41 +338,73 @@ interface ProofThumbnailProps {
   icon: React.ReactNode;
   onCapture: () => void;
   onRemove?: () => void;
+  uploading?: boolean;
+  uploadError?: string;
+  onRetry?: () => void;
 }
 
-export function ProofThumbnail({ label, dataUrl, required, icon, onCapture, onRemove }: ProofThumbnailProps) {
+export function ProofThumbnail({
+  label,
+  dataUrl,
+  required,
+  icon,
+  onCapture,
+  onRemove,
+  uploading,
+  uploadError,
+  onRetry,
+}: ProofThumbnailProps) {
   return (
-    <button
-      type="button"
-      onClick={dataUrl ? undefined : onCapture}
-      className="relative flex flex-col items-center gap-2 rounded-xl border border-border bg-card p-3 text-center hover:border-primary/40"
-    >
+    <div className="relative flex flex-col items-center gap-2 rounded-xl border border-border bg-card p-3 text-center">
       {dataUrl ? (
         <>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={dataUrl} alt={label} className="h-20 w-full rounded-lg object-cover" />
-          <span className="text-xs font-semibold text-success">Attached</span>
-          {onRemove && (
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={(e) => { e.stopPropagation(); onRemove(); }}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); onRemove(); } }}
+          {uploading ? (
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary">
+              <Loader2 className="h-3 w-3 animate-spin" /> Uploading…
+            </span>
+          ) : uploadError ? (
+            <div className="space-y-1">
+              <span className="block text-[10px] text-destructive">{uploadError}</span>
+              {onRetry && (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="text-[10px] font-semibold text-primary hover:underline"
+                >
+                  Retry upload
+                </button>
+              )}
+            </div>
+          ) : (
+            <span className="text-xs font-semibold text-success">Attached</span>
+          )}
+          {onRemove && !uploading && (
+            <button
+              type="button"
+              onClick={onRemove}
               className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-background/90 text-muted-foreground shadow-sm hover:text-primary"
+              aria-label={`Remove ${label}`}
             >
               <X className="h-3.5 w-3.5" />
-            </span>
+            </button>
           )}
         </>
       ) : (
-        <>
+        <button
+          type="button"
+          disabled={uploading}
+          onClick={onCapture}
+          className="flex w-full flex-col items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
+        >
           <div className="grid h-14 w-14 place-items-center rounded-xl border-2 border-dashed border-primary/30 bg-primary/5 text-primary">
             {icon}
           </div>
           <span className="text-xs font-semibold">{label}</span>
           {required && <span className="text-[10px] text-muted-foreground">Required</span>}
-        </>
+        </button>
       )}
-    </button>
+    </div>
   );
 }

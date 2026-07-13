@@ -12,6 +12,12 @@ export interface OrderProofs {
   proofs: Partial<Record<ProofType, string>>;
 }
 
+export interface SaveProofResult {
+  proofs: OrderProofs;
+  synced: boolean;
+  error?: string;
+}
+
 function emptyOrderProofs(): OrderProofs {
   return { completedSteps: [], stepTimestamps: {}, proofs: {} };
 }
@@ -21,6 +27,15 @@ function formatTimestamp(date = new Date()): string {
 }
 
 const STORAGE_KEY = "qre-driver-proofs";
+
+/** Prevents concurrent uploads of the same proof type (double-tap protection). */
+const inFlightUploads = new Map<string, Promise<SaveProofResult>>();
+
+const PROOF_UPLOAD_TIMEOUT_MS = 45_000;
+
+function uploadKey(orderId: string, type: ProofType): string {
+  return `${orderId}:${type}`;
+}
 
 function readAll(): Record<string, OrderProofs> {
   if (typeof window === "undefined") return {};
@@ -75,6 +90,10 @@ export function saveProof(orderId: string, type: ProofType, dataUrl: string): Or
   return current;
 }
 
+export function isProofUploadInFlight(orderId: string, type: ProofType): boolean {
+  return inFlightUploads.has(uploadKey(orderId, type));
+}
+
 export async function markStepCompleteAsync(
   orderId: string,
   step: DeliveryStepKey,
@@ -94,14 +113,16 @@ export async function markStepCompleteAsync(
   return current;
 }
 
-export async function saveProofAsync(
+async function uploadProofToApi(
   orderId: string,
   type: ProofType,
   dataUrl: string,
-): Promise<OrderProofs> {
+): Promise<SaveProofResult> {
   const current = saveProof(orderId, type, dataUrl);
 
-  if (!isApiEnabled()) return current;
+  if (!isApiEnabled()) {
+    return { proofs: current, synced: true };
+  }
 
   const stepMap: Record<ProofType, DeliveryStepKey> = {
     signature: "signature",
@@ -109,16 +130,39 @@ export async function saveProofAsync(
   };
 
   try {
-    await postOrderProof(orderId, {
-      type,
-      stepKey: stepMap[type],
-      dataUrl,
-    });
-  } catch {
-    // Local dataUrl retained until sync succeeds
+    await postOrderProof(
+      orderId,
+      { type, stepKey: stepMap[type], dataUrl },
+      { timeoutMs: PROOF_UPLOAD_TIMEOUT_MS },
+    );
+    return { proofs: current, synced: true };
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Proof upload failed. Will retry when you reconnect.";
+    return { proofs: current, synced: false, error: message };
   }
+}
 
-  return current;
+export function saveProofAsync(
+  orderId: string,
+  type: ProofType,
+  dataUrl: string,
+): Promise<SaveProofResult> {
+  const key = uploadKey(orderId, type);
+  const existing = inFlightUploads.get(key);
+  if (existing) return existing;
+
+  const task = uploadProofToApi(orderId, type, dataUrl).finally(() => {
+    inFlightUploads.delete(key);
+  });
+
+  inFlightUploads.set(key, task);
+  return task;
+}
+
+/** @internal Test helper */
+export function resetProofUploadStateForTests(): void {
+  inFlightUploads.clear();
 }
 
 export async function completeDeliveryAsync(orderId: string): Promise<void> {

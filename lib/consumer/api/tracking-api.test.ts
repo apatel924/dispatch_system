@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { classifyTrackingError, ConsumerTrackingApiError } from "@/lib/consumer/api/tracking-api";
+import { describe, expect, it, vi } from "vitest";
+import {
+  classifyTrackingError,
+  ConsumerTrackingApiError,
+  fetchConsumerTracking,
+  submitConsumerNote,
+} from "@/lib/consumer/api/tracking-api";
 
 describe("consumer tracking client errors", () => {
   it("classifies expired links", () => {
@@ -15,6 +20,45 @@ describe("consumer tracking client errors", () => {
       kind: "network",
       message: "Unable to connect. Check your connection and try again.",
     });
+  });
+});
+
+describe("client-side token validation", () => {
+  it("rejects QRX-28491 without calling fetch", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchConsumerTracking("QRX-28491")).rejects.toMatchObject({
+      status: 404,
+      code: "TRACKING_INVALID",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects Firestore order IDs without calling fetch", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchConsumerTracking("QRX-SEED-1003")).rejects.toMatchObject({
+      code: "TRACKING_INVALID",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects invalid tokens for note submission without calling fetch", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(submitConsumerNote("QRX-28491", "Buzzer 402")).rejects.toMatchObject({
+      code: "TRACKING_INVALID",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
   });
 });
 

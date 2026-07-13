@@ -1,4 +1,5 @@
 import type { ConsumerTrackingView, PublicConsumerNote } from "@/lib/types/backend";
+import { isValidPublicTrackingToken } from "@/lib/tracking-token";
 
 export class ConsumerTrackingApiError extends Error {
   readonly status: number;
@@ -50,6 +51,14 @@ export function classifyTrackingError(
 export async function fetchConsumerTracking(
   token: string,
 ): Promise<{ tracking: ConsumerTrackingView }> {
+  if (!isValidPublicTrackingToken(token)) {
+    throw new ConsumerTrackingApiError(
+      "This tracking link is not valid.",
+      404,
+      "TRACKING_INVALID",
+    );
+  }
+
   const res = await fetch(`/api/tracking/${encodeURIComponent(token)}`, {
     cache: "no-store",
   });
@@ -67,6 +76,14 @@ export async function submitConsumerNote(
   token: string,
   text: string,
 ): Promise<{ note: PublicConsumerNote }> {
+  if (!isValidPublicTrackingToken(token)) {
+    throw new ConsumerTrackingApiError(
+      "This tracking link is not valid.",
+      404,
+      "TRACKING_INVALID",
+    );
+  }
+
   const res = await fetch(`/api/tracking/${encodeURIComponent(token)}/notes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

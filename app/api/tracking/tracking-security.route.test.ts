@@ -90,6 +90,42 @@ describe("GET /api/tracking/[token]", () => {
     expect(body.code).toBe("TRACKING_INVALID");
     expect(enforceTrackingInvalidRateLimit).toHaveBeenCalled();
   });
+
+  it("rejects QRX-28491 the same as any malformed token", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    ensureFirebaseConfigured.mockReturnValue(null);
+    enforceTrackingReadRateLimit.mockResolvedValue(undefined);
+    getConsumerTrackingByToken.mockRejectedValue(
+      new ServiceError("This tracking link is not valid.", "TRACKING_INVALID", 404),
+    );
+    enforceTrackingInvalidRateLimit.mockResolvedValue(undefined);
+
+    const response = await GET(new Request("http://localhost/api/tracking/QRX-28491"), {
+      params: Promise.resolve({ token: "QRX-28491" }),
+    });
+
+    expect(response.status).toBe(404);
+    const body = await response.json();
+    expect(body.code).toBe("TRACKING_INVALID");
+    expect(getConsumerTrackingByToken).toHaveBeenCalledWith("QRX-28491");
+  });
+
+  it("rejects Firestore order IDs used as tracking credentials", async () => {
+    ensureFirebaseConfigured.mockReturnValue(null);
+    enforceTrackingReadRateLimit.mockResolvedValue(undefined);
+    getConsumerTrackingByToken.mockRejectedValue(
+      new ServiceError("This tracking link is not valid.", "TRACKING_INVALID", 404),
+    );
+    enforceTrackingInvalidRateLimit.mockResolvedValue(undefined);
+
+    const response = await GET(new Request("http://localhost/api/tracking/QRX-SEED-1003"), {
+      params: Promise.resolve({ token: "QRX-SEED-1003" }),
+    });
+
+    expect(response.status).toBe(404);
+    const body = await response.json();
+    expect(body.code).toBe("TRACKING_INVALID");
+  });
 });
 
 describe("POST /api/tracking/[token]/notes", () => {

@@ -39,3 +39,13 @@ export function rateLimitedError(
 ): ServiceError {
   return new ServiceError(message, "RATE_LIMITED", 429);
 }
+
+export function payloadTooLargeError(
+  message = "Uploaded file is too large.",
+): ServiceError {
+  return new ServiceError(message, "PAYLOAD_TOO_LARGE", 413);
+}
+
+export function conflictError(message = "Conflict"): ServiceError {
+  return new ServiceError(message, "CONFLICT", 409);
+}

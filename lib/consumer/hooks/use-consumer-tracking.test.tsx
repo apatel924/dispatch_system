@@ -41,20 +41,27 @@ describe("useConsumerTracking security", () => {
 
     expect(result.current.tracking).toBeNull();
     expect(result.current.errorKind).toBe("invalid");
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/tracking/QRX-28491",
-      expect.objectContaining({ cache: "no-store" }),
-    );
+    expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("routes QRX order references through the secure API invalid-link path", async () => {
+  it("routes QRX order references through the client invalid-link path without calling the API", async () => {
     const { result } = renderHook(() => useConsumerTracking("QRX-10004"));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.tracking).toBeNull();
     expect(result.current.errorKind).toBe("invalid");
-    expect(fetch).toHaveBeenCalledWith("/api/tracking/QRX-10004", expect.any(Object));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects Firestore order IDs without calling the tracking API", async () => {
+    const { result } = renderHook(() => useConsumerTracking("QRX-SEED-1003"));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.tracking).toBeNull();
+    expect(result.current.errorKind).toBe("invalid");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("loads valid opaque tokens from the secure API", async () => {

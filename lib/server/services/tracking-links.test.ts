@@ -149,6 +149,16 @@ describe("secure tracking token storage", () => {
       code: "TRACKING_INVALID",
     });
     await expect(getTrackingLinkByToken("QRX-28491")).resolves.toBeNull();
+    await expect(resolveTrackingLink("QRX-28491")).rejects.toMatchObject({
+      code: "TRACKING_INVALID",
+    });
+  });
+
+  it("rejects Firestore order IDs as public tracking credentials", async () => {
+    await expect(resolveTrackingLink("QRX-SEED-1001")).rejects.toMatchObject({
+      code: "TRACKING_INVALID",
+    });
+    await expect(getTrackingLinkByToken("QRX-SEED-1003")).resolves.toBeNull();
   });
 
   it("rejects legacy insecure documents stored with plaintext token ids", async () => {

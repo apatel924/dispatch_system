@@ -1,6 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { TrackingLink } from "@/lib/types/backend";
 import {
+  isLegacyPublicReference,
+  isValidOpaqueTrackingToken,
+  MAX_TRACKING_TOKEN_INPUT_LENGTH,
+  OPAQUE_TRACKING_TOKEN_BYTES,
+  OPAQUE_TRACKING_TOKEN_LENGTH,
+} from "@/lib/tracking-token";
+import {
   rateLimitedError,
   trackingExpiredError,
   trackingInvalidError,
@@ -23,10 +30,12 @@ import { orderDoc } from "@/lib/server/firestore/collections";
 
 const DEFAULT_LINK_TTL_DAYS = 30;
 
-/** 32 random bytes encoded as base64url (43 characters, no padding). */
-export const OPAQUE_TRACKING_TOKEN_BYTES = 32;
-export const OPAQUE_TRACKING_TOKEN_LENGTH = 43;
-export const MAX_TRACKING_TOKEN_INPUT_LENGTH = 128;
+export {
+  OPAQUE_TRACKING_TOKEN_BYTES,
+  OPAQUE_TRACKING_TOKEN_LENGTH,
+  MAX_TRACKING_TOKEN_INPUT_LENGTH,
+  isValidOpaqueTrackingToken,
+} from "@/lib/tracking-token";
 
 const SECURE_DOC_ID_PATTERN = /^[a-f0-9]{64}$/;
 
@@ -53,18 +62,6 @@ export function hashTrackingToken(token: string): string {
 
 export function isSecureTrackingLinkDocId(docId: string): boolean {
   return SECURE_DOC_ID_PATTERN.test(docId);
-}
-
-export function isValidOpaqueTrackingToken(token: string): boolean {
-  const normalized = token.trim();
-  return (
-    normalized.length === OPAQUE_TRACKING_TOKEN_LENGTH &&
-    /^[A-Za-z0-9_-]+$/.test(normalized)
-  );
-}
-
-function isLegacyPublicReference(token: string): boolean {
-  return /^QRX-/i.test(token.trim());
 }
 
 export function assertValidTrackingTokenFormat(token: string): void {

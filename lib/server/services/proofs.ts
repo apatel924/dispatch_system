@@ -1,9 +1,17 @@
 import type { ProofAsset, ProofType } from "@/lib/types/backend";
 import type { AuthUser } from "@/lib/server/auth";
-import { notFoundError } from "@/lib/server/errors";
+import { conflictError, notFoundError, rateLimitedError } from "@/lib/server/errors";
 import { orderProofsCollection } from "@/lib/server/firestore/collections";
 import { docToProof, nowIso } from "@/lib/server/firestore/helpers";
 import { getAdminFirestore, getAdminStorage } from "@/lib/server/firebase-admin";
+import {
+  DEFAULT_PROOF_SIGNED_URL_TTL_MS,
+  proofDuplicateWindowMs,
+  proofRateLimitPerDriverPerHour,
+  proofRateLimitPerOrderPerMinute,
+} from "@/lib/server/proof-limits";
+import { validateAndDecodeProofDataUrl } from "@/lib/server/proof-validation";
+import { checkRateLimitAsync, hashRateLimitComponent } from "@/lib/server/rate-limit";
 import { writeAuditLog } from "@/lib/server/services/audit";
 import {
   addStatusEvent,
@@ -11,8 +19,6 @@ import {
   updateOrder,
 } from "@/lib/server/services/orders";
 import type { ReviewProofInput, UploadProofInput } from "@/lib/server/validation/proofs";
-
-const DEFAULT_PROOF_SIGNED_URL_TTL_MS = 15 * 60 * 1000;
 
 export function proofSignedUrlTtlMs(): number {
   const parsed = Number.parseInt(process.env.PROOF_SIGNED_URL_TTL_MS ?? "", 10);
@@ -26,6 +32,7 @@ function extensionForMime(mimeType: string): string {
   return "bin";
 }
 
+/** @deprecated Use validateAndDecodeProofDataUrl for production paths. */
 export function decodeProofDataUrl(dataUrl: string): { buffer: Buffer; mimeType: string } {
   const [header, base64] = dataUrl.split(",");
   const mimeMatch = header.match(/data:(.*?);base64/);
@@ -37,23 +44,64 @@ export function buildProofStoragePath(orderId: string, proofType: ProofType, ext
   return `orders/${orderId}/proofs/${proofType}-${Date.now()}.${ext}`;
 }
 
+export async function deleteProofFile(storagePath: string): Promise<void> {
+  const bucket = getAdminStorage().bucket();
+  await bucket.file(storagePath).delete({ ignoreNotFound: true });
+}
+
 export async function uploadProofFile(
   orderId: string,
   proofType: ProofType,
   dataUrl: string,
 ): Promise<{ storagePath: string; mimeType: string; fileSizeBytes: number }> {
-  const { buffer, mimeType } = decodeProofDataUrl(dataUrl);
-  const storagePath = buildProofStoragePath(orderId, proofType, extensionForMime(mimeType));
+  const { buffer, detectedMime } = validateAndDecodeProofDataUrl(dataUrl, proofType);
+  const storagePath = buildProofStoragePath(orderId, proofType, extensionForMime(detectedMime));
   const bucket = getAdminStorage().bucket();
   const file = bucket.file(storagePath);
 
   await file.save(buffer, {
-    contentType: mimeType,
+    contentType: detectedMime,
     resumable: false,
     metadata: { metadata: { orderId, proofType } },
   });
 
-  return { storagePath, mimeType, fileSizeBytes: buffer.length };
+  return { storagePath, mimeType: detectedMime, fileSizeBytes: buffer.length };
+}
+
+async function assertProofUploadAllowed(
+  orderId: string,
+  proofType: ProofType,
+  driverId: string,
+): Promise<void> {
+  const driverLimit = await checkRateLimitAsync({
+    key: `proof:driver:${hashRateLimitComponent(driverId)}`,
+    limit: proofRateLimitPerDriverPerHour(),
+    windowMs: 60 * 60 * 1000,
+  });
+  if (!driverLimit.allowed) {
+    throw rateLimitedError("Too many proof uploads. Please wait before trying again.");
+  }
+
+  const orderLimit = await checkRateLimitAsync({
+    key: `proof:order:${hashRateLimitComponent(orderId)}`,
+    limit: proofRateLimitPerOrderPerMinute(),
+    windowMs: 60 * 1000,
+  });
+  if (!orderLimit.allowed) {
+    throw rateLimitedError("Too many proof uploads for this order. Please wait a moment.");
+  }
+
+  const duplicateWindow = proofDuplicateWindowMs();
+  const typeLimit = await checkRateLimitAsync({
+    key: `proof:order:${hashRateLimitComponent(orderId)}:${proofType}`,
+    limit: 1,
+    windowMs: duplicateWindow,
+  });
+  if (!typeLimit.allowed) {
+    throw conflictError(
+      `A ${proofType} upload is already in progress or was just submitted. Please wait.`,
+    );
+  }
 }
 
 export async function listProofs(orderId: string): Promise<ProofAsset[]> {
@@ -88,9 +136,17 @@ export async function createProof(
   orderId: string,
   input: UploadProofInput,
   actor: AuthUser,
+  driverId: string,
 ): Promise<ProofAsset> {
   const order = await getOrderById(orderId);
-  const uploaded = await uploadProofFile(orderId, input.type, input.dataUrl);
+  await assertProofUploadAllowed(orderId, input.type, driverId);
+
+  let storagePath: string | undefined;
+  let uploaded: { storagePath: string; mimeType: string; fileSizeBytes: number };
+
+  uploaded = await uploadProofFile(orderId, input.type, input.dataUrl);
+  storagePath = uploaded.storagePath;
+
   const db = getAdminFirestore();
   const ref = orderProofsCollection(db, orderId).doc();
   const uploadedAt = nowIso();
@@ -107,26 +163,33 @@ export async function createProof(
     reviewStatus: "pending",
   };
 
-  await ref.set(proof);
+  try {
+    await ref.set(proof);
 
-  const completedSteps = order.completedSteps.includes(input.stepKey)
-    ? order.completedSteps
-    : [...order.completedSteps, input.stepKey];
+    const completedSteps = order.completedSteps.includes(input.stepKey)
+      ? order.completedSteps
+      : [...order.completedSteps, input.stepKey];
 
-  await updateOrder(orderId, { completedSteps }, actor);
-  await addStatusEvent(orderId, order.status, actor, {
-    stepKey: input.stepKey,
-    note: `Proof uploaded: ${input.type}`,
-  });
+    await updateOrder(orderId, { completedSteps }, actor);
+    await addStatusEvent(orderId, order.status, actor, {
+      stepKey: input.stepKey,
+      note: `Proof uploaded: ${input.type}`,
+    });
 
-  await writeAuditLog({
-    action: "proof.upload",
-    entityType: "proof",
-    entityId: ref.id,
-    actorId: actor.uid,
-    actorRole: actor.role,
-    metadata: { orderId, type: input.type },
-  });
+    await writeAuditLog({
+      action: "proof.upload",
+      entityType: "proof",
+      entityId: ref.id,
+      actorId: actor.uid,
+      actorRole: actor.role,
+      metadata: { orderId, type: input.type },
+    });
+  } catch (err) {
+    if (storagePath) {
+      await deleteProofFile(storagePath).catch(() => {});
+    }
+    throw err;
+  }
 
   return attachSignedUrl({ id: ref.id, ...proof });
 }

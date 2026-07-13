@@ -32,11 +32,25 @@ export async function fetchOrderProofs(id: string): Promise<{ proofs: ProofAsset
 export async function postOrderProof(
   orderId: string,
   body: UploadProofInput,
+  options?: { signal?: AbortSignal; timeoutMs?: number },
 ): Promise<{ proof: ProofAsset }> {
-  return adminFetch(`/api/orders/${encodeURIComponent(orderId)}/proofs`, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeoutMs = options?.timeoutMs ?? 45_000;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  if (options?.signal) {
+    options.signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+
+  try {
+    return await adminFetch(`/api/orders/${encodeURIComponent(orderId)}/proofs`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export async function postOrderStatus(

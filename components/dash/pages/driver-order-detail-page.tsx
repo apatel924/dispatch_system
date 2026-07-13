@@ -55,6 +55,8 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
   const [capture, setCapture] = useState<{ mode: CaptureMode; proofType: ProofType } | null>(null);
   const [delivered, setDelivered] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [uploadingProof, setUploadingProof] = useState<ProofType | null>(null);
+  const [proofUploadErrors, setProofUploadErrors] = useState<Partial<Record<ProofType, string>>>({});
   const [acknowledgingId, setAcknowledgingId] = useState<string | null>(null);
 
   const loadProofs = useCallback(() => {
@@ -126,14 +128,48 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
     if (!capture) return;
     const { proofType } = capture;
     setCapture(null);
+    setUploadingProof(proofType);
+    setProofUploadErrors((prev) => {
+      const next = { ...prev };
+      delete next[proofType];
+      return next;
+    });
     setSyncing(true);
     try {
-      const updated = await saveProofAsync(orderId, proofType, dataUrl);
-      setProofs(updated.proofs);
-      setCompletedSteps(updated.completedSteps);
-      setStepTimestamps(updated.stepTimestamps);
-      await refresh({ silent: true });
+      const result = await saveProofAsync(orderId, proofType, dataUrl);
+      setProofs(result.proofs.proofs);
+      setCompletedSteps(result.proofs.completedSteps);
+      setStepTimestamps(result.proofs.stepTimestamps);
+      if (!result.synced && result.error) {
+        setProofUploadErrors((prev) => ({ ...prev, [proofType]: result.error }));
+      } else {
+        await refresh({ silent: true });
+      }
     } finally {
+      setUploadingProof(null);
+      setSyncing(false);
+    }
+  };
+
+  const handleRetryProofUpload = async (type: ProofType) => {
+    const dataUrl = proofs[type] ?? getOrderProofs(orderId).proofs[type];
+    if (!dataUrl) return;
+    setUploadingProof(type);
+    setProofUploadErrors((prev) => {
+      const next = { ...prev };
+      delete next[type];
+      return next;
+    });
+    setSyncing(true);
+    try {
+      const result = await saveProofAsync(orderId, type, dataUrl);
+      if (!result.synced && result.error) {
+        setProofUploadErrors((prev) => ({ ...prev, [type]: result.error }));
+      } else {
+        await refresh({ silent: true });
+      }
+    } finally {
+      setUploadingProof(null);
       setSyncing(false);
     }
   };
@@ -336,7 +372,14 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
               dataUrl={proofs.signature}
               icon={<PenTool className="h-6 w-6" />}
               onCapture={() => openCapture("signature", "signature")}
-              onRemove={proofs.signature ? () => handleRemoveProof("signature") : undefined}
+              onRemove={proofs.signature && !uploadingProof ? () => handleRemoveProof("signature") : undefined}
+              uploading={uploadingProof === "signature"}
+              uploadError={proofUploadErrors.signature}
+              onRetry={
+                proofUploadErrors.signature && proofs.signature
+                  ? () => void handleRetryProofUpload("signature")
+                  : undefined
+              }
             />
             <ProofThumbnail
               label="Exterior"
@@ -344,7 +387,14 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
               dataUrl={proofs.exteriorPhoto}
               icon={<Camera className="h-6 w-6" />}
               onCapture={() => openCapture("exteriorPhoto", "photo")}
-              onRemove={proofs.exteriorPhoto ? () => handleRemoveProof("exteriorPhoto") : undefined}
+              onRemove={proofs.exteriorPhoto && !uploadingProof ? () => handleRemoveProof("exteriorPhoto") : undefined}
+              uploading={uploadingProof === "exteriorPhoto"}
+              uploadError={proofUploadErrors.exteriorPhoto}
+              onRetry={
+                proofUploadErrors.exteriorPhoto && proofs.exteriorPhoto
+                  ? () => void handleRetryProofUpload("exteriorPhoto")
+                  : undefined
+              }
             />
           </div>
         </section>
@@ -375,6 +425,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
           title={PROOF_LABELS[capture.proofType]}
           onClose={() => setCapture(null)}
           onSave={handleSaveProof}
+          saving={uploadingProof === capture.proofType}
         />
       )}
     </div>

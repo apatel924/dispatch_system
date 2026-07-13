@@ -5,7 +5,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["**/*.test.ts", "**/*.test.tsx"],
-    exclude: ["**/node_modules/**", "firebase.rules.test.ts"],
+    exclude: ["**/node_modules/**"],
     clearMocks: true,
     restoreMocks: true,
   },

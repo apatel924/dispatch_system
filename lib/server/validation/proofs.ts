@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { DeliveryStepKeySchema } from "@/lib/server/validation/common";
+import { proofMaxDataUrlChars } from "@/lib/server/proof-limits";
 
 export const ProofTypeSchema = z.enum(["signature", "exteriorPhoto", "idVerification"]);
+
+const maxDataUrlChars = proofMaxDataUrlChars();
 
 /** Base64 data URL uploaded through a protected API route (never client Storage SDK). */
 export const UploadProofSchema = z.object({
@@ -10,6 +13,9 @@ export const UploadProofSchema = z.object({
   dataUrl: z
     .string()
     .min(22)
+    .max(maxDataUrlChars, {
+      message: `dataUrl exceeds maximum encoded length of ${maxDataUrlChars} characters`,
+    })
     .refine((value) => value.startsWith("data:") && value.includes(";base64,"), {
       message: "dataUrl must be a base64 data URL",
     }),

@@ -14,6 +14,9 @@ import { UploadProofSchema } from "@/lib/server/validation/proofs";
 
 const DRIVER_ROLES = ["driver"] as const;
 
+/** Allow headroom for decode + Firebase upload on large prepared images. */
+export const maxDuration = 30;
+
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function GET(request: Request, context: RouteContext) {
@@ -55,7 +58,7 @@ export async function POST(request: Request, context: RouteContext) {
 
   try {
     await assertDriverOwnsOrder(id, driverId);
-    const proof = await createProof(id, body, user);
+    const proof = await createProof(id, body, user, driverId);
     return NextResponse.json({ proof }, { status: 201 });
   } catch (err) {
     return handleServiceError(err);

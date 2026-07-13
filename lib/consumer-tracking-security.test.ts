@@ -1,6 +1,7 @@
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { isTrackingDemoEnabled } from "@/lib/tracking-token";
 
 const root = resolve(__dirname, "..");
 
@@ -20,9 +21,38 @@ describe("tracking demo removal", () => {
     vi.stubEnv("ENABLE_TRACKING_DEMO", "true");
     vi.stubEnv("NEXT_PUBLIC_ENABLE_TRACKING_DEMO", "true");
 
+    expect(isTrackingDemoEnabled()).toBe(false);
     expect(existsSync(resolve(root, "lib/tracking-demo.ts"))).toBe(false);
     expect(existsSync(resolve(root, "data/trackingDemo.ts"))).toBe(false);
     expect(existsSync(resolve(root, "components/site/tracking-demo.tsx"))).toBe(false);
+  });
+});
+
+describe("public tracking route imports", () => {
+  const legacyPatterns = [
+    /getOrderByTrackingId/,
+    /getTrackingByTrackingId/,
+    /buildTrackingViewFromOrder/,
+    /getDemoConsumerTrackingView/,
+    /isDemoTrackingToken/,
+    /trackingDemo/,
+    /tracking-demo/,
+  ];
+
+  const publicTrackingSources = [
+    "app/api/tracking/[token]/route.ts",
+    "app/api/tracking/[token]/notes/route.ts",
+    "app/track/[token]/page.tsx",
+    "components/consumer/consumer-tracking-page.tsx",
+    "lib/consumer/hooks/use-consumer-tracking.ts",
+    "lib/consumer/api/tracking-api.ts",
+  ];
+
+  it.each(publicTrackingSources)("does not import legacy lookup services in %s", (relativePath) => {
+    const source = readFileSync(resolve(root, relativePath), "utf8");
+    for (const pattern of legacyPatterns) {
+      expect(source).not.toMatch(pattern);
+    }
   });
 });
 

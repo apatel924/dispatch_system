@@ -50,17 +50,17 @@ export function DashboardLayout({ title, children, actions }: { title: string; c
 
   return (
     <TooltipProvider delayDuration={100}>
-      <div className="flex min-h-screen bg-background">
+      <div className="flex min-h-dvh bg-background">
         <aside
           className={cn(
-            "fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-sidebar-border bg-sidebar transition-[width] duration-300 ease-in-out md:flex",
+            "fixed inset-y-0 left-0 z-30 hidden h-dvh flex-col border-r border-sidebar-border bg-sidebar transition-[width] duration-300 ease-in-out md:flex",
             collapsed ? "w-[76px]" : "w-[240px]",
           )}
         >
           <div className={cn("flex items-start border-b border-sidebar-border pt-4 pb-4", collapsed ? "justify-center px-2" : "px-5")}>
             <Logo collapsed={collapsed} />
           </div>
-          <nav className="flex-1 space-y-1 p-3">
+          <nav className="flex-1 space-y-1 overflow-y-auto p-3">
             {nav.map((item) => {
               const active = pathname === item.to || (item.to !== "/dashboard" && pathname.startsWith(item.to));
               const Icon = item.icon;
@@ -120,8 +120,13 @@ export function DashboardLayout({ title, children, actions }: { title: string; c
           </div>
         </aside>
 
-        <div className={cn("flex min-h-screen w-full flex-col transition-[padding] duration-300", collapsed ? "md:pl-[76px]" : "md:pl-[240px]")}>
-          <header className="sticky top-0 z-20 flex h-[72px] items-center gap-3 border-b border-border bg-card px-4 md:px-6">
+        <div
+          className={cn(
+            "flex min-h-dvh min-w-0 w-full flex-1 flex-col transition-[padding] duration-300",
+            collapsed ? "md:pl-[76px]" : "md:pl-[240px]",
+          )}
+        >
+          <header className="sticky top-0 z-20 flex h-[72px] shrink-0 items-center gap-3 border-b border-border bg-card px-4 md:px-8">
             <button
               onClick={() => setCollapsed((v) => !v)}
               className="hidden rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground md:inline-flex"
@@ -129,8 +134,8 @@ export function DashboardLayout({ title, children, actions }: { title: string; c
             >
               <Menu className="h-5 w-5" />
             </button>
-            <h1 className="text-xl font-semibold tracking-tight md:text-2xl">{title}</h1>
-            <div className="ml-auto flex items-center gap-2 md:gap-4">
+            <h1 className="min-w-0 truncate text-xl font-semibold tracking-tight md:text-2xl">{title}</h1>
+            <div className="ml-auto flex shrink-0 items-center gap-2 md:gap-4">
               <div className="relative hidden lg:block">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <input
@@ -156,10 +161,12 @@ export function DashboardLayout({ title, children, actions }: { title: string; c
           </header>
 
           {actions && (
-            <div className="flex flex-wrap items-center justify-end gap-2 px-4 pt-4 md:px-8">{actions}</div>
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 px-4 pt-4 md:px-8">{actions}</div>
           )}
 
-          <main className="flex-1 p-4 md:p-8">{children}</main>
+          <main className="min-w-0 flex-1 px-4 py-4 md:px-8 md:py-8">
+            <div className="mx-auto w-full min-w-0">{children}</div>
+          </main>
         </div>
       </div>
     </TooltipProvider>

@@ -111,7 +111,7 @@ export function SettingsPage() {
         <button className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"><Save className="h-4 w-4" /> Save Changes</button>
       </>
     }>
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-6">
           <div className="grid gap-6 lg:grid-cols-2">
             <SectionCard title="Business Settings" icon={<Building2 className="h-4 w-4" />} description="Manage your business and contact information.">

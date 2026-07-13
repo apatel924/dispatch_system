@@ -19,6 +19,7 @@ import {
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { StatCard } from "@/components/dash/ui/stat-card";
+import { isDriverAssignable } from "@/lib/driver-status";
 import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
 import { useLiveIntake } from "@/lib/dash/hooks/use-live-intake";
 import { isApiEnabled } from "@/lib/dash/api/config";
@@ -108,7 +109,7 @@ export function LiveIntakePage() {
   const router = useRouter();
   const intake = useLiveIntake();
   const { drivers } = useAdminDrivers();
-  const activeDrivers = drivers.filter((d) => d.status === "Available" || d.status === "Busy");
+  const activeDrivers = drivers.filter((d) => isDriverAssignable(d.status));
 
   const [devToolsOpen, setDevToolsOpen] = useState(false);
   const [syncModalOpen, setSyncModalOpen] = useState(false);
@@ -272,7 +273,7 @@ export function LiveIntakePage() {
           {intake.error && <p className="mt-3 text-sm text-primary">{intake.error}</p>}
 
           {intake.discoveredLocations.length > 0 && (
-            <div className="mt-4 overflow-hidden rounded-lg border border-dashed border-border">
+            <div className="mt-4 rounded-lg border border-dashed border-border">
               <div className="border-b border-border bg-secondary/40 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 Discovered locations
               </div>
@@ -347,7 +348,7 @@ export function LiveIntakePage() {
           )}
         </SectionCard>
 
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
+        <div className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-6">
           <StatCard label="Orders scanned" value={intake.summary.ordersScanned} icon={Activity} tone="info" />
           <StatCard label="Delivery orders found" value={intake.summary.deliveryOrdersFound} icon={Truck} tone="purple" />
           <StatCard label="Ready to dispatch" value={intake.summary.readyToDispatch} icon={UserCheck} tone="success" />
@@ -361,7 +362,7 @@ export function LiveIntakePage() {
             title={intake.previewRows.length > 0 ? "Preview results (not saved)" : "Imported delivery orders"}
             icon={<Truck className="h-4 w-4" />}
           >
-            <div className="overflow-hidden rounded-lg border border-border">
+            <div className="rounded-lg border border-border">
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-border bg-secondary/40 text-xs uppercase tracking-wide text-muted-foreground">
                   <tr>
@@ -446,7 +447,7 @@ export function LiveIntakePage() {
                 </button>
               }
             >
-              <div className="grid gap-6 lg:grid-cols-2 xl:grid-cols-3">
+              <div className="grid min-w-0 gap-6 lg:grid-cols-2 xl:grid-cols-3">
                 <DetailSection title="Customer">
                   <DetailRow label="Name" value={detail.customer.name} />
                   <DetailRow label="Phone" value={detail.customer.phone} />

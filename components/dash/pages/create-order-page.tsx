@@ -13,6 +13,7 @@ import { DriverStatusBadge } from "@/components/dash/status-badge";
 import { createOrderApi } from "@/lib/dash/api/client";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
+import { isDriverAssignable } from "@/lib/driver-status";
 
 const STEP_LABELS = [
   "Customer Details",
@@ -51,16 +52,21 @@ export function CreateOrderPage() {
   const [priority, setPriority] = useState("Medium");
   const [serviceType, setServiceType] = useState("Standard Delivery");
 
+  const assignableDrivers = useMemo(
+    () => drivers.filter((d) => isDriverAssignable(d.status)),
+    [drivers],
+  );
+
   const selectedDriver = useMemo(
-    () => drivers.find((d) => d.id === selectedDriverId) ?? null,
-    [drivers, selectedDriverId],
+    () => assignableDrivers.find((d) => d.id === selectedDriverId) ?? null,
+    [assignableDrivers, selectedDriverId],
   );
 
   useEffect(() => {
-    if (drivers.length > 0 && !selectedDriverId) {
-      setSelectedDriverId(drivers[0].id);
+    if (assignableDrivers.length > 0 && !selectedDriverId) {
+      setSelectedDriverId(assignableDrivers[0].id);
     }
-  }, [drivers, selectedDriverId]);
+  }, [assignableDrivers, selectedDriverId]);
 
   const validateStep = (step: number): string | null => {
     switch (step) {
@@ -278,12 +284,12 @@ export function CreateOrderPage() {
                     id="assign-driver"
                     value={selectedDriverId ?? ""}
                     onChange={(e) => setSelectedDriverId(e.target.value || null)}
-                    disabled={driversLoading || drivers.length === 0}
+                    disabled={driversLoading || assignableDrivers.length === 0}
                     className="absolute inset-0 cursor-pointer opacity-0"
                     aria-label="Assign driver"
                   >
                     <option value="" disabled>Select a driver</option>
-                    {drivers.map((d) => (
+                    {assignableDrivers.map((d) => (
                       <option key={d.id} value={d.id}>{d.name} — {d.phone}</option>
                     ))}
                   </select>
@@ -314,7 +320,7 @@ export function CreateOrderPage() {
         )}
 
         {currentStep === 5 && (
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
             <SectionCard title="Review Order" icon={<ClipboardCheck className="h-4 w-4" />}>
               <p className="mb-4 text-sm text-muted-foreground">
                 Confirm all details below before creating the order.

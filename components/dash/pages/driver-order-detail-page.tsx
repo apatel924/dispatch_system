@@ -8,6 +8,7 @@ import {
   CheckCircle2, Circle, Truck, ChevronRight, Inbox, ClipboardList,
 } from "lucide-react";
 import { OrderStatusBadge } from "@/components/dash/status-badge";
+import { DriverConsumerInstructionsSection } from "@/components/dash/driver-consumer-instructions";
 import { ProofCaptureSheet, ProofThumbnail } from "@/components/dash/driver/proof-capture";
 import {
   DELIVERY_STEPS, DEFAULT_COMPLETED_STEPS, type DeliveryStepKey,
@@ -17,6 +18,8 @@ import {
   mergeCompletedSteps,
 } from "@/lib/dash/api/driver-adapters";
 import { useDriverOrder } from "@/lib/dash/hooks/use-driver-order";
+import { acknowledgeConsumerNoteApi } from "@/lib/dash/api/client";
+import { isApiEnabled } from "@/lib/dash/api/config";
 import {
   getOrderProofs, markStepCompleteAsync, saveProofAsync, saveOrderProofs, clearOrderProofs,
   completeDeliveryAsync,
@@ -40,6 +43,8 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
     order,
     completedSteps: apiCompletedSteps,
     proofs: apiProofs,
+    statusEvents,
+    consumerNotes,
     source,
     loading,
     refresh,
@@ -50,6 +55,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
   const [capture, setCapture] = useState<{ mode: CaptureMode; proofType: ProofType } | null>(null);
   const [delivered, setDelivered] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [acknowledgingId, setAcknowledgingId] = useState<string | null>(null);
 
   const loadProofs = useCallback(() => {
     const stored = getOrderProofs(orderId);
@@ -87,6 +93,17 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
   }
 
   const canComplete = DELIVERY_STEPS.every((s) => completedSteps.includes(s.key));
+
+  const handleAcknowledge = async (noteId: string) => {
+    if (!isApiEnabled()) return;
+    setAcknowledgingId(noteId);
+    try {
+      await acknowledgeConsumerNoteApi(orderId, noteId);
+      await refresh({ silent: true });
+    } finally {
+      setAcknowledgingId(null);
+    }
+  };
 
   const handleTapStep = async (key: DeliveryStepKey) => {
     if (completedSteps.includes(key) || !order) return;
@@ -216,6 +233,21 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
           </div>
         </section>
 
+        <DriverConsumerInstructionsSection
+          notes={consumerNotes}
+          status={order.status}
+          statusEvents={statusEvents}
+          onAcknowledge={isApiEnabled() && source === "api" ? handleAcknowledge : undefined}
+          acknowledgingId={acknowledgingId}
+        />
+
+        {order.deliveryInstructions && (
+          <section className="rounded-2xl border border-border bg-card p-4">
+            <div className="text-sm font-bold">Special Instructions (On File)</div>
+            <p className="mt-2 text-sm text-muted-foreground">{order.deliveryInstructions}</p>
+          </section>
+        )}
+
         <section className="rounded-2xl border border-border bg-card p-4">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-sm font-bold">
@@ -236,7 +268,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
           </div>
           {order.notes && (
             <>
-              <div className="mt-3 text-sm font-bold">Delivery Notes</div>
+              <div className="mt-3 text-sm font-bold">Internal Admin Notes</div>
               <p className="mt-1 text-sm text-muted-foreground">{order.notes}</p>
             </>
           )}

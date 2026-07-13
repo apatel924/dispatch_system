@@ -1,0 +1,12 @@
+rules_version = '2';
+
+// All proof files are uploaded and read exclusively through Next.js API routes
+// using the Firebase Admin SDK. Client SDK access is denied so delivery evidence
+// (ID images, drop-off photos, signatures) cannot be read or written directly.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

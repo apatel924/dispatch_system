@@ -4,8 +4,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["**/*.test.ts", "**/*.test.tsx"],
-    exclude: ["**/node_modules/**", "firebase.rules.test.ts"],
+    include: ["firebase.rules.test.ts"],
     clearMocks: true,
     restoreMocks: true,
   },

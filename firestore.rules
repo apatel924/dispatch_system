@@ -1,0 +1,11 @@
+rules_version = '2';
+
+// All application data access goes through Next.js API routes via Firebase Admin SDK.
+// Deny direct client SDK reads/writes to prevent anonymous order or tracking access.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

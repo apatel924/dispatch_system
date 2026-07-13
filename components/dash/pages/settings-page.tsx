@@ -6,10 +6,19 @@ import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { Logo } from "@/components/dash/brand/logo";
 import { BarnetIntegrationsCard } from "@/components/dash/integrations/barnet-integrations-card";
+import { getCurrentUserRole, subscribeToAuthState } from "@/lib/auth/firebase-client";
 import { useExternalOrderProvider } from "@/lib/dash/hooks/use-external-order-provider";
-import { fetchOrderProviderHealthWithSync } from "@/lib/dash/api/client";
+import {
+  fetchOrderProviderEnvDiagnostics,
+  fetchOrderProviderHealthWithSync,
+} from "@/lib/dash/api/client";
 import { isApiEnabled } from "@/lib/dash/api/config";
-import type { ExternalOrderProviderSyncState, OrderProviderHealthWithSync } from "@/lib/dash/api/client";
+import type {
+  ExternalOrderProviderSyncState,
+  OrderProviderEnvDiagnosticsResponse,
+  OrderProviderHealthWithSync,
+} from "@/lib/dash/api/client";
+import type { UserRole } from "@/lib/types/backend";
 
 export function SettingsPage() {
   const {
@@ -24,6 +33,30 @@ export function SettingsPage() {
 
   const [healthWithSync, setHealthWithSync] = useState<OrderProviderHealthWithSync | null>(null);
   const [syncState, setSyncState] = useState<ExternalOrderProviderSyncState | null>(null);
+  const [currentRole, setCurrentRole] = useState<UserRole | null>(null);
+  const [envDiagnostics, setEnvDiagnostics] =
+    useState<OrderProviderEnvDiagnosticsResponse | null>(null);
+  const [envDiagnosticsLoading, setEnvDiagnosticsLoading] = useState(false);
+  const [envDiagnosticsError, setEnvDiagnosticsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadRole = async () => {
+      const role = await getCurrentUserRole();
+      if (!cancelled) setCurrentRole(role);
+    };
+
+    void loadRole();
+    const unsubscribe = subscribeToAuthState(() => {
+      void loadRole();
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     if (!isApiEnabled()) return;
@@ -47,6 +80,27 @@ export function SettingsPage() {
       } catch {
         // health refresh optional
       }
+    }
+  };
+
+  const handleRunEnvDiagnostic = async () => {
+    if (!isApiEnabled()) {
+      setEnvDiagnosticsError("Enable NEXT_PUBLIC_USE_API=true to run diagnostics");
+      return;
+    }
+
+    setEnvDiagnosticsLoading(true);
+    setEnvDiagnosticsError(null);
+    try {
+      const result = await fetchOrderProviderEnvDiagnostics();
+      setEnvDiagnostics(result);
+    } catch (err) {
+      setEnvDiagnostics(null);
+      setEnvDiagnosticsError(
+        err instanceof Error ? err.message : "Environment diagnostic failed",
+      );
+    } finally {
+      setEnvDiagnosticsLoading(false);
     }
   };
 
@@ -146,10 +200,15 @@ export function SettingsPage() {
             syncState={syncState}
             liveChecking={liveChecking}
             livePreviewing={livePreviewing}
+            envDiagnostics={envDiagnostics}
+            envDiagnosticsLoading={envDiagnosticsLoading}
+            envDiagnosticsError={envDiagnosticsError}
+            showEnvDiagnostics={currentRole === "admin"}
             liveMessage={liveMessage}
             error={providerError}
             onCheckConnection={() => void handleCheckConnection()}
             onPreviewOrders={() => void previewLiveOrders()}
+            onRunEnvDiagnostic={() => void handleRunEnvDiagnostic()}
           />
 
           <SectionCard title="Security & Privacy" icon={<Shield className="h-4 w-4" />} description="Security, data protection, and compliance settings.">

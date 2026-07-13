@@ -358,6 +358,19 @@ export interface ExternalOrderRow {
   diagnostics: ExternalOrderDiagnostics;
 }
 
+export interface OrderProviderEnvDiagnosticsResponse {
+  vercelEnvironment: string | null;
+  providerModePresent: boolean;
+  providerMode: string | null;
+  baseUrlPresent: boolean;
+  pathPrefixPresent: boolean;
+  apiKeyPresent: boolean;
+  apiPassPresent: boolean;
+  locationIdPresent: boolean;
+  liveReadsValue: string | null;
+  liveSyncValue: string | null;
+}
+
 export async function fetchOrderProviderHealth(): Promise<OrderProviderHealthResponse> {
   const res = await fetch("/api/integrations/order-provider/health");
   if (!res.ok) {
@@ -391,6 +404,12 @@ export async function fetchLiveOrderProviderHealth(params?: {
   return adminFetch(
     `/api/integrations/order-provider/live-health${query ? `?${query}` : ""}`,
   );
+}
+
+export async function fetchOrderProviderEnvDiagnostics(): Promise<OrderProviderEnvDiagnosticsResponse> {
+  return adminFetch("/api/integrations/order-provider/env-diagnostics", {
+    cache: "no-store",
+  });
 }
 
 export async function previewLiveExternalOrdersApi(): Promise<LiveOrderPreviewResponse> {

@@ -11,6 +11,8 @@
     "dev:clean": "npm run kill:dev && npm run clean && npm run dev",
     "build": "next build",
     "start": "next start",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "optimize:images": "node scripts/optimize-public-media.mjs",
     "process:knockout-backgrounds": "node scripts/knockout-white-background.mjs",
     "seed:firebase": "node scripts/seed-firebase.mjs",
@@ -42,6 +44,7 @@
     "postcss": "^8.5",
     "sharp": "^0.34.5",
     "tailwindcss": "^4.2.0",
-    "typescript": "5.7.3"
+    "typescript": "5.7.3",
+    "vitest": "^4.1.10"
   }
 }

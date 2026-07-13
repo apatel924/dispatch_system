@@ -102,6 +102,8 @@ export interface NormalizedExternalOrder {
   promotedOrderId: string | null;
   promotedAt: string | null;
   rawPayload: unknown;
+  /** Stable hash of Barnet source fields for change detection during sync. */
+  syncSourceHash?: string | null;
   createdAt: string;
   updatedAt: string;
 }

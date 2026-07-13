@@ -28,6 +28,10 @@ import { diagnoseLiveCustomerDetail } from "@/lib/integrations/order-provider/li
 import { diagnoseLiveOrderDetail } from "@/lib/integrations/order-provider/live-order-detail-diagnostics";
 import { scanBarnetOrderPages } from "@/lib/integrations/order-provider/scan-barnet-orders.server";
 import {
+  runBarnetOrderSync,
+  toExternalOrderSyncResult,
+} from "@/lib/integrations/order-provider/run-barnet-order-sync.server";
+import {
   fetchMockProviderOrders,
   getMockProviderName,
 } from "@/lib/integrations/order-provider/mock-client.server";
@@ -62,38 +66,6 @@ const SYNC_STATE_DOC = "integrationState/orderProvider";
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-function preserveAssignmentFields(
-  toStore: NormalizedExternalOrder,
-  existing: NormalizedExternalOrder | null,
-): NormalizedExternalOrder {
-  if (!existing) return toStore;
-
-  return {
-    ...toStore,
-    assignmentStatus: existing.assignmentStatus ?? "unassigned",
-    assignedDriverId: existing.assignedDriverId ?? null,
-    assignedDriverName: existing.assignedDriverName ?? null,
-    assignedAt: existing.assignedAt ?? null,
-    assignedBy: existing.assignedBy ?? null,
-    promoted: existing.promoted ?? false,
-    promotedOrderId: existing.promotedOrderId ?? null,
-    promotedAt: existing.promotedAt ?? null,
-    status:
-      existing.assignmentStatus === "assigned"
-        ? "assigned"
-        : existing.promoted
-          ? "promoted"
-          : toStore.status,
-    dispatchStatus:
-      existing.assignmentStatus === "assigned"
-        ? "assigned"
-        : existing.promoted
-          ? "promoted"
-          : toStore.dispatchStatus,
-    createdAt: existing.createdAt ?? toStore.createdAt,
-  };
 }
 
 async function readSyncState(): Promise<ExternalOrderProviderSyncState> {
@@ -143,13 +115,6 @@ export async function getExternalOrderProviderHealthWithSyncState(): Promise<
     ...getOrderProviderHealth(),
     syncState: await readSyncState(),
   };
-}
-
-function coerceExternalOrderId(order: BarnetOrderRaw): string {
-  const id = order.id;
-  if (id === undefined || id === null) return "unknown";
-  const text = String(id).trim();
-  return text.length > 0 ? text : "unknown";
 }
 
 async function buildEnrichedNormalizedOrder(
@@ -405,97 +370,8 @@ export async function scanLiveExternalDeliveryOrders(): Promise<LiveDeliveryScan
  * and upserts into Firestore. Document IDs are stable: barnet_<externalOrderId>.
  */
 export async function syncLiveExternalOrders(): Promise<ExternalOrderSyncResult> {
-  assertLiveSyncAllowed();
-
-  const config = getExternalOrderProviderConfig();
-  const locationId = config.locationId;
-
-  try {
-    const scan = await scanBarnetOrderPages();
-
-    const db = getAdminFirestore();
-    const now = nowIso();
-    const customerCache: BarnetCustomerCache = new Map();
-
-    let inserted = 0;
-    let updated = 0;
-
-    const syncOutcomes = await Promise.all(
-      scan.deliveryOrders.map(async (rawOrder) => {
-        const docRef = db.collection(COLLECTION).doc(
-          barnetDocumentId(coerceExternalOrderId(rawOrder)),
-        );
-        const existingSnap = await docRef.get();
-        const existingData = existingSnap.exists
-          ? hydrateNormalizedExternalOrder(existingSnap.data() as Record<string, unknown>)
-          : null;
-        const preserve = existingData
-          ? {
-              createdAt: existingData.createdAt ?? now,
-              updatedAt: now,
-            }
-          : undefined;
-
-        const base = normalizeBarnetOrder(rawOrder, {
-          now,
-          preserveTimestamps: preserve,
-        });
-        const enriched = await enrichBarnetDeliveryOrder(base, rawOrder, customerCache);
-        const toStore = preserveAssignmentFields(
-          {
-            ...enriched,
-            sourceLocationId: enriched.sourceLocationId ?? locationId,
-            lastSyncedAt: now,
-            updatedAt: now,
-          },
-          existingData,
-        );
-
-        await docRef.set(omitUndefined(toStore as unknown as Record<string, unknown>));
-
-        return existingSnap.exists ? ("updated" as const) : ("inserted" as const);
-      }),
-    );
-
-    inserted = syncOutcomes.filter((outcome) => outcome === "inserted").length;
-    updated = syncOutcomes.filter((outcome) => outcome === "updated").length;
-
-    const result: ExternalOrderSyncResult = {
-      pagesScanned: scan.pagesScanned,
-      totalOrdersSeen: scan.totalOrdersSeen,
-      deliveryOrdersFound: scan.deliveryOrdersFound,
-      pickupOrdersIgnored: scan.pickupOrdersIgnored,
-      unknownOrdersIgnored: scan.unknownOrdersIgnored,
-      inserted,
-      updated,
-      total: inserted + updated,
-    };
-
-    await writeSyncState({
-      lastSuccessfulSyncAt: now,
-      lastError: null,
-      lastSyncSummary: {
-        inserted: result.inserted,
-        updated: result.updated,
-        deliveryOrdersFound: result.deliveryOrdersFound,
-        pagesScanned: result.pagesScanned,
-      },
-    });
-
-    console.info(
-      `[order-provider] live sync complete: pages=${result.pagesScanned} seen=${result.totalOrdersSeen} delivery=${result.deliveryOrdersFound} inserted=${result.inserted} updated=${result.updated}`,
-    );
-
-    return result;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Live sync failed";
-    await writeSyncState({
-      lastSuccessfulSyncAt: (await readSyncState()).lastSuccessfulSyncAt,
-      lastError: message,
-      lastSyncSummary: (await readSyncState()).lastSyncSummary,
-    });
-    throw err;
-  }
+  const run = await runBarnetOrderSync();
+  return toExternalOrderSyncResult(run);
 }
 
 export async function listSyncedExternalOrders(

@@ -401,10 +401,61 @@ app/api/integrations/order-provider/
   live-customer-detail/route.ts # GET admin safe customer enrichment probe
   live-sync/route.ts          # POST admin live sync
 
+app/api/cron/
+  barnet-sync/route.ts        # GET Vercel cron (CRON_SECRET auth)
+
 scripts/
   check-order-provider-health.mjs
   check-live-order-provider-config.mjs
 ```
+
+## Automated Barnet sync (Vercel cron)
+
+Production sync runs on a schedule via `GET /api/cron/barnet-sync`. This route calls the same incremental `runBarnetOrderSync()` implementation as admin **Run Live Sync** — not the read-only live-preview route.
+
+### Schedule
+
+`vercel.json` configures one daily invocation:
+
+```json
+{ "path": "/api/cron/barnet-sync", "schedule": "0 10 * * *" }
+```
+
+That is **10:00 UTC** daily. In Edmonton (Mountain Time):
+
+- **MDT (summer):** 4:00 AM
+- **MST (winter):** 3:00 AM
+
+### Auth
+
+Set `CRON_SECRET` in Vercel project env. Cron requests must send:
+
+```
+Authorization: Bearer <CRON_SECRET>
+```
+
+Admin Firebase auth is unchanged for manual routes.
+
+### Deployment note — increasing frequency after launch
+
+Vercel **Hobby** allows only **one cron job per day**. After upgrading to **Vercel Pro**, change the schedule in `vercel.json` to run every 15 minutes — no sync code changes required:
+
+```json
+{ "schedule": "*/15 * * * *" }
+```
+
+Redeploy after updating the schedule.
+
+### Manual cron smoke test (safe)
+
+With the dev server running and `CRON_SECRET` set locally:
+
+```bash
+curl -sS "http://localhost:3000/api/cron/barnet-sync" \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
+
+The response contains aggregate counts only (no customer PII or raw Barnet payloads). Use mock mode or keep `EXTERNAL_ORDER_LIVE_SYNC_ENABLED=false` to verify auth without writing to Firestore.
 
 ## Logging
 

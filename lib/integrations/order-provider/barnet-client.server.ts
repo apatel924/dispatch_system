@@ -4,12 +4,29 @@ import {
   getExternalOrderProviderConfig,
   getExternalOrderProviderSecrets,
 } from "@/lib/integrations/order-provider/env.server";
+import { getBarnetUpstreamTimeoutMs } from "@/lib/integrations/order-provider/barnet-sync-config.server";
 import type {
   BarnetLocationsMeta,
   SafeBarnetLocation,
 } from "@/lib/integrations/order-provider/types";
 
 const BARNET_PROVIDER = "barnet";
+
+export class BarnetUpstreamTimeoutError extends Error {
+  readonly path: string;
+
+  constructor(path: string, timeoutMs: number) {
+    super(`Barnet GET ${path} timed out after ${timeoutMs}ms`);
+    this.name = "BarnetUpstreamTimeoutError";
+    this.path = path;
+  }
+}
+
+export function isBarnetUpstreamTimeoutError(
+  error: unknown,
+): error is BarnetUpstreamTimeoutError {
+  return error instanceof BarnetUpstreamTimeoutError;
+}
 
 /** Read-only Barnet order item shape (tolerant of missing fields). */
 export interface BarnetOrderItemRaw {
@@ -284,14 +301,25 @@ async function barnetGet(
     url.searchParams.set("otp", secrets.otp);
   }
 
-  const response = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      Authorization: buildBasicAuthHeader(secrets.apiKey, secrets.apiPass),
-      Accept: "application/json",
-    },
-    cache: "no-store",
-  });
+  const timeoutMs = getBarnetUpstreamTimeoutMs();
+  let response: Response;
+
+  try {
+    response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Authorization: buildBasicAuthHeader(secrets.apiKey, secrets.apiPass),
+        Accept: "application/json",
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new BarnetUpstreamTimeoutError(path, timeoutMs);
+    }
+    throw err;
+  }
 
   if (!response.ok) {
     throw new Error(

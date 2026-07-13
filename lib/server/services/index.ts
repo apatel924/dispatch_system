@@ -4,7 +4,6 @@ export type { WriteAuditLogInput } from "@/lib/server/services/audit";
 export {
   createOrder,
   getOrderById,
-  getOrderByTrackingId,
   listOrders,
   updateOrder,
   assignDriver,
@@ -14,14 +13,16 @@ export {
   getStatusEvents,
   addStatusEvent,
 } from "@/lib/server/services/orders";
-export type { ActorContext } from "@/lib/server/services/orders";
+export type { ActorContext, AssignDriverResult } from "@/lib/server/services/orders";
 
 export {
   getDriverById,
   getDriverByUserId,
   listDrivers,
   createDriver,
-  updateDriver,
+  updateDriverAdmin,
+  updateDriverSelf,
+  toDriverDto,
 } from "@/lib/server/services/drivers";
 
 export {
@@ -31,11 +32,6 @@ export {
   reviewProof,
   getSignedDownloadUrl,
 } from "@/lib/server/services/proofs";
-
-export {
-  getTrackingByTrackingId,
-  buildTrackingViewFromOrder,
-} from "@/lib/server/services/tracking";
 
 export { getReportsOverview } from "@/lib/server/services/reports";
 export type { ReportsOverview } from "@/lib/server/services/reports";
@@ -49,8 +45,11 @@ export {
 export {
   notifyCustomerOrderAssigned,
   notifyCustomerStatusUpdate,
+  issueAndSendTrackingLink,
 } from "@/lib/server/services/notifications";
 export type {
   NotificationResult,
   NotificationChannel,
+  TrackingLinkNotificationResult,
+  TrackingLinkNotificationType,
 } from "@/lib/server/services/notifications";

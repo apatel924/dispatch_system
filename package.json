@@ -18,9 +18,13 @@
     "seed:firebase": "node scripts/seed-firebase.mjs",
     "order-provider:health": "node scripts/check-order-provider-health.mjs",
     "order-provider:live-config": "node scripts/check-live-order-provider-config.mjs",
-    "order-provider:live-scan": "node scripts/check-live-barnet-delivery-scan.mjs"
+    "order-provider:live-scan": "node scripts/check-live-barnet-delivery-scan.mjs",
+    "firebase:emulators": "bash scripts/firebase-cli.sh emulators:start --only firestore,storage",
+    "firebase:rules-test": "bash scripts/firebase-cli.sh emulators:exec --only firestore,storage \"vitest run --config vitest.rules.config.ts\"",
+    "firebase:deploy:rules": "bash scripts/firebase-cli.sh deploy --only firestore:rules,firestore:indexes,storage"
   },
   "dependencies": {
+    "@radix-ui/react-dropdown-menu": "^2.1.20",
     "@radix-ui/react-tooltip": "^1.2.11",
     "@tanstack/react-query": "^5.101.2",
     "clsx": "^2.1.1",
@@ -38,9 +42,14 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.0",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@firebase/rules-unit-testing": "^5.0.0",
     "@types/node": "^24",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "happy-dom": "^20.10.6",
+    "firebase-tools": "^15.0.0",
     "postcss": "^8.5",
     "sharp": "^0.34.5",
     "tailwindcss": "^4.2.0",

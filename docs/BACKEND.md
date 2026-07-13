@@ -122,7 +122,8 @@ lib/
       orders.ts
       drivers.ts
       proofs.ts
-      tracking.ts
+      consumer-tracking.ts
+      tracking-links.ts
       reports.ts
       import.ts
       notifications.ts    # Dev-log customer notifications (no Twilio yet)
@@ -175,8 +176,11 @@ lib/
 | `GET` | `/api/orders/[id]/proofs` | admin, dispatcher, driver | `listProofs()` |
 | `POST` | `/api/orders/[id]/proofs` | driver | `createProof()` |
 | `PATCH` | `/api/proofs/[proofId]/review` | admin, dispatcher | `reviewProof()` |
-| `GET` | `/api/tracking/[trackingId]` | Public | `getTrackingByTrackingId()` |
+| `GET` | `/api/tracking/[token]` | Public | `getConsumerTrackingByToken()` — opaque base64url token only |
+| `POST` | `/api/tracking/[token]/notes` | Public | `addConsumerNoteByToken()` — consumer delivery instructions |
+| `POST` | `/api/orders/[id]/tracking-link` | admin, dispatcher | `createTrackingLinkForOrder()` — issue/rotate secure link |
 | `GET` | `/api/reports/overview` | admin | `getReportsOverview()` |
+| `GET` | `/api/dashboard/stats` | admin | `getDashboardStats()` — today counts with Edmonton boundaries |
 | `POST` | `/api/integrations/order-import` | admin | `importOrders()` — mock payloads only |
 | `GET` | `/api/integrations/import-logs` | admin | `listImportLogs()` |
 
@@ -195,6 +199,28 @@ lib/
 | `auditLogs` | auto | Append-only action log |
 | `counters/orders` | `orders` | Atomic order ID sequence |
 | `counters/drivers` | `drivers` | Atomic driver ID sequence |
+| `trackingLinks` | SHA-256 hash of opaque token | Secure consumer access records (`TrackingLink`) |
+
+### Consumer tracking (opaque tokens)
+
+Public delivery tracking uses **hashed opaque tokens**, not order numbers or Firestore document IDs.
+
+| Item | Detail |
+|------|--------|
+| Token format | 32 random bytes → 43-character base64url string (`[A-Za-z0-9_-]`) |
+| Storage | `trackingLinks/{sha256(token)}` — raw token never stored |
+| Public page | `/track/[token]` → `GET /api/tracking/[token]` |
+| Display reference | `publicReference` (e.g. `QRX-1001`) is **display-only** — never authorizes access |
+| Rejected inputs | `QRX-*` order references, Firestore order IDs, predictable codes |
+| Link lifecycle | Created/rotated on driver assignment; TTL, revocation, and rate limits enforced |
+| Client | `useConsumerTracking(token)` always calls the API — no synthetic demo bypass |
+
+**Security rules:**
+
+1. Only `isValidOpaqueTrackingToken()` values are accepted by `assertValidTrackingTokenFormat()`.
+2. Legacy `trackingId` on order documents remains for admin/internal use but cannot authorize public access.
+3. No marketing or client-side demo may render synthetic tracking data in production.
+4. Notification logs contain only safe metadata (`orderId`, `notificationType`, delivery attempt flags) — never phone, email, tokens, URLs, or message bodies.
 
 ### Order model (unified)
 
@@ -204,7 +230,7 @@ Admin mock (`lib/dash/mock-data.ts`) and driver mock (`lib/dash/driver-mock-data
 - Pickup: `pickupName`, `pickupAddress`
 - Assignment: `assignedDriverId`, `assignedDriverName`
 - Workflow: `status`, `completedSteps[]`, `eta`, `notes`
-- Public: `trackingId` (used by `/api/tracking/[trackingId]`)
+- Display: `trackingId` / `publicReference` (e.g. `QRX-*`) — **display label only**, not a tracking credential
 
 ---
 
@@ -218,7 +244,6 @@ Import from `@/lib/server/services` or the specific module.
 |----------|-------------|
 | `createOrder(input, actor)` | Create order + initial status event + audit log |
 | `getOrderById(id)` | Fetch by `QRX-*` id |
-| `getOrderByTrackingId(trackingId)` | Public tracking lookup |
 | `listOrders(query)` | Filter by status, driver, payment, search, dates |
 | `updateOrder(id, patch, actor)` | Partial update |
 | `assignDriver(orderId, driverId, actor)` | Assign + set status `Assigned` |
@@ -244,14 +269,21 @@ Import from `@/lib/server/services` or the specific module.
 | `listProofs(orderId)` | List with signed download URLs |
 | `createProof(orderId, input, actor)` | Save metadata after Storage upload |
 | `reviewProof(orderId, proofId, input, actor)` | Approve/reject |
-| `getSignedDownloadUrl(storagePath)` | 1-hour signed URL |
+| `getSignedDownloadUrl(storagePath)` | Short-lived signed URL (default 15 min, `PROOF_SIGNED_URL_TTL_MS`) |
 
-### `tracking.ts`
+### `tracking-links.ts` + `consumer-tracking.ts`
 
 | Function | Description |
 |----------|-------------|
-| `getTrackingByTrackingId(id)` | Public `TrackingView` (sanitized) |
-| `buildTrackingViewFromOrder(order, events)` | Pure builder for tests |
+| `generateTrackingToken()` | Create 43-char opaque base64url token |
+| `hashTrackingToken(token)` | SHA-256 hash for Firestore doc ID |
+| `isValidOpaqueTrackingToken(token)` | Format check (length + charset) |
+| `assertValidTrackingTokenFormat(token)` | Rejects `QRX-*` and non-opaque tokens |
+| `createTrackingLinkForOrder(orderId, publicReference)` | Issue link + persist hash |
+| `rotateTrackingLinkForOrder(orderId)` | Revoke prior link, issue new token |
+| `resolveTrackingLink(token)` | Hash lookup → `TrackingLink` or invalid |
+| `getConsumerTrackingByToken(token)` | Public `ConsumerTrackingView` (sanitized) |
+| `addConsumerNoteByToken(token, text, ip)` | Consumer delivery instructions |
 
 ### `reports.ts`
 
@@ -274,7 +306,7 @@ Import from `@/lib/server/services` or the specific module.
 | `notifyCustomerOrderAssigned(order)` | Simulated SMS/email log when driver assigned |
 | `notifyCustomerStatusUpdate(order, status)` | Simulated status notification log |
 
-Returns `{ ok, provider: "dev-log", channel, messagePreview, trackingUrl }`. Not wired into `assignDriver` yet.
+Returns `{ ok, provider: "dev-log", channel, trackingLinkIncluded, providerErrorCode? }`. Logs only safe metadata (`orderId`, `notificationType`, attempt flags). Not wired into `assignDriver` yet.
 
 ### `audit.ts`
 
@@ -340,10 +372,33 @@ See [`.env.example`](../.env.example). Never commit `.env.local`.
 | `FIREBASE_PRIVATE_KEY` | Server | Admin SDK |
 | `NEXT_PUBLIC_APP_URL` | Client | Redirect URLs |
 | `NEXT_PUBLIC_USE_API` | Client | When `true`, admin + driver pages fetch `/api/*` (falls back to mock on error) |
+| `APP_TIMEZONE` | Server | IANA timezone for reporting day boundaries (default `America/Edmonton`). **Required in production:** `America/Edmonton` |
 | `SEED_ADMIN_EMAIL` | Seed script | Admin email — must exist in Firebase Auth |
 | `SEED_DRIVER_1_EMAIL` | Seed script | Driver 1 email — must exist in Firebase Auth |
 | `SEED_DISPATCHER_EMAIL` | Seed script | Optional dispatcher email |
 | `SEED_DRIVER_2_EMAIL` | Seed script | Optional second driver email |
+
+### Production (Vercel)
+
+Set these in the Vercel project environment:
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `NEXT_PUBLIC_USE_API` | `true` | Required — live Firestore data |
+| `APP_TIMEZONE` | `America/Edmonton` | Operational calendar boundaries; do not rely on Vercel server TZ |
+| `NEXT_PUBLIC_ENABLE_DEV_MOCK` | *(unset / false)* | Must **not** be enabled |
+| `ENABLE_TRACKING_DEMO` | *(unset / false)* | Must **not** be enabled |
+| `NEXT_PUBLIC_ENABLE_TRACKING_DEMO` | *(unset / false)* | Must **not** be enabled |
+
+`APP_TIMEZONE` is server-only. Admin date displays use `America/Edmonton` by default on the client.
+
+### Timezone & reporting
+
+- All “today” metrics use **Edmonton local calendar boundaries** via `APP_TIMEZONE` (default `America/Edmonton`).
+- Day boundaries are converted to UTC before Firestore range queries — never naive local timestamp strings.
+- Status-entered timestamps: `deliveredAt`, `failedAt`, `pickedUpAt`, `returnedAt` (set once on first transition; preserved on re-edit).
+- Legacy orders without dedicated fields fall back to `updatedAt` for reporting (documented; shown as partial data when applicable).
+- Delivery duration: `assignedAt` → `deliveredAt` (requires both fields).
 
 ---
 
@@ -461,7 +516,7 @@ Custom claims are embedded in ID tokens at sign-in. After seeding:
 - [ ] Admin **Orders** lists `QRX-SEED-1001` … `QRX-SEED-1004` when `NEXT_PUBLIC_USE_API=true`
 - [ ] Order detail for `QRX-SEED-1003` shows status timeline events
 - [ ] Driver 1 sees assigned orders (`QRX-SEED-1002`, `1003`, `1004`) on driver dashboard
-- [ ] Public tracking: `/track/QRX-SEED-1003` loads (when API enabled)
+- [ ] Public tracking: opaque token from `POST /api/orders/[id]/tracking-link` loads at `/track/[token]`; `/track/QRX-SEED-1003` returns invalid link
 - [ ] Re-run `npm run seed:firebase` — no duplicate orders or users
 
 ---
@@ -501,7 +556,7 @@ Custom claims are embedded in ID tokens at sign-in. After seeding:
 
 When Firebase is **not** configured, guards pass through — demo/mock mode unchanged.
 
-**Public routes (no guard):** `/`, `/driver-login`, `/track/[trackingId]`, `/main-website/*`
+**Public routes (no guard):** `/`, `/driver-login`, `/track/[token]`, `/main-website/*`
 
 ---
 
@@ -517,11 +572,13 @@ When `NEXT_PUBLIC_USE_API=true`, admin pages fetch from the API. On failure (no 
 | `useAdminDriver(driverId)` | `driver-profile-page` |
 | `useAdminImportLogs()` | `settings-page` (mock import runner) |
 | `useAdminReports()` | `reports-page` |
-| `useTracking(trackingId)` | `track-page`, `tracking-demo` (marketing) |
+| `useAdminDashboardStats()` | `dashboard-page` |
+| `useConsumerTracking(token)` | `consumer-tracking-page` (`/track/[token]`) |
 
 ```
 lib/dash/api/config.ts        — isApiEnabled()
-lib/dash/api/tracking-client.ts — public fetchTracking, demo fallback helpers
+lib/consumer/api/tracking-api.ts — fetchConsumerTracking, submitConsumerNote
+lib/consumer/hooks/use-consumer-tracking.ts — consumer tracking + note submission
 lib/dash/api/client.ts      — adminFetch, runOrderImport, fetchImportLogs, …
 lib/dash/api/adapters.ts    — orderToAdminRow, importLogToAdminRow, mock fallbacks
 lib/import/mock-fixtures.ts — shared mock Uber/DoorDash/Amazon payloads
@@ -555,18 +612,18 @@ lib/dash/hooks/                 — React hooks above
 Driver proof capture uses **optimistic localStorage** plus background API sync when `NEXT_PUBLIC_USE_API=true`:
 
 1. Capture → save to `qre-driver-proofs` immediately
-2. Upload blob to Firebase Storage (`orders/{orderId}/proofs/{type}-{ts}.png`)
-3. `POST /api/orders/[id]/proofs` records metadata + updates `order.completedSteps`
+2. `POST /api/orders/[id]/proofs` with a base64 `dataUrl` — server uploads via Admin SDK to `orders/{orderId}/proofs/{type}-{ts}.{ext}`
+3. Same route records Firestore metadata + updates `order.completedSteps`
 4. Tap steps → `POST /api/orders/[id]/status` with current status + `stepKey`
 5. Complete delivery → `POST /api/orders/[id]/status` with `Delivered`
 
 | Function | File |
 |----------|------|
-| `uploadProofBlob()` | `lib/auth/firebase-storage.ts` |
+| `uploadProofFile()`, `createProof()` | `lib/server/services/proofs.ts` |
 | `saveProofAsync()`, `markStepCompleteAsync()`, `completeDeliveryAsync()` | `lib/dash/driver-store.ts` |
 | `postOrderProof()`, `postOrderStatus()` | `lib/dash/api/driver-client.ts` |
 
-**Firebase Storage rules (configure in console):** authenticated users with `role: driver` need write access to `orders/{orderId}/proofs/**` for assigned orders.
+**Firebase Storage rules:** deny-all client access (`storage.rules`). Proof files are never readable or writable through the browser Firebase SDK. Deploy with `npm run firebase:deploy:rules` — see `docs/FIREBASE_RULES_DEPLOYMENT.md`.
 
 ---
 
@@ -579,7 +636,6 @@ Mock files remain as **fallback** when API is disabled or unavailable. **Do not 
 | `lib/dash/mock-data.ts` | Admin hooks fallback |
 | `lib/dash/driver-mock-data.ts` | Driver hooks fallback; messages page |
 | `lib/dash/driver-store.ts` | Proof steps + localStorage fallback (`qre-driver-proofs`) |
-| `data/trackingDemo.ts` | Marketing track demo (`QRX-28491`) |
 
 ---
 
@@ -607,7 +663,8 @@ Mock files remain as **fallback** when API is disabled or unavailable. **Do not 
 | — | 7 | Proof Storage upload + proofs API + optimistic driver-store sync |
 | — | 8 | Admin proof gallery + PATCH review route |
 | — | 9 | Mock order import API + settings integrations UI |
-| — | 10 | Public tracking + reports overview API + page hooks |
+| — | 10 | Opaque-token public tracking + reports overview API + consumer hooks |
+| — | 13 | Removed tracking demo bypass; legacy trackingId public lookups deleted |
 | — | 11 | Firebase login UI, auth guards, notification dev-log scaffold |
 | — | 12 | Firebase seed script (`npm run seed:firebase`), docs for Auth setup + smoke tests |
 

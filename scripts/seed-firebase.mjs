@@ -160,6 +160,7 @@ async function upsertDriver(db, driverId, { userId, name, email, status, metrics
   const driver = {
     id: driverId,
     userId,
+    authUid: userId,
     name,
     phone: "(555) 234-9876",
     email,

@@ -21,9 +21,15 @@ yarn-error.log*
 # env files
 .env
 .env*.local
+.firebaserc
 
 # typescript
 tsconfig.tsbuildinfo
 
 # vercel (not used — kept as safeguard)
 .vercel
+
+# firebase emulator logs
+firestore-debug.log
+ui-debug.log
+storage-debug.log

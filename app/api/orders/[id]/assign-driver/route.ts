@@ -24,8 +24,15 @@ export async function POST(request: Request, context: RouteContext) {
   if (isErrorResponse(body)) return body;
 
   try {
-    const order = await assignDriver(id, body.driverId, user);
-    return NextResponse.json({ order });
+    const { order, trackingNotification } = await assignDriver(id, body.driverId, user);
+    const response: Record<string, unknown> = { order };
+
+    if (trackingNotification.linkCreated && !trackingNotification.smsSent) {
+      response.trackingNotification = trackingNotification;
+      response.warning = trackingNotification.message;
+    }
+
+    return NextResponse.json(response);
   } catch (err) {
     return handleServiceError(err);
   }

@@ -10,6 +10,7 @@ import {
   assertDriverOwnsOrder,
   getStatusEvents,
 } from "@/lib/server/services/orders";
+import { getConsumerNotes } from "@/lib/server/services/consumer-tracking";
 import { listProofs } from "@/lib/server/services/proofs";
 
 const DRIVER_ROLES = ["driver"] as const;
@@ -30,11 +31,12 @@ export async function GET(request: Request, context: RouteContext) {
 
   try {
     const order = await assertDriverOwnsOrder(id, driverId);
-    const [statusEvents, proofs] = await Promise.all([
+    const [statusEvents, proofs, consumerNotes] = await Promise.all([
       getStatusEvents(id),
       listProofs(id),
+      getConsumerNotes(id),
     ]);
-    return NextResponse.json({ order, statusEvents, proofs });
+    return NextResponse.json({ order, statusEvents, proofs, consumerNotes });
   } catch (err) {
     return handleServiceError(err);
   }

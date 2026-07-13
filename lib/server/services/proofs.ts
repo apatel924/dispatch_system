@@ -1,4 +1,4 @@
-import type { ProofAsset } from "@/lib/types/backend";
+import type { ProofAsset, ProofType } from "@/lib/types/backend";
 import type { AuthUser } from "@/lib/server/auth";
 import { notFoundError } from "@/lib/server/errors";
 import { orderProofsCollection } from "@/lib/server/firestore/collections";
@@ -11,6 +11,50 @@ import {
   updateOrder,
 } from "@/lib/server/services/orders";
 import type { ReviewProofInput, UploadProofInput } from "@/lib/server/validation/proofs";
+
+const DEFAULT_PROOF_SIGNED_URL_TTL_MS = 15 * 60 * 1000;
+
+export function proofSignedUrlTtlMs(): number {
+  const parsed = Number.parseInt(process.env.PROOF_SIGNED_URL_TTL_MS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_PROOF_SIGNED_URL_TTL_MS;
+}
+
+function extensionForMime(mimeType: string): string {
+  if (mimeType.includes("png")) return "png";
+  if (mimeType.includes("jpeg") || mimeType.includes("jpg")) return "jpg";
+  if (mimeType.includes("webp")) return "webp";
+  return "bin";
+}
+
+export function decodeProofDataUrl(dataUrl: string): { buffer: Buffer; mimeType: string } {
+  const [header, base64] = dataUrl.split(",");
+  const mimeMatch = header.match(/data:(.*?);base64/);
+  const mimeType = mimeMatch?.[1] ?? "application/octet-stream";
+  return { buffer: Buffer.from(base64, "base64"), mimeType };
+}
+
+export function buildProofStoragePath(orderId: string, proofType: ProofType, ext: string): string {
+  return `orders/${orderId}/proofs/${proofType}-${Date.now()}.${ext}`;
+}
+
+export async function uploadProofFile(
+  orderId: string,
+  proofType: ProofType,
+  dataUrl: string,
+): Promise<{ storagePath: string; mimeType: string; fileSizeBytes: number }> {
+  const { buffer, mimeType } = decodeProofDataUrl(dataUrl);
+  const storagePath = buildProofStoragePath(orderId, proofType, extensionForMime(mimeType));
+  const bucket = getAdminStorage().bucket();
+  const file = bucket.file(storagePath);
+
+  await file.save(buffer, {
+    contentType: mimeType,
+    resumable: false,
+    metadata: { metadata: { orderId, proofType } },
+  });
+
+  return { storagePath, mimeType, fileSizeBytes: buffer.length };
+}
 
 export async function listProofs(orderId: string): Promise<ProofAsset[]> {
   await getOrderById(orderId);
@@ -33,13 +77,8 @@ export async function getProof(orderId: string, proofId: string): Promise<ProofA
 async function attachSignedUrl(proof: ProofAsset): Promise<ProofAsset> {
   if (!proof.storagePath) return proof;
   try {
-    const bucket = getAdminStorage().bucket();
-    const file = bucket.file(proof.storagePath);
-    const [url] = await file.getSignedUrl({
-      action: "read",
-      expires: Date.now() + 60 * 60 * 1000,
-    });
-    return { ...proof, downloadUrl: url };
+    const downloadUrl = await getSignedDownloadUrl(proof.storagePath);
+    return { ...proof, downloadUrl };
   } catch {
     return proof;
   }
@@ -51,6 +90,7 @@ export async function createProof(
   actor: AuthUser,
 ): Promise<ProofAsset> {
   const order = await getOrderById(orderId);
+  const uploaded = await uploadProofFile(orderId, input.type, input.dataUrl);
   const db = getAdminFirestore();
   const ref = orderProofsCollection(db, orderId).doc();
   const uploadedAt = nowIso();
@@ -59,9 +99,9 @@ export async function createProof(
     orderId,
     type: input.type,
     stepKey: input.stepKey,
-    storagePath: input.storagePath,
-    mimeType: input.mimeType,
-    fileSizeBytes: input.fileSizeBytes,
+    storagePath: uploaded.storagePath,
+    mimeType: uploaded.mimeType,
+    fileSizeBytes: uploaded.fileSizeBytes,
     uploadedBy: actor.uid,
     uploadedAt,
     reviewStatus: "pending",
@@ -124,13 +164,14 @@ export async function reviewProof(
 
 export async function getSignedDownloadUrl(
   storagePath: string,
-  expiresInMs = 60 * 60 * 1000,
+  expiresInMs = proofSignedUrlTtlMs(),
 ): Promise<string> {
   const bucket = getAdminStorage().bucket();
   const file = bucket.file(storagePath);
   const [url] = await file.getSignedUrl({
     action: "read",
     expires: Date.now() + expiresInMs,
+    version: "v4",
   });
   return url;
 }

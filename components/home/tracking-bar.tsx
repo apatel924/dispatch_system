@@ -1,18 +1,16 @@
 'use client'
 
-import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Search, Truck, Lock } from 'lucide-react'
-import { DEMO_TRACKING_CODE } from '@/data/trackingDemo'
 
 export function TrackingBar() {
   const router = useRouter()
-  const [code, setCode] = useState('')
 
   function submit(e: React.FormEvent) {
     e.preventDefault()
-    const q = code.trim().toUpperCase()
-    router.push(q ? `/main-website/track?code=${encodeURIComponent(q)}` : '/main-website/track')
+    const token = (e.currentTarget as HTMLFormElement).elements.namedItem('home-track') as HTMLInputElement
+    const q = token?.value.trim() ?? ''
+    router.push(q ? `/track/${encodeURIComponent(q)}` : '/main-website/track')
   }
 
   return (
@@ -32,14 +30,13 @@ export function TrackingBar() {
               <div className="relative flex-1">
                 <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <label htmlFor="home-track" className="sr-only">
-                  Tracking code
+                  Tracking link code
                 </label>
                 <input
                   id="home-track"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value)}
-                  placeholder="Enter your tracking code"
-                  className="w-full rounded-md border border-input bg-background py-3 pl-10 pr-3 font-mono text-sm uppercase text-foreground placeholder:font-sans placeholder:normal-case placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  name="home-track"
+                  placeholder="Paste your secure tracking link code"
+                  className="w-full rounded-md border border-input bg-background py-3 pl-10 pr-3 font-mono text-sm text-foreground placeholder:font-sans placeholder:normal-case placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
               </div>
               <button
@@ -51,17 +48,17 @@ export function TrackingBar() {
             </form>
             <p className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
               <Lock className="size-3" />
-              No personal information is required to check a delivery status.
+              Use the secure code from your SMS tracking link. Order numbers cannot be used to track deliveries.
             </p>
           </div>
 
           <div className="hidden h-full items-center border-l border-border pl-8 lg:flex">
             <div>
               <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
-                Demo code
+                Secure links only
               </p>
-              <p className="mt-1 font-mono text-xl font-bold text-foreground sm:text-2xl">
-                {DEMO_TRACKING_CODE}
+              <p className="mt-1 max-w-xs text-sm text-muted-foreground">
+                Tracking access is provided only through one-time links sent when your driver is assigned.
               </p>
             </div>
           </div>

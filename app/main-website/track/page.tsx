@@ -7,7 +7,7 @@ import { images } from '@/lib/images'
 export const metadata: Metadata = {
   title: 'Track Delivery',
   description:
-    'Track your Quick-Run Express delivery in Edmonton. Enter your tracking code to see status updates, estimated arrival, and proof of delivery.',
+    'Track your Quick-Run Express delivery in Edmonton using the secure SMS tracking link sent when your driver is assigned.',
 }
 
 export default function TrackPage() {
@@ -16,7 +16,7 @@ export default function TrackPage() {
       <PageHero
         eyebrow="Track Delivery"
         title="Follow Your Delivery in Real Time"
-        description="Enter your tracking code to see delivery status, estimated arrival, and notification history. No login required."
+        description="Open the secure tracking link from your SMS to see delivery status, estimated arrival, and delivery progress. No login required."
         image={images.mockups.trackingUi}
         imageAlt="Delivery tracking map interface"
         ctas={[

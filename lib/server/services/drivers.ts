@@ -1,6 +1,8 @@
+import { FieldValue } from "firebase-admin/firestore";
 import type { DriverProfile, OrderStatus } from "@/lib/types/backend";
 import type { AuthUser } from "@/lib/server/auth";
-import { notFoundError } from "@/lib/server/errors";
+import { notFoundError, ServiceError } from "@/lib/server/errors";
+import { isDriverUnavailable, resolveStoredDriverStatus } from "@/lib/driver-status";
 import { COLLECTIONS } from "@/lib/server/firestore/collections";
 import {
   docToDriver,
@@ -13,44 +15,51 @@ import { getAdminFirestore } from "@/lib/server/firebase-admin";
 import { writeAuditLog } from "@/lib/server/services/audit";
 import { generateDriverId } from "@/lib/server/firestore/ids";
 import type {
+  AdminUpdateDriverInput,
   CreateDriverInput,
+  DriverSelfUpdateInput,
   ListDriversQuery,
-  UpdateDriverInput,
 } from "@/lib/server/validation/drivers";
-
-const ACTIVE_ORDER_STATUSES: OrderStatus[] = [
-  "Assigned",
-  "Picked Up",
-  "En Route",
-  "Out for Delivery",
-  "Scheduled",
-];
+import {
+  ACTIVE_ORDER_STATUSES,
+  aggregateDriverMetricsFromOrders,
+  emptyDriverOrderMetrics,
+  type DriverOrderMetrics,
+} from "@/lib/delivery-metrics";
+import { TERMINAL_ORDER_STATUSES } from "@/lib/order-status-groups";
 
 /** Statuses fetched in one query when batch-computing driver metrics. */
 const METRIC_ORDER_STATUSES: OrderStatus[] = [
   ...ACTIVE_ORDER_STATUSES,
-  "Delivered",
-  "Failed",
+  ...TERMINAL_ORDER_STATUSES,
 ];
 
-export interface DriverMetrics {
-  activeDeliveries: number;
-  completedToday: number;
-  failedToday: number;
+export type DriverMetrics = Pick<
+  DriverOrderMetrics,
+  "activeDeliveries" | "completedToday" | "failedToday" | "averageDeliveryTimeMs"
+> & {
+  totalDeliveries: number;
+  successRate: number | null;
+};
+
+function metricsToDriverFields(metrics: DriverOrderMetrics): DriverMetrics {
+  const terminal = metrics.successfulDeliveries + metrics.failedDeliveries;
+  return {
+    activeDeliveries: metrics.activeDeliveries,
+    completedToday: metrics.completedToday,
+    failedToday: metrics.failedToday,
+    averageDeliveryTimeMs: metrics.averageDeliveryTimeMs,
+    totalDeliveries: metrics.totalDeliveries,
+    successRate:
+      terminal > 0
+        ? Math.round((metrics.successfulDeliveries / terminal) * 1000) / 10
+        : null,
+  };
 }
 
 function emptyDriverMetrics(): DriverMetrics {
-  return { activeDeliveries: 0, completedToday: 0, failedToday: 0 };
-}
-
-function startOfTodayUtc(): Date {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-}
-
-function isOnOrAfterToday(iso?: string): boolean {
-  if (!iso) return false;
-  return new Date(iso) >= startOfTodayUtc();
+  const base = emptyDriverOrderMetrics();
+  return metricsToDriverFields(base);
 }
 
 export async function computeDriverMetrics(driverId: string): Promise<DriverMetrics> {
@@ -61,17 +70,17 @@ export async function computeDriverMetrics(driverId: string): Promise<DriverMetr
 /**
  * Compute delivery metrics for many drivers with a single Firestore read on
  * orders (status in active + delivered + failed), then aggregate in memory.
- * Avoids N+1 queries where each driver triggered its own orders lookup.
  */
 export async function computeDriverMetricsBatch(
   driverIds: Iterable<string>,
 ): Promise<Map<string, DriverMetrics>> {
-  const metrics = new Map<string, DriverMetrics>();
-  for (const id of driverIds) {
-    metrics.set(id, emptyDriverMetrics());
+  const ids = [...driverIds];
+  const result = new Map<string, DriverMetrics>();
+  for (const id of ids) {
+    result.set(id, emptyDriverMetrics());
   }
 
-  if (metrics.size === 0) return metrics;
+  if (ids.length === 0) return result;
 
   const db = getAdminFirestore();
   const snap = await db
@@ -79,35 +88,40 @@ export async function computeDriverMetricsBatch(
     .where("status", "in", METRIC_ORDER_STATUSES)
     .get();
 
-  for (const doc of snap.docs) {
-    const order = docToOrder(doc.id, doc.data());
-    const driverId = order.assignedDriverId;
-    if (!driverId || !metrics.has(driverId)) continue;
+  const orders = snap.docs.map((doc) => docToOrder(doc.id, doc.data()));
 
-    const row = metrics.get(driverId)!;
-
-    if (ACTIVE_ORDER_STATUSES.includes(order.status)) {
-      row.activeDeliveries += 1;
-    }
-    if (
-      order.status === "Delivered" &&
-      isOnOrAfterToday(order.deliveredAt ?? order.updatedAt)
-    ) {
-      row.completedToday += 1;
-    }
-    if (order.status === "Failed" && isOnOrAfterToday(order.updatedAt)) {
-      row.failedToday += 1;
-    }
+  const aggregated = aggregateDriverMetricsFromOrders(orders, ids);
+  for (const [driverId, metrics] of aggregated) {
+    result.set(driverId, metricsToDriverFields(metrics));
   }
 
-  return metrics;
+  return result;
 }
 
 function applyMetrics(
   driver: DriverProfile,
   metricsMap: Map<string, DriverMetrics>,
 ): DriverProfile {
-  return { ...driver, ...(metricsMap.get(driver.id) ?? emptyDriverMetrics()) };
+  const metrics = metricsMap.get(driver.id) ?? emptyDriverMetrics();
+  return {
+    ...driver,
+    activeDeliveries: metrics.activeDeliveries,
+    completedToday: metrics.completedToday,
+    failedToday: metrics.failedToday,
+    averageDeliveryTimeMs: metrics.averageDeliveryTimeMs ?? undefined,
+    totalDeliveries: metrics.totalDeliveries,
+    successRate: metrics.successRate ?? undefined,
+    // Never surface stored mock ratings when computing live metrics.
+    rating: undefined,
+  };
+}
+
+/** Sanitized driver DTO returned from admin APIs. */
+export function toDriverDto(driver: DriverProfile): DriverProfile {
+  return {
+    ...driver,
+    rating: undefined,
+  };
 }
 
 export async function getDriverById(id: string): Promise<DriverProfile> {
@@ -121,17 +135,22 @@ export async function getDriverById(id: string): Promise<DriverProfile> {
 
 export async function getDriverByUserId(userId: string): Promise<DriverProfile | null> {
   const db = getAdminFirestore();
-  const snap = await db
-    .collection(COLLECTIONS.drivers)
-    .where("userId", "==", userId)
-    .limit(1)
-    .get();
+  for (const field of ["authUid", "userId"] as const) {
+    const snap = await db
+      .collection(COLLECTIONS.drivers)
+      .where(field, "==", userId)
+      .limit(1)
+      .get();
 
-  if (snap.empty) return null;
-  const doc = snap.docs[0];
-  const driver = docToDriver(doc.id, doc.data());
-  const metricsMap = await computeDriverMetricsBatch([driver.id]);
-  return applyMetrics(driver, metricsMap);
+    if (!snap.empty) {
+      const doc = snap.docs[0];
+      const driver = docToDriver(doc.id, doc.data());
+      const metricsMap = await computeDriverMetricsBatch([driver.id]);
+      return applyMetrics(driver, metricsMap);
+    }
+  }
+
+  return null;
 }
 
 function matchesDriverSearch(driver: DriverProfile, search: string): boolean {
@@ -164,7 +183,6 @@ export async function listDrivers(
   const snap = await ref.limit(fetchLimit).get();
   let drivers = snap.docs.map((doc) => docToDriver(doc.id, doc.data()));
 
-  // One batched orders read for all drivers on this page — not one query per driver.
   const metricsMap = await computeDriverMetricsBatch(drivers.map((d) => d.id));
   drivers = drivers.map((driver) => applyMetrics(driver, metricsMap));
 
@@ -176,7 +194,7 @@ export async function listDrivers(
   const page = hasMore ? drivers.slice(0, query.limit) : drivers;
 
   return {
-    drivers: page,
+    drivers: page.map(toDriverDto),
     nextCursor: hasMore ? page[page.length - 1]?.id : undefined,
   };
 }
@@ -192,11 +210,12 @@ export async function createDriver(
   const driver: DriverProfile = {
     id,
     userId: input.userId,
+    authUid: input.userId,
     name: input.name,
     phone: input.phone,
     email: input.email,
     status: input.status ?? "Inactive",
-    vehicle: input.vehicle,
+    vehicle: input.vehicle ?? undefined,
     avatarColor: input.avatarColor ?? "bg-info-soft text-info",
     initials: initialsFromName(input.name),
     activeDeliveries: 0,
@@ -219,22 +238,95 @@ export async function createDriver(
   return driver;
 }
 
-export async function updateDriver(
+export async function updateDriverAdmin(
   id: string,
-  input: UpdateDriverInput,
+  input: AdminUpdateDriverInput,
+  actor: AuthUser,
+): Promise<DriverProfile> {
+  const { acknowledgeActiveAssignments, ...fields } = input;
+  const existing = await getDriverById(id);
+
+  if (
+    fields.status &&
+    isDriverUnavailable(fields.status) &&
+    existing.activeDeliveries > 0 &&
+    !acknowledgeActiveAssignments
+  ) {
+    throw new ServiceError(
+      `This driver has ${existing.activeDeliveries} active assignment(s). Confirm to deactivate while keeping those orders assigned.`,
+      "ACTIVE_ASSIGNMENTS",
+      409,
+    );
+  }
+
+  const db = getAdminFirestore();
+  const ref = db.collection(COLLECTIONS.drivers).doc(id);
+  const snap = await ref.get();
+  if (!snap.exists) throw notFoundError("Driver", id);
+
+  const patch: Record<string, unknown> = {
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedByUid: actor.uid,
+  };
+
+  if (fields.name !== undefined) {
+    patch.name = fields.name;
+    patch.initials = initialsFromName(fields.name);
+  }
+  if (fields.phone !== undefined) patch.phone = fields.phone;
+  if (fields.vehicle !== undefined) {
+    patch.vehicle = fields.vehicle === null ? FieldValue.delete() : fields.vehicle;
+  }
+  if (fields.adminNote !== undefined) {
+    patch.adminNote = fields.adminNote === null ? FieldValue.delete() : fields.adminNote;
+  }
+  if (fields.status !== undefined) {
+    patch.status = resolveStoredDriverStatus(fields.status, existing.activeDeliveries);
+  }
+
+  await ref.update(patch);
+
+  await writeAuditLog({
+    action: "driver.update",
+    entityType: "driver",
+    entityId: id,
+    actorId: actor.uid,
+    actorRole: actor.role,
+    metadata: { fields: Object.keys(fields) },
+  });
+
+  return toDriverDto(await getDriverById(id));
+}
+
+export async function updateDriverSelf(
+  id: string,
+  input: DriverSelfUpdateInput,
   actor: AuthUser,
 ): Promise<DriverProfile> {
   const db = getAdminFirestore();
   const ref = db.collection(COLLECTIONS.drivers).doc(id);
-  const existing = await ref.get();
-  if (!existing.exists) throw notFoundError("Driver", id);
+  const snap = await ref.get();
+  if (!snap.exists) throw notFoundError("Driver", id);
 
-  const patch: Record<string, unknown> = omitUndefined({
-    ...input,
-    updatedAt: nowIso(),
-  });
+  const existing = await getDriverById(id);
+  const patch: Record<string, unknown> = {
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedByUid: actor.uid,
+  };
 
-  if (input.name) patch.initials = initialsFromName(input.name);
+  if (input.name !== undefined) {
+    patch.name = input.name;
+    patch.initials = initialsFromName(input.name);
+  }
+  if (input.phone !== undefined) patch.phone = input.phone;
+  if (input.email !== undefined) patch.email = input.email;
+  if (input.avatarColor !== undefined) patch.avatarColor = input.avatarColor;
+  if (input.vehicle !== undefined) {
+    patch.vehicle = input.vehicle === null ? FieldValue.delete() : input.vehicle;
+  }
+  if (input.status !== undefined) {
+    patch.status = resolveStoredDriverStatus(input.status, existing.activeDeliveries);
+  }
 
   await ref.update(patch);
 
@@ -247,5 +339,27 @@ export async function updateDriver(
     metadata: { fields: Object.keys(input) },
   });
 
-  return getDriverById(id);
+  return toDriverDto(await getDriverById(id));
+}
+
+export function assertDriverAssignable(driver: DriverProfile): void {
+  if (driver.status !== "Available" && driver.status !== "Busy") {
+    throw new ServiceError(
+      `${driver.name} is ${driver.status} and cannot receive new assignments.`,
+      "DRIVER_UNAVAILABLE",
+      409,
+    );
+  }
+}
+
+/** Shared validation for assignDriver and createOrder with assignedDriverId. */
+export function validateDriverForAssignment(driver: DriverProfile): void {
+  if (driver.accountDisabled) {
+    throw new ServiceError(
+      "This driver's login account is disabled. Re-enable account access before assigning orders.",
+      "DRIVER_ACCOUNT_DISABLED",
+      409,
+    );
+  }
+  assertDriverAssignable(driver);
 }

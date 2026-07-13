@@ -1,5 +1,6 @@
 import type {
   DeliveryStepKey,
+  ConsumerNote,
   Order,
   OrderStatus,
   OrderStatusEvent,
@@ -19,6 +20,7 @@ export async function fetchDriverOrderDetail(id: string): Promise<{
   order: Order;
   statusEvents: OrderStatusEvent[];
   proofs: ProofAsset[];
+  consumerNotes: ConsumerNote[];
 }> {
   return adminFetch(`/api/driver/orders/${encodeURIComponent(id)}`);
 }

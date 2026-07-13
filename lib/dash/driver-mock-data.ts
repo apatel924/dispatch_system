@@ -13,6 +13,7 @@ export interface DriverOrder {
   total: string;
   eta: string;
   notes?: string;
+  deliveryInstructions?: string;
   receivedAt?: string;
   assignedAt?: string;
 }

@@ -43,8 +43,6 @@ export function useDriverSession() {
       const driverId = claims?.driverId;
 
       if (!driverId) {
-        setDriver(getMockDriverProfile());
-        setSource("mock");
         setError("Driver profile not linked to account");
         return;
       }
@@ -53,8 +51,6 @@ export function useDriverSession() {
       setDriver(apiDriverToUiProfile(apiDriver));
       setSource("api");
     } catch (err) {
-      setDriver(getMockDriverProfile());
-      setSource("mock");
       setError(err instanceof Error ? err.message : "Failed to load driver profile");
     } finally {
       setLoading(false);

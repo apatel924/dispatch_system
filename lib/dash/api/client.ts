@@ -1,12 +1,15 @@
 import type {
   DriverProfile,
   ImportLog,
+  ConsumerNote,
   Order,
   OrderStatus,
   OrderStatusEvent,
   ProofAsset,
+  PublicConsumerNote,
 } from "@/lib/types/backend";
 import type { ReportsOverview } from "@/lib/server/services/reports";
+import type { DashboardStats } from "@/lib/server/services/dashboard-stats";
 import type { ReviewProofInput } from "@/lib/server/validation/proofs";
 import type { OrderImportInput } from "@/lib/server/validation/import";
 import { getCurrentIdToken, isAuthConfigured } from "@/lib/auth/firebase-client";
@@ -28,7 +31,7 @@ async function authHeaders(): Promise<HeadersInit> {
       const token = await getCurrentIdToken();
       if (token) headers.Authorization = `Bearer ${token}`;
     } catch {
-      // No session — request may 401; caller falls back to mock
+      // No session — request may 401
     }
   }
   return headers;
@@ -61,19 +64,31 @@ export async function fetchOrdersList(params?: {
   limit?: number;
   driverId?: string;
   status?: string;
+  search?: string;
 }): Promise<{ orders: Order[]; total: number; nextCursor?: string }> {
   const qs = new URLSearchParams();
   if (params?.limit) qs.set("limit", String(params.limit));
   if (params?.driverId) qs.set("driverId", params.driverId);
   if (params?.status) qs.set("status", params.status);
+  if (params?.search) qs.set("search", params.search);
   const query = qs.toString();
   return adminFetch(`/api/orders${query ? `?${query}` : ""}`);
 }
 
 export async function fetchOrderDetail(
   id: string,
-): Promise<{ order: Order; statusEvents: OrderStatusEvent[] }> {
+): Promise<{ order: Order; statusEvents: OrderStatusEvent[]; consumerNotes: ConsumerNote[] }> {
   return adminFetch(`/api/orders/${encodeURIComponent(id)}`);
+}
+
+export async function acknowledgeConsumerNoteApi(
+  orderId: string,
+  noteId: string,
+): Promise<{ note: ConsumerNote }> {
+  return adminFetch(
+    `/api/orders/${encodeURIComponent(orderId)}/consumer-notes/${encodeURIComponent(noteId)}/acknowledge`,
+    { method: "POST" },
+  );
 }
 
 export async function updateOrderStatusApi(
@@ -115,15 +130,64 @@ export async function updateDriverApi(
   body: {
     name?: string;
     phone?: string;
-    email?: string;
     vehicle?: string;
-    avatarColor?: string;
     status?: "Available" | "Inactive" | "Busy" | "Suspended";
+    adminNote?: string;
+    acknowledgeActiveAssignments?: boolean;
   },
 ): Promise<{ driver: DriverProfile }> {
   return adminFetch(`/api/drivers/${encodeURIComponent(id)}`, {
     method: "PATCH",
     body: JSON.stringify(body),
+  });
+}
+
+export async function updateDriverCredentialsApi(
+  id: string,
+  body: { loginEmail?: string; password?: string },
+): Promise<{ ok: true }> {
+  return adminFetch(`/api/drivers/${encodeURIComponent(id)}/credentials`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function fetchDriverAccount(
+  id: string,
+): Promise<{ account: import("@/lib/types/backend").DriverAccountAccess }> {
+  return adminFetch(`/api/drivers/${encodeURIComponent(id)}/account`);
+}
+
+export async function updateDriverAccountApi(
+  id: string,
+  body: {
+    loginEmail?: string;
+    password?: string;
+    confirmPassword?: string;
+    displayName?: string;
+    disabled?: boolean;
+    linkAuthUid?: string;
+  },
+): Promise<{ account: import("@/lib/types/backend").DriverAccountAccess }> {
+  return adminFetch(`/api/drivers/${encodeURIComponent(id)}/account`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function rotateOrderTrackingLinkApi(
+  orderId: string,
+): Promise<{
+  linkCreated: boolean;
+  smsAttempted: boolean;
+  smsSent: boolean;
+  message: string;
+  copyUrl?: string;
+  version?: number;
+  expiresAt?: string;
+}> {
+  return adminFetch(`/api/orders/${encodeURIComponent(orderId)}/tracking-link`, {
+    method: "POST",
   });
 }
 
@@ -176,16 +240,24 @@ export async function fetchImportLogs(params?: {
 export async function fetchReportsOverview(params?: {
   dateFrom?: string;
   dateTo?: string;
+  compareFrom?: string;
+  compareTo?: string;
   driverId?: string;
   status?: string;
 }): Promise<{ overview: ReportsOverview }> {
   const qs = new URLSearchParams();
   if (params?.dateFrom) qs.set("dateFrom", params.dateFrom);
   if (params?.dateTo) qs.set("dateTo", params.dateTo);
+  if (params?.compareFrom) qs.set("compareFrom", params.compareFrom);
+  if (params?.compareTo) qs.set("compareTo", params.compareTo);
   if (params?.driverId) qs.set("driverId", params.driverId);
   if (params?.status) qs.set("status", params.status);
   const query = qs.toString();
   return adminFetch(`/api/reports/overview${query ? `?${query}` : ""}`);
+}
+
+export async function fetchDashboardStats(): Promise<{ stats: DashboardStats }> {
+  return adminFetch("/api/dashboard/stats");
 }
 
 export interface OrderProviderHealthResponse {

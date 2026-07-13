@@ -37,6 +37,7 @@ export function orderToDriverOrder(order: Order): DriverOrder {
     total: order.totalDisplay,
     eta: order.eta ?? "—",
     notes: order.notes,
+    deliveryInstructions: order.deliveryInstructions,
     receivedAt: received.combined,
     assignedAt: assigned?.combined,
   };

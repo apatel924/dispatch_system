@@ -8,7 +8,7 @@ import {
 import { usePathname } from "next/navigation";
 import { useCallback, useMemo } from "react";
 import type { DataSource } from "@/lib/dash/api/config";
-import { isApiEnabled } from "@/lib/dash/api/config";
+import { isApiEnabled, isDevMockEnabled } from "@/lib/dash/api/config";
 import { LIST_SYNC_POLL_MS } from "@/lib/delivery-workflow";
 import {
   driverToAdminRow,
@@ -34,25 +34,20 @@ function mockDriversFor(limit?: number): AdminDriverRow[] {
 async function fetchAdminDriversList(): Promise<{
   rows: AdminDriverRow[];
   source: DataSource;
-  error?: string;
 }> {
-  if (!isApiEnabled()) {
+  if (isDevMockEnabled()) {
     return { rows: mockDriversFor(), source: "mock" };
   }
 
-  try {
-    const result = await fetchDriversList({ limit: DRIVERS_FETCH_LIMIT });
-    return {
-      rows: result.drivers.map(driverToAdminRow),
-      source: "api",
-    };
-  } catch (err) {
-    return {
-      rows: mockDriversFor(),
-      source: "mock",
-      error: err instanceof Error ? err.message : "Failed to load drivers",
-    };
+  if (!isApiEnabled()) {
+    throw new Error("API is not enabled. Set NEXT_PUBLIC_USE_API=true to load drivers.");
   }
+
+  const result = await fetchDriversList({ limit: DRIVERS_FETCH_LIMIT });
+  return {
+    rows: result.drivers.map(driverToAdminRow),
+    source: "api",
+  };
 }
 
 export function useAdminDrivers(options?: { limit?: number }) {
@@ -85,10 +80,10 @@ export function useAdminDrivers(options?: { limit?: number }) {
 
   return {
     drivers,
-    source: query.data?.source ?? (apiEnabled ? "api" : "mock"),
+    source: query.data?.source ?? (isDevMockEnabled() ? "mock" : "api"),
     loading: query.isPending && !query.data,
     refreshing: query.isFetching && !!query.data,
-    error: query.data?.error ?? (query.error instanceof Error ? query.error.message : null),
+    error: query.error instanceof Error ? query.error.message : null,
     refresh,
   };
 }
@@ -106,30 +101,50 @@ export function useAdminDriver(driverId: string) {
   const query = useQuery({
     queryKey: detailKey,
     queryFn: async (): Promise<{ driver: AdminDriverRow | null; source: DataSource }> => {
-      if (!isApiEnabled()) {
+      if (isDevMockEnabled()) {
         return { driver: mockFallback(), source: "mock" };
       }
 
-      try {
-        const { driver: apiDriver } = await fetchDriverDetail(driverId);
-        return { driver: driverToAdminRow(apiDriver), source: "api" };
-      } catch {
-        return { driver: mockFallback(), source: "mock" };
+      if (!isApiEnabled()) {
+        throw new Error("API is not enabled. Set NEXT_PUBLIC_USE_API=true to load driver details.");
       }
+
+      const { driver: apiDriver } = await fetchDriverDetail(driverId);
+      return { driver: driverToAdminRow(apiDriver), source: "api" };
     },
     placeholderData: keepPreviousData,
   });
 
   const refresh = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: detailKey });
+    await queryClient.invalidateQueries({ queryKey: adminQueryKeys.drivers.list() });
+    await queryClient.invalidateQueries({ queryKey: adminQueryKeys.orders.all });
   }, [queryClient, detailKey]);
+
+  const applyDriverUpdate = useCallback(
+    (row: AdminDriverRow) => {
+      queryClient.setQueryData(detailKey, { driver: row, source: "api" as const });
+      queryClient.setQueryData(
+        adminQueryKeys.drivers.list(),
+        (current: { rows: AdminDriverRow[]; source: DataSource } | undefined) => {
+          if (!current) return current;
+          return {
+            ...current,
+            rows: current.rows.map((entry) => (entry.id === row.id ? row : entry)),
+          };
+        },
+      );
+    },
+    [queryClient, detailKey],
+  );
 
   return {
     driver: query.data?.driver ?? null,
-    source: query.data?.source ?? (apiEnabled ? "api" : "mock"),
+    source: query.data?.source ?? (isDevMockEnabled() ? "mock" : "api"),
     loading: query.isPending && !query.data,
     refreshing: query.isFetching && !!query.data,
     error: query.error instanceof Error ? query.error.message : null,
     refresh,
+    applyDriverUpdate,
   };
 }

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { DataSource } from "@/lib/dash/api/config";
-import { isApiEnabled } from "@/lib/dash/api/config";
+import { isApiEnabled, isDevMockEnabled } from "@/lib/dash/api/config";
 import { ORDER_SYNC_POLL_MS } from "@/lib/delivery-workflow";
 import {
   mockOrderToAdminDetail,
@@ -12,35 +12,48 @@ import {
   type AdminProofItem,
 } from "@/lib/dash/api/adapters";
 import {
+  acknowledgeConsumerNoteApi,
   fetchDriverDetail,
   fetchOrderDetail,
   fetchOrderProofs,
 } from "@/lib/dash/api/client";
 import { usePolling } from "@/lib/dash/hooks/use-polling";
+import type { ConsumerNote } from "@/lib/types/backend";
 
 export function useAdminOrderDetail(orderId: string) {
-  const [detail, setDetail] = useState<AdminOrderDetail | null>(() =>
-    mockOrderToAdminDetail(orderId),
-  );
+  const [detail, setDetail] = useState<AdminOrderDetail | null>(null);
   const [proofs, setProofs] = useState<AdminProofItem[]>([]);
-  const [source, setSource] = useState<DataSource>("mock");
-  const [loading, setLoading] = useState(false);
+  const [consumerNotes, setConsumerNotes] = useState<ConsumerNote[]>([]);
+  const [source, setSource] = useState<DataSource>("api");
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const apiEnabled = isApiEnabled();
 
   const load = useCallback(async (options?: { silent?: boolean }) => {
-    if (!apiEnabled) {
+    if (isDevMockEnabled()) {
       setDetail(mockOrderToAdminDetail(orderId));
       setProofs([]);
+      setConsumerNotes([]);
       setSource("mock");
       setError(null);
+      setLoading(false);
+      return;
+    }
+
+    if (!apiEnabled) {
+      setDetail(null);
+      setProofs([]);
+      setConsumerNotes([]);
+      setSource("api");
+      setError("API is not enabled. Set NEXT_PUBLIC_USE_API=true to load order details.");
+      setLoading(false);
       return;
     }
 
     if (!options?.silent) setLoading(true);
     setError(null);
     try {
-      const [{ order, statusEvents }, proofsRes] = await Promise.all([
+      const [{ order, statusEvents, consumerNotes: notes }, proofsRes] = await Promise.all([
         fetchOrderDetail(orderId),
         fetchOrderProofs(orderId).catch(() => ({ proofs: [] })),
       ]);
@@ -57,12 +70,12 @@ export function useAdminOrderDetail(orderId: string) {
 
       setDetail(orderToAdminDetail(order, statusEvents, assignedDriver));
       setProofs(proofsRes.proofs.map(proofToAdminItem));
+      setConsumerNotes(notes ?? []);
       setSource("api");
     } catch (err) {
       if (!options?.silent) {
-        setDetail(mockOrderToAdminDetail(orderId));
+        setDetail(null);
         setProofs([]);
-        setSource("mock");
       }
       setError(err instanceof Error ? err.message : "Failed to load order");
     } finally {
@@ -80,5 +93,5 @@ export function useAdminOrderDetail(orderId: string) {
     apiEnabled,
   );
 
-  return { detail, proofs, source, loading, error, refresh: load };
+  return { detail, proofs, consumerNotes, source, loading, error, refresh: load };
 }

@@ -8,7 +8,7 @@ import {
 import { usePathname } from "next/navigation";
 import { useCallback, useMemo } from "react";
 import type { DataSource } from "@/lib/dash/api/config";
-import { isApiEnabled } from "@/lib/dash/api/config";
+import { isApiEnabled, isDevMockEnabled } from "@/lib/dash/api/config";
 import { LIST_SYNC_POLL_MS } from "@/lib/delivery-workflow";
 import {
   getMockAdminOrders,
@@ -40,42 +40,52 @@ function mockOrdersFor(options?: { driverId?: string; limit?: number }): AdminOr
 
 async function fetchAdminOrdersList(options?: {
   driverId?: string;
-}): Promise<{ rows: AdminOrderRow[]; source: DataSource; fetchError?: string }> {
-  if (!isApiEnabled()) {
+  status?: string;
+  search?: string;
+}): Promise<{ rows: AdminOrderRow[]; source: DataSource }> {
+  if (isDevMockEnabled()) {
     return { rows: mockOrdersFor(options), source: "mock" };
   }
 
-  try {
-    const result = await fetchOrdersList({
-      limit: ORDERS_FETCH_LIMIT,
-      driverId: options?.driverId,
-    });
-    return {
-      rows: result.orders.map(orderToAdminRow),
-      source: "api",
-    };
-  } catch (err) {
-    return {
-      rows: filterMockByDriverId(getMockAdminOrders(), options?.driverId).slice(
-        0,
-        ORDERS_FETCH_LIMIT,
-      ),
-      source: "mock",
-      fetchError: err instanceof Error ? err.message : "Failed to load orders",
-    };
+  if (!isApiEnabled()) {
+    throw new Error("API is not enabled. Set NEXT_PUBLIC_USE_API=true to load orders.");
   }
+
+  const result = await fetchOrdersList({
+    limit: ORDERS_FETCH_LIMIT,
+    driverId: options?.driverId,
+    status: options?.status,
+    search: options?.search,
+  });
+  return {
+    rows: result.orders.map(orderToAdminRow),
+    source: "api",
+  };
 }
 
-export function useAdminOrders(options?: { driverId?: string; limit?: number }) {
+export function useAdminOrders(options?: {
+  driverId?: string;
+  limit?: number;
+  status?: string;
+  search?: string;
+}) {
   const pathname = usePathname();
   const queryClient = useQueryClient();
   const apiEnabled = isApiEnabled();
-  const listKey = adminQueryKeys.orders.list({ driverId: options?.driverId });
+  const listKey = adminQueryKeys.orders.list({
+    driverId: options?.driverId,
+    status: options?.status,
+    search: options?.search,
+  });
   const displayLimit = options?.limit ?? ORDERS_FETCH_LIMIT;
 
   const query = useQuery({
     queryKey: listKey,
-    queryFn: () => fetchAdminOrdersList({ driverId: options?.driverId }),
+    queryFn: () => fetchAdminOrdersList({
+      driverId: options?.driverId,
+      status: options?.status,
+      search: options?.search,
+    }),
     placeholderData: keepPreviousData,
     refetchInterval: apiEnabled
       ? () =>
@@ -99,13 +109,10 @@ export function useAdminOrders(options?: { driverId?: string; limit?: number }) 
 
   return {
     orders,
-    source: query.data?.source ?? (apiEnabled ? "api" : "mock"),
+    source: query.data?.source ?? (isDevMockEnabled() ? "mock" : "api"),
     loading: query.isPending && !query.data,
     refreshing: query.isFetching && !!query.data,
-    error:
-      query.error instanceof Error
-        ? query.error.message
-        : (query.data?.fetchError ?? null),
+    error: query.error instanceof Error ? query.error.message : null,
     refresh,
   };
 }

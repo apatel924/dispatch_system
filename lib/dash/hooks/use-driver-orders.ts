@@ -57,11 +57,6 @@ export function useDriverOrders() {
       );
       setSource("api");
     } catch (err) {
-      if (!opts?.silent) {
-        setActiveOrders(getMockActiveOrders());
-        setCompletedOrders(getMockCompletedOrders());
-        setSource("mock");
-      }
       setError(err instanceof Error ? err.message : "Failed to load driver orders");
     } finally {
       if (!opts?.silent) setLoading(false);
@@ -92,22 +87,24 @@ export function useDriverRouteOrders() {
   const [stops, setStops] = useState<UiDriverOrder[]>(getMockActiveOrders);
   const [source, setSource] = useState<DataSource>("mock");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!isApiEnabled()) {
       setStops(getMockActiveOrders());
       setSource("mock");
+      setError(null);
       return;
     }
 
     setLoading(true);
+    setError(null);
     try {
       const { orders } = await fetchDriverOrders("route");
       setStops(orders.map(orderToDriverOrder));
       setSource("api");
-    } catch {
-      setStops(getMockActiveOrders());
-      setSource("mock");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load route stops");
     } finally {
       setLoading(false);
     }
@@ -117,5 +114,5 @@ export function useDriverRouteOrders() {
     load();
   }, [load]);
 
-  return { stops, source, loading, refresh: load };
+  return { stops, source, loading, error, refresh: load };
 }

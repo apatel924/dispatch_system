@@ -4,6 +4,7 @@ import {
   eventTitleForStatusEvent,
   STATUS_TITLES,
 } from "@/lib/delivery-workflow";
+import { DEFAULT_APP_TIMEZONE } from "@/lib/app-timezone";
 import type {
   DriverProfile,
   DriverStatus,
@@ -17,6 +18,7 @@ import type {
   ImportLog,
 } from "@/lib/types/backend";
 import type { ReportsOverview } from "@/lib/server/services/reports";
+import { formatAvgMs } from "@/lib/delivery-metrics";
 import {
   drivers as mockDrivers,
   orders as mockOrders,
@@ -49,13 +51,14 @@ export interface AdminDriverRow {
   completedToday: number;
   failedToday: number;
   averageTime: string;
+  averageDeliveryTimeMs?: number | null;
   lastActive: string;
   avatarColor: string;
   initials: string;
-  rating?: number;
-  successRate?: number;
+  successRate?: number | null;
   deliveries?: number;
   vehicle?: string;
+  adminNote?: string;
   joinedDate?: string;
 }
 
@@ -84,6 +87,8 @@ export interface AdminOrderDetail {
   createdTime: string;
   updatedDate: string;
   updatedTime: string;
+  trackingLinkVersion?: number;
+  trackingLinkIssuedAt?: string;
   driver: {
     id: string | null;
     name: string;
@@ -100,6 +105,12 @@ export interface AdminOrderDetail {
     date: string;
     time: string;
     status: OrderStatus;
+  }[];
+  driverNotes: {
+    id: string;
+    text: string;
+    date: string;
+    time: string;
   }[];
 }
 
@@ -184,103 +195,137 @@ export function getMockAdminImportLogs(): AdminImportLogRow[] {
 }
 
 export interface AdminReportsView {
+  period: { from: string; to: string };
+  comparePeriod: { from: string; to: string } | null;
   totals: {
     deliveries: number;
     completed: number;
     failed: number;
     returned: number;
-    orderValue: string;
-    fees: string;
-    unpaid: number;
     avgDeliveryTime: string;
   };
+  comparisons: {
+    deliveries: number | null;
+    completed: number | null;
+    failed: number | null;
+    returned: number | null;
+    avgDeliveryTimeMs: number | null;
+  } | null;
   statusBreakdown: { completed: number; failed: number; returned: number };
-  paymentBreakdown: { paid: number; pending: number; unpaid: number };
-  drivers: { id: string; name: string; deliveries: number; initials: string; avatarColor: string; successRate?: number }[];
-  trendDays: { label: string; deliveries: number; completed: number }[];
+  drivers: {
+    id: string;
+    name: string;
+    deliveries: number;
+    completed: number;
+    failed: number;
+    initials: string;
+    avatarColor: string;
+    successRate: number | null;
+    avgDeliveryTime: string;
+  }[];
+  trendDays: { label: string; deliveries: number; completed: number; failed: number }[];
+  compareTrendDays: { label: string; deliveries: number }[] | null;
+  dataCoverage?: {
+    complete: boolean;
+    message?: string;
+    legacyFallbackCount: number;
+  };
 }
 
 function formatMoney(cents: number): string {
   return `$${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function formatAvgMs(ms: number | null): string {
-  if (ms == null) return "—";
-  const mins = Math.floor(ms / 60000);
-  const secs = Math.floor((ms % 60000) / 1000);
-  return `${mins}m ${secs}s`;
-}
-
 export function reportsOverviewToAdminView(overview: ReportsOverview): AdminReportsView {
-  const payment = overview.breakdowns.payment;
   return {
+    period: overview.period,
+    comparePeriod: overview.comparePeriod,
     totals: {
       deliveries: overview.totals.deliveries,
       completed: overview.totals.completed,
       failed: overview.totals.failed,
       returned: overview.totals.returned,
-      orderValue: formatMoney(overview.totals.orderValueCents),
-      fees: formatMoney(overview.totals.feesCents),
-      unpaid: overview.totals.unpaid,
       avgDeliveryTime: formatAvgMs(overview.totals.avgDeliveryTimeMs),
     },
+    comparisons: overview.comparisons,
     statusBreakdown: {
       completed: overview.totals.completed,
       failed: overview.totals.failed,
       returned: overview.totals.returned,
     },
-    paymentBreakdown: {
-      paid: payment.Paid ?? 0,
-      pending: payment.Pending ?? 0,
-      unpaid: payment.Unpaid ?? 0,
-    },
-    drivers: overview.breakdowns.drivers.slice(0, 5).map((d, i) => ({
+    drivers: overview.breakdowns.drivers.slice(0, 10).map((d, i) => ({
       id: d.driverId,
       name: d.name,
       deliveries: d.deliveries,
-      initials: d.name.split(/\s+/).map((p) => p[0]).join("").slice(0, 2).toUpperCase(),
-      avatarColor: ["bg-info-soft text-info", "bg-purple-soft text-purple", "bg-orange-soft text-orange", "bg-success-soft text-success", "bg-warning-soft text-warning-foreground"][i % 5],
+      completed: d.completed,
+      failed: d.failed,
+      initials: d.name
+        .split(/\s+/)
+        .map((p) => p[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase(),
+      avatarColor: [
+        "bg-info-soft text-info",
+        "bg-purple-soft text-purple",
+        "bg-orange-soft text-orange",
+        "bg-success-soft text-success",
+        "bg-warning-soft text-warning-foreground",
+      ][i % 5],
+      successRate: d.successRate,
+      avgDeliveryTime: formatAvgMs(d.avgDeliveryTimeMs),
     })),
     trendDays: overview.trends.daily.map((d) => ({
-      label: d.date,
+      label: d.date.slice(5),
       deliveries: d.deliveries,
       completed: d.completed,
+      failed: d.failed,
     })),
+    compareTrendDays: overview.trends.compareDaily?.map((d) => ({
+      label: d.date.slice(5),
+      deliveries: d.deliveries,
+    })) ?? null,
+    dataCoverage: overview.dataCoverage,
   };
 }
 
 export function getMockAdminReports(): AdminReportsView {
   const topDrivers = mockDrivers.filter((d) => d.deliveries).slice(0, 5);
+  const from = "2024-05-10";
+  const to = "2024-05-16";
   return {
+    period: { from, to },
+    comparePeriod: { from: "2024-05-03", to: "2024-05-09" },
     totals: {
       deliveries: 248,
       completed: 208,
       failed: 18,
       returned: 22,
-      orderValue: "$24,890.50",
-      fees: "$3,210.00",
-      unpaid: 16,
       avgDeliveryTime: "28m 35s",
     },
+    comparisons: null,
     statusBreakdown: { completed: 208, failed: 18, returned: 22 },
-    paymentBreakdown: { paid: 194, pending: 32, unpaid: 16 },
-    drivers: topDrivers.map((d) => ({
+    drivers: topDrivers.map((d, i) => ({
       id: d.id,
       name: d.name,
       deliveries: d.deliveries ?? 0,
+      completed: d.deliveries ?? 0,
+      failed: 0,
       initials: d.initials,
       avatarColor: d.avatarColor,
-      successRate: d.successRate,
+      successRate: d.successRate ?? null,
+      avgDeliveryTime: d.averageTime,
     })),
     trendDays: [
-      { label: "May 10", deliveries: 42, completed: 35 },
-      { label: "May 11", deliveries: 55, completed: 48 },
-      { label: "May 12", deliveries: 62, completed: 54 },
-      { label: "May 13", deliveries: 78, completed: 66 },
-      { label: "May 14", deliveries: 82, completed: 70 },
-      { label: "May 15", deliveries: 68, completed: 58 },
-      { label: "May 16", deliveries: 52, completed: 44 },
+      { label: "05-10", deliveries: 42, completed: 35, failed: 2 },
+      { label: "05-11", deliveries: 55, completed: 48, failed: 3 },
+      { label: "05-12", deliveries: 62, completed: 54, failed: 2 },
+      { label: "05-13", deliveries: 78, completed: 66, failed: 4 },
+      { label: "05-14", deliveries: 82, completed: 70, failed: 3 },
+      { label: "05-15", deliveries: 68, completed: 58, failed: 2 },
+      { label: "05-16", deliveries: 52, completed: 44, failed: 2 },
     ],
+    compareTrendDays: null,
   };
 }
 
@@ -356,15 +401,16 @@ export function driverToAdminRow(driver: DriverProfile): AdminDriverRow {
     averageTime: driver.averageDeliveryTimeMs
       ? `${Math.round(driver.averageDeliveryTimeMs / 60000)}m`
       : "—",
+    averageDeliveryTimeMs: driver.averageDeliveryTimeMs ?? null,
     lastActive: driver.lastActiveAt
       ? formatDisplayDateTime(driver.lastActiveAt).combined
       : "—",
     avatarColor: driver.avatarColor,
     initials: driver.initials,
-    rating: driver.rating,
-    successRate: driver.successRate,
+    successRate: driver.successRate ?? null,
     deliveries: driver.totalDeliveries,
     vehicle: driver.vehicle,
+    adminNote: driver.adminNote,
     joinedDate: driver.createdAt
       ? formatDisplayDateTime(driver.createdAt).date
       : undefined,
@@ -385,8 +431,7 @@ export function mockDriverToAdminRow(driver: Driver): AdminDriverRow {
     lastActive: driver.lastActive,
     avatarColor: driver.avatarColor,
     initials: driver.initials,
-    rating: driver.rating,
-    successRate: driver.successRate,
+    successRate: driver.successRate ?? null,
     deliveries: driver.deliveries,
     vehicle: driver.vehicle,
   };
@@ -464,8 +509,16 @@ export function orderToAdminDetail(
     createdTime: created.time,
     updatedDate: updated.date,
     updatedTime: updated.time,
+    trackingLinkVersion: order.trackingLinkVersion,
+    trackingLinkIssuedAt: order.trackingLinkIssuedAt,
     driver,
     statusEvents: eventsToTimeline(events, assignedDriver?.name ?? order.assignedDriverName),
+    driverNotes: events
+      .filter((e) => e.actorRole === "driver" && e.note?.trim())
+      .map((e) => {
+        const dt = formatDisplayDateTime(e.createdAt);
+        return { id: e.id, text: e.note!.trim(), date: dt.date, time: dt.time };
+      }),
   };
 }
 
@@ -522,6 +575,7 @@ export function mockOrderToAdminDetail(orderId: string): AdminOrderDetail | null
         : []),
       { id: "mock-current", title: STATUS_TITLES[row.status], by: row.driver ?? "System", date: updated.date, time: updated.time, status: row.status },
     ],
+    driverNotes: [],
   };
 }
 

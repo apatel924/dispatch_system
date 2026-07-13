@@ -3,13 +3,21 @@
 export const adminQueryKeys = {
   orders: {
     all: ["admin", "orders"] as const,
-    list: (params?: { driverId?: string }) =>
+    list: (params?: { driverId?: string; status?: string; search?: string }) =>
       [...adminQueryKeys.orders.all, "list", params ?? {}] as const,
   },
   drivers: {
     all: ["admin", "drivers"] as const,
     list: () => [...adminQueryKeys.drivers.all, "list"] as const,
     detail: (id: string) => [...adminQueryKeys.drivers.all, "detail", id] as const,
+  },
+  reports: {
+    all: ["admin", "reports"] as const,
+    overview: () => [...adminQueryKeys.reports.all, "overview"] as const,
+  },
+  dashboard: {
+    all: ["admin", "dashboard"] as const,
+    stats: () => [...adminQueryKeys.dashboard.all, "stats"] as const,
   },
 };
 

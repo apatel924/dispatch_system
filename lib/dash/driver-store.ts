@@ -2,7 +2,6 @@ import type { OrderStatus } from "@/lib/types/backend";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import { resolveStatusAfterStep } from "@/lib/delivery-workflow";
 import { postOrderProof, postOrderStatus } from "@/lib/dash/api/driver-client";
-import { uploadProofBlob } from "@/lib/auth/firebase-storage";
 import type { DeliveryStepKey, DriverOrder } from "./driver-mock-data";
 
 export type ProofType = "signature" | "exteriorPhoto";
@@ -110,13 +109,10 @@ export async function saveProofAsync(
   };
 
   try {
-    const uploaded = await uploadProofBlob(orderId, type, dataUrl);
     await postOrderProof(orderId, {
       type,
       stepKey: stepMap[type],
-      storagePath: uploaded.storagePath,
-      mimeType: uploaded.mimeType,
-      fileSizeBytes: uploaded.fileSizeBytes,
+      dataUrl,
     });
   } catch {
     // Local dataUrl retained until sync succeeds

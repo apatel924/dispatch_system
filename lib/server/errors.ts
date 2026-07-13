@@ -17,3 +17,25 @@ export function notFoundError(entity: string, id: string): ServiceError {
 export function forbiddenError(message = "Forbidden"): ServiceError {
   return new ServiceError(message, "FORBIDDEN", 403);
 }
+
+export function trackingInvalidError(message = "This tracking link is not valid."): ServiceError {
+  return new ServiceError(message, "TRACKING_INVALID", 404);
+}
+
+export function trackingExpiredError(
+  message = "This tracking link has expired.",
+): ServiceError {
+  return new ServiceError(message, "TRACKING_EXPIRED", 410);
+}
+
+export function trackingRevokedError(
+  message = "This tracking link is no longer active.",
+): ServiceError {
+  return new ServiceError(message, "TRACKING_REVOKED", 403);
+}
+
+export function rateLimitedError(
+  message = "Too many requests. Please try again later.",
+): ServiceError {
+  return new ServiceError(message, "RATE_LIMITED", 429);
+}

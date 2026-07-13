@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   MoreVertical,
@@ -15,13 +15,22 @@ import type { AdminOrderRow } from "@/lib/dash/api/adapters";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import { updateOrderStatusApi } from "@/lib/dash/api/client";
 import { cn } from "@/lib/utils";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/dash/ui/dropdown-menu";
 
 const TERMINAL_STATUSES = new Set(["Delivered", "Failed", "Returned"]);
 
+export type OrderActionsOrder = Pick<AdminOrderRow, "id" | "status" | "driver">;
+
 interface OrderActionsMenuProps {
-  order: AdminOrderRow;
+  order: OrderActionsOrder;
   onStatusChanged?: () => void;
-  align?: "left" | "right";
+  align?: "start" | "end";
+  triggerClassName?: string;
 }
 
 interface MenuAction {
@@ -36,35 +45,15 @@ interface MenuAction {
 export function OrderActionsMenu({
   order,
   onStatusChanged,
-  align = "right",
+  align = "end",
+  triggerClassName,
 }: OrderActionsMenuProps) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
   const apiEnabled = isApiEnabled();
   const isActive = !TERMINAL_STATUSES.has(order.status);
-
-  const close = useCallback(() => setOpen(false), []);
-
-  useEffect(() => {
-    if (!open) return;
-
-    const onPointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) close();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open, close]);
 
   const runStatusUpdate = async (
     actionKey: string,
@@ -84,7 +73,7 @@ export function OrderActionsMenu({
         note: `Status updated to ${status} by admin`,
       });
       onStatusChanged?.();
-      close();
+      setOpen(false);
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "Failed to update order status");
     } finally {
@@ -98,7 +87,7 @@ export function OrderActionsMenu({
       label: "View Details",
       icon: Eye,
       onClick: () => {
-        close();
+        setOpen(false);
         router.push(`/orders/${order.id}`);
       },
     },
@@ -107,7 +96,7 @@ export function OrderActionsMenu({
       label: order.driver ? "Reassign Driver" : "Assign Driver",
       icon: Users,
       onClick: () => {
-        close();
+        setOpen(false);
         router.push(`/orders/${order.id}?action=assign`);
       },
       disabled: !isActive,
@@ -175,58 +164,53 @@ export function OrderActionsMenu({
   });
 
   return (
-    <div ref={rootRef} className="relative inline-block text-left">
-      <button
-        type="button"
-        aria-label={`Actions for order ${order.id}`}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        className="rounded p-1 text-muted-foreground hover:bg-secondary"
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen((prev) => !prev);
-        }}
-      >
-        <MoreVertical className="h-4 w-4" />
-      </button>
-
-      {open && (
-        <div
-          role="menu"
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={`Actions for order ${order.id}`}
           className={cn(
-            "absolute z-50 mt-1 min-w-[180px] rounded-lg border border-border bg-card py-1 shadow-lg",
-            align === "right" ? "right-0" : "left-0",
+            "rounded p-1 text-muted-foreground hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            triggerClassName,
           )}
           onClick={(e) => e.stopPropagation()}
         >
-          {actions.map((action) => {
-            const Icon = action.icon;
-            const isLoading = busy === action.key;
-            return (
-              <button
-                key={action.key}
-                type="button"
-                role="menuitem"
-                disabled={action.disabled || Boolean(busy)}
-                className={cn(
-                  "flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-secondary/80 disabled:cursor-not-allowed disabled:opacity-50",
-                  action.destructive
-                    ? "text-destructive hover:bg-destructive/10"
-                    : "text-foreground",
-                )}
-                onClick={() => void action.onClick()}
-              >
-                {isLoading ? (
-                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-                ) : (
-                  <Icon className="h-4 w-4 shrink-0" />
-                )}
-                {action.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
+          <MoreVertical className="h-4 w-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align={align}
+        side="bottom"
+        sideOffset={4}
+        collisionPadding={8}
+        className="min-w-[180px]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {actions.map((action) => {
+          const Icon = action.icon;
+          const isLoading = busy === action.key;
+          return (
+            <DropdownMenuItem
+              key={action.key}
+              disabled={action.disabled || Boolean(busy)}
+              className={cn(
+                action.destructive && "text-destructive focus:bg-destructive/10 focus:text-destructive",
+              )}
+              onSelect={(event) => {
+                event.preventDefault();
+                void action.onClick();
+              }}
+            >
+              {isLoading ? (
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+              ) : (
+                <Icon className="h-4 w-4 shrink-0" />
+              )}
+              {action.label}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

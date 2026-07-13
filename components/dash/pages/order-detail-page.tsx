@@ -1,14 +1,17 @@
 'use client'
 
 import Link from "next/link";
-import { useState } from "react";
-import { ArrowLeft, Users, Send, Save, MoreVertical, FileText, MapPin, Package, User2, ClipboardList, CheckCircle2, Truck, Camera, PenTool, IdCard } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowLeft, Users, Send, Save, FileText, MapPin, Package, User2, ClipboardList, CheckCircle2, Truck, Camera, PenTool, IdCard, MessageSquare, Copy, Check } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { SectionCard } from "@/components/dash/ui/section-card";
+import { ConsumerDeliveryInstructions } from "@/components/dash/consumer-delivery-instructions";
+import { OrderActionsMenu } from "@/components/dash/order-actions-menu";
 import { OrderStatusBadge, DriverStatusBadge, ProofReviewBadge } from "@/components/dash/status-badge";
-import { reviewProofApi } from "@/lib/dash/api/client";
+import { reviewProofApi, acknowledgeConsumerNoteApi, rotateOrderTrackingLinkApi } from "@/lib/dash/api/client";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import { useAdminOrderDetail } from "@/lib/dash/hooks/use-admin-order-detail";
+import { hasUnreadConsumerNotes } from "@/lib/consumer-notes";
 import type { ProofType } from "@/lib/types/backend";
 
 const TIMELINE_ICONS: Record<string, typeof FileText> = {
@@ -42,8 +45,21 @@ const PLACEHOLDER_PROOFS = [
 ];
 
 export function OrderDetailPage({ orderId }: { orderId: string }) {
-  const { detail, proofs, loading, refresh } = useAdminOrderDetail(orderId);
+  const { detail, proofs, consumerNotes, loading, refresh } = useAdminOrderDetail(orderId);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [acknowledgingId, setAcknowledgingId] = useState<string | null>(null);
+  const [trackingUrl, setTrackingUrl] = useState<string | undefined>(undefined);
+  const [trackingBusy, setTrackingBusy] = useState(false);
+  const [trackingMessage, setTrackingMessage] = useState<string | null>(null);
+  const [trackingMessageTone, setTrackingMessageTone] = useState<"success" | "warning" | "error">("success");
+  const [showResendConfirm, setShowResendConfirm] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      setTrackingUrl(undefined);
+    };
+  }, []);
 
   const handleReview = async (proofId: string, status: "approved" | "rejected") => {
     if (!isApiEnabled()) return;
@@ -53,6 +69,58 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
       await refresh();
     } finally {
       setReviewingId(null);
+    }
+  };
+
+  const handleAcknowledge = async (noteId: string) => {
+    if (!isApiEnabled()) return;
+    setAcknowledgingId(noteId);
+    try {
+      await acknowledgeConsumerNoteApi(orderId, noteId);
+      await refresh({ silent: true });
+    } finally {
+      setAcknowledgingId(null);
+    }
+  };
+
+  const handleResendTrackingLink = async () => {
+    if (!isApiEnabled() || trackingBusy) return;
+    setTrackingBusy(true);
+    setTrackingMessage(null);
+    setTrackingUrl(undefined);
+    setCopied(false);
+    try {
+      const result = await rotateOrderTrackingLinkApi(orderId);
+      if (result.smsSent) {
+        setTrackingMessage("New tracking link sent successfully.");
+        setTrackingMessageTone("success");
+      } else if (result.linkCreated && result.copyUrl) {
+        setTrackingUrl(result.copyUrl);
+        setTrackingMessage("The secure link was created, but SMS could not be sent.");
+        setTrackingMessageTone("warning");
+      } else {
+        setTrackingMessage(result.message || "Failed to generate tracking link.");
+        setTrackingMessageTone("error");
+      }
+      setShowResendConfirm(false);
+      await refresh({ silent: true });
+    } catch (err) {
+      setTrackingMessage(err instanceof Error ? err.message : "Failed to generate tracking link");
+      setTrackingMessageTone("error");
+    } finally {
+      setTrackingBusy(false);
+    }
+  };
+
+  const handleCopyTrackingUrl = async () => {
+    if (!trackingUrl || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(trackingUrl);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setTrackingMessage("Could not copy link. Select and copy the URL manually.");
+      setTrackingMessageTone("warning");
     }
   };
 
@@ -74,6 +142,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
   }
 
   const d = detail;
+  const hasNewConsumerNotes = hasUnreadConsumerNotes(consumerNotes);
 
   return (
     <DashboardLayout title="Orders">
@@ -85,11 +154,89 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
           <OrderStatusBadge status={d.status} />
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <button className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary"><Users className="h-4 w-4" /> Assign Driver</button>
-            <button className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary"><Send className="h-4 w-4" /> Resend Tracking Link</button>
+            <button
+              type="button"
+              onClick={() => setShowResendConfirm(true)}
+              disabled={trackingBusy}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-60"
+            >
+              <Send className="h-4 w-4" /> {trackingBusy ? "Sending…" : "Resend Tracking Link"}
+            </button>
             <button className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"><Save className="h-4 w-4" /> Save Changes</button>
-            <button className="rounded-lg border border-input bg-card p-2 hover:bg-secondary"><MoreVertical className="h-4 w-4" /></button>
+            <OrderActionsMenu
+              order={{
+                id: d.id,
+                status: d.status,
+                driver: d.driver?.name ?? null,
+              }}
+              onStatusChanged={() => void refresh()}
+              triggerClassName="rounded-lg border border-input bg-card p-2 hover:bg-secondary"
+            />
           </div>
         </div>
+        {showResendConfirm ? (
+          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm dark:border-amber-900/50 dark:bg-amber-950/30">
+            <p className="font-semibold text-foreground">Resend tracking link?</p>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
+              <li>Generating a new link invalidates the previous link.</li>
+              <li>The new link will be shown only during this session.</li>
+              <li>If SMS fails, copy the link before leaving the page.</li>
+            </ul>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void handleResendTrackingLink()}
+                disabled={trackingBusy}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+              >
+                <Send className="h-4 w-4" /> {trackingBusy ? "Sending…" : "Confirm resend"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowResendConfirm(false)}
+                disabled={trackingBusy}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-60"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {trackingMessage ? (
+          <p
+            className={`mt-3 text-sm ${
+              trackingMessageTone === "success"
+                ? "text-success"
+                : trackingMessageTone === "warning"
+                  ? "text-amber-700 dark:text-amber-300"
+                  : "text-destructive"
+            }`}
+            role="status"
+          >
+            {trackingMessage}
+          </p>
+        ) : null}
+        {trackingUrl ? (
+          <div className="mt-3 rounded-lg border border-border bg-secondary/30 p-3">
+            <p className="text-xs text-muted-foreground">
+              Copy this link now — it will not be shown again after you leave this page.
+            </p>
+            <p className="mt-2 break-all font-mono text-xs">{trackingUrl}</p>
+            <button
+              type="button"
+              onClick={() => void handleCopyTrackingUrl()}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-1.5 text-xs font-semibold hover:bg-secondary"
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              {copied ? "Copied" : "Copy Link"}
+            </button>
+          </div>
+        ) : d.trackingLinkVersion ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Tracking link v{d.trackingLinkVersion} is active. Use &quot;Resend Tracking Link&quot; to
+            send a new link to the customer (invalidates the previous link).
+          </p>
+        ) : null}
         <div className="mt-5 grid grid-cols-2 gap-6 md:grid-cols-3">
           <div>
             <div className="text-xs uppercase tracking-wide text-muted-foreground">Assigned Driver</div>
@@ -129,9 +276,41 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
               <Field label="Address" value={[d.address, d.deliveryUnit].filter(Boolean).join(", ")} />
             </div>
           </SectionCard>
-          <SectionCard title="Notes" action={<button className="text-xs font-semibold text-primary hover:underline">Edit</button>}>
+          <SectionCard
+            title="Consumer Delivery Instructions"
+            icon={<MessageSquare className="h-4 w-4" />}
+            action={
+              hasNewConsumerNotes ? (
+                <span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground">
+                  New
+                </span>
+              ) : undefined
+            }
+          >
+            <ConsumerDeliveryInstructions
+              notes={consumerNotes}
+              variant="admin"
+              onAcknowledge={isApiEnabled() ? handleAcknowledge : undefined}
+              acknowledgingId={acknowledgingId}
+            />
+          </SectionCard>
+          <SectionCard title="Internal Admin Notes" action={<button className="text-xs font-semibold text-primary hover:underline">Edit</button>}>
             <p className="text-sm">{d.notes}</p>
           </SectionCard>
+          {d.driverNotes.length > 0 && (
+            <SectionCard title="Driver Notes">
+              <ol className="space-y-3">
+                {d.driverNotes.map((note) => (
+                  <li key={note.id} className="rounded-lg border border-border p-3 text-sm">
+                    <p>{note.text}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {note.date} {note.time}
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            </SectionCard>
+          )}
         </div>
 
         <div className="space-y-6">

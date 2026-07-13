@@ -3,12 +3,16 @@ import { DeliveryStepKeySchema } from "@/lib/server/validation/common";
 
 export const ProofTypeSchema = z.enum(["signature", "exteriorPhoto", "idVerification"]);
 
+/** Base64 data URL uploaded through a protected API route (never client Storage SDK). */
 export const UploadProofSchema = z.object({
   type: ProofTypeSchema,
-  storagePath: z.string().min(1),
-  mimeType: z.string().min(1),
   stepKey: DeliveryStepKeySchema,
-  fileSizeBytes: z.number().int().positive().optional(),
+  dataUrl: z
+    .string()
+    .min(22)
+    .refine((value) => value.startsWith("data:") && value.includes(";base64,"), {
+      message: "dataUrl must be a base64 data URL",
+    }),
 });
 
 export const ReviewProofSchema = z.object({

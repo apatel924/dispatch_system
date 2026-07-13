@@ -28,3 +28,4 @@ export const ListImportLogsQuerySchema = PaginationQuerySchema.extend({
 
 export type OrderImportInput = z.infer<typeof OrderImportSchema>;
 export type MockProviderPayload = z.infer<typeof MockUberPayloadSchema>;
+export type ListImportLogsQuery = z.infer<typeof ListImportLogsQuerySchema>;

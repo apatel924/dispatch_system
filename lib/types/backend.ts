@@ -18,16 +18,23 @@ export interface UserProfile {
   isActive: boolean;
 }
 
-export type DriverStatus = "Available" | "Busy" | "Inactive" | "Suspended";
+import type { DriverStatus } from "@/lib/driver-status";
+
+export type { DriverStatus };
 
 export interface DriverProfile {
   id: string;
+  /** @deprecated Prefer authUid — kept for existing Firestore documents. */
   userId: string;
+  /** Stable Firebase Authentication UID for this driver login account. */
+  authUid?: string;
   name: string;
   phone: string;
   email: string;
   status: DriverStatus;
   vehicle?: string;
+  /** Internal administrator note — separate from order and consumer notes. */
+  adminNote?: string;
   avatarColor: string;
   initials: string;
   activeDeliveries: number;
@@ -38,8 +45,26 @@ export interface DriverProfile {
   successRate?: number;
   totalDeliveries?: number;
   lastActiveAt?: string;
+  /** Firebase Auth account disabled (login blocked) — distinct from operational status. */
+  accountDisabled?: boolean;
+  accountUpdatedAt?: string;
+  accountUpdatedByUid?: string;
   createdAt: string;
   updatedAt: string;
+  updatedByUid?: string;
+}
+
+/** Admin-visible Firebase Authentication metadata for a driver login account. */
+export interface DriverAccountAccess {
+  driverId: string;
+  driverName: string;
+  linked: boolean;
+  authUid?: string;
+  loginEmail?: string;
+  displayName?: string;
+  disabled?: boolean;
+  accountUpdatedAt?: string;
+  activeOrderCount?: number;
 }
 
 export type OrderStatus =
@@ -99,12 +124,22 @@ export interface Order {
   createdAt: string;
   updatedAt: string;
   assignedAt?: string;
+  /** Set once when status first becomes Picked Up. */
+  pickedUpAt?: string;
+  /** Set once when status first becomes Delivered. */
   deliveredAt?: string;
+  /** Set once when status first becomes Failed. */
+  failedAt?: string;
+  /** Set once when status first becomes Returned. */
+  returnedAt?: string;
   scheduledFor?: string;
   createdBy?: string;
   source: "manual" | "import" | string;
   importLogId?: string;
   trackingUrl?: string;
+  /** Latest secure tracking link version — no plaintext token or URL stored. */
+  trackingLinkVersion?: number;
+  trackingLinkIssuedAt?: string;
   notificationPreference?: "sms" | "email" | "both" | "none";
   customerNotifiedAt?: string;
   lastCustomerNotificationAt?: string;
@@ -185,6 +220,75 @@ export interface TrackingView {
     time: string;
   }[];
   lastUpdatedAt: string;
+}
+
+/** Secure opaque token document — Firestore document id is SHA-256(rawToken). */
+export interface TrackingLink {
+  /** SHA-256 hex digest — same as the Firestore document id. */
+  id: string;
+  /** Ephemeral plaintext token — only present when a link is first issued in memory. */
+  token?: string;
+  orderId: string;
+  publicReference: string;
+  version: number;
+  expiresAt?: string;
+  revokedAt?: string;
+  replacedByVersion?: number;
+  createdAt: string;
+  /** SHA-256 hex digest of the opaque token (must match document id). */
+  tokenHash?: string;
+  /** Legacy documents that used the plaintext token as the document id. */
+  legacyInsecure?: boolean;
+}
+
+export type ConsumerNoteSource = "consumer";
+
+export interface ConsumerNote {
+  id: string;
+  orderId: string;
+  source: ConsumerNoteSource;
+  text: string;
+  createdAt: string;
+  trackingLinkVersion: number;
+  acknowledgedAt?: string;
+  acknowledgedByUid?: string;
+}
+
+/** Consumer-safe note shape — no internal order ids or staff uids. */
+export interface PublicConsumerNote {
+  id: string;
+  source: ConsumerNoteSource;
+  text: string;
+  createdAt: string;
+}
+
+export type ConsumerTrackingStepStatus = "complete" | "current" | "pending" | "failed";
+
+export interface ConsumerTrackingStep {
+  key: string;
+  label: string;
+  time?: string;
+  status: ConsumerTrackingStepStatus;
+}
+
+export type ConsumerTerminalState = "delivered" | "failed" | "cancelled";
+
+export interface ConsumerTrackingView {
+  publicReference: string;
+  status: OrderStatus;
+  statusHeading: string;
+  estimatedArrival?: string;
+  lastUpdatedAt: string;
+  pickupName?: string;
+  deliveryDestination: string;
+  deliveryInstructions?: string;
+  steps: ConsumerTrackingStep[];
+  consumerNotes: PublicConsumerNote[];
+  notesEnabled: boolean;
+  supportPhone: string;
+  supportEmail: string;
+  supportHours: string;
+  terminalState?: ConsumerTerminalState;
 }
 
 export interface HealthResponse {

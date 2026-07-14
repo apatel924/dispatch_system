@@ -1,6 +1,7 @@
 'use client'
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Phone, Mail, Car, Calendar, Edit3, MessageSquare, CheckCircle2, XCircle, Clock, Truck, ArrowLeft, Activity, StickyNote } from "lucide-react";
@@ -23,6 +24,7 @@ function splitDateTime(value: string): { date: string; time: string } {
 }
 
 export function DriverProfilePage({ driverId }: { driverId: string }) {
+  const router = useRouter();
   const { driver: d, loading, error, applyDriverUpdate } = useAdminDriver(driverId);
   const { orders: driverOrders, loading: ordersLoading, error: ordersError } = useAdminOrders({ driverId, limit: 20 });
   const [editOpen, setEditOpen] = useState(false);
@@ -185,13 +187,30 @@ export function DriverProfilePage({ driverId }: { driverId: string }) {
                   <tbody className="divide-y divide-border/60">
                     {recentOrders.map((o) => {
                       const { date, time } = splitDateTime(o.updated);
+                      const openOrder = () => router.push(`/orders/${o.id}`);
                       return (
-                        <tr key={o.id} className="transition-colors hover:bg-secondary/30">
-                          <td className="px-5 py-3 font-mono">
-                            <Link href={`/orders/${o.id}`} className="font-medium hover:text-primary hover:underline">
-                              {o.id}
-                            </Link>
-                          </td>
+                        <tr
+                          key={o.id}
+                          role="link"
+                          tabIndex={0}
+                          aria-label={`Open order ${o.id}`}
+                          className="cursor-pointer transition-colors hover:bg-secondary/30"
+                          onClick={(e) => {
+                            // Nested controls (buttons/menus/links) should stopPropagation;
+                            // also ignore clicks that originate on those elements.
+                            if ((e.target as HTMLElement).closest("a, button, input, select, textarea, [role='menuitem']")) {
+                              return;
+                            }
+                            openOrder();
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              openOrder();
+                            }
+                          }}
+                        >
+                          <td className="px-5 py-3 font-mono font-medium">{o.id}</td>
                           <td className="px-3 py-3">{o.customer}</td>
                           <td className="px-3 py-3 text-muted-foreground">{splitDateTime(o.created).date}</td>
                           <td className="px-3 py-3">

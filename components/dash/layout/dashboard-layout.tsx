@@ -3,7 +3,7 @@
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { signOutUser } from "@/lib/auth/firebase-client";
+import { signOutAdmin } from "@/lib/auth/firebase-client";
 import {
   LayoutDashboard,
   ClipboardList,
@@ -41,7 +41,7 @@ export function DashboardLayout({ title, children, actions }: { title: string; c
   const handleSignOut = async () => {
     setSigningOut(true);
     try {
-      await signOutUser();
+      await signOutAdmin();
       router.push("/");
     } catch {
       setSigningOut(false);

@@ -7,13 +7,20 @@ import {
   AUTH_NOT_CONFIGURED_MESSAGE,
   isAuthConfigured,
   requireClientAuthRedirect,
-  subscribeToAuthState,
+  type AuthPortal,
 } from "@/lib/auth/firebase-client";
+import {
+  useAdminAuth,
+  useDriverAuth,
+  type PortalAuthState,
+} from "@/lib/auth/portal-auth";
 import { ADMIN_ROLES } from "@/lib/server/roles";
 import type { UserRole } from "@/lib/types/backend";
 
 interface AuthGuardProps {
   children: ReactNode;
+  portal: AuthPortal;
+  auth: PortalAuthState;
   allowedRoles: readonly UserRole[];
   loginPath: string;
   wrongRoleRedirect?: string;
@@ -28,8 +35,19 @@ function AuthNotConfiguredPanel() {
   );
 }
 
-export function AuthGuard({
+function AuthCheckingPanel({ label }: { label: string }) {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-background text-muted-foreground">
+      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      <p className="text-sm">{label}</p>
+    </div>
+  );
+}
+
+function AuthGuard({
   children,
+  portal,
+  auth,
   allowedRoles,
   loginPath,
   wrongRoleRedirect,
@@ -45,11 +63,19 @@ export function AuthGuard({
       return;
     }
 
+    // Never redirect while Firebase is still restoring persisted auth.
+    if (!auth.authReady) {
+      setChecking(true);
+      setAllowed(false);
+      return;
+    }
+
     let cancelled = false;
 
     const verify = async () => {
       setChecking(true);
       const result = await requireClientAuthRedirect(
+        portal,
         allowedRoles,
         loginPath,
         wrongRoleRedirect,
@@ -57,6 +83,13 @@ export function AuthGuard({
       if (cancelled) return;
 
       if (!result.allowed && result.redirectTo) {
+        if (process.env.NODE_ENV === "development") {
+          console.info("[auth] Guard redirecting", {
+            portal,
+            redirectTo: result.redirectTo,
+            error: result.error,
+          });
+        }
         router.replace(result.redirectTo);
         return;
       }
@@ -65,27 +98,31 @@ export function AuthGuard({
       setChecking(false);
     };
 
-    verify();
-    const unsubscribe = subscribeToAuthState(() => {
-      verify();
-    });
+    void verify();
 
     return () => {
       cancelled = true;
-      unsubscribe();
     };
-  }, [allowedRoles, loginPath, wrongRoleRedirect, router]);
+  }, [
+    auth.authReady,
+    auth.user,
+    auth.role,
+    portal,
+    allowedRoles,
+    loginPath,
+    wrongRoleRedirect,
+    router,
+  ]);
 
   if (!isAuthConfigured()) {
     return <AuthNotConfiguredPanel />;
   }
 
-  if (checking || !allowed) {
+  if (!auth.authReady || checking || !allowed) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-background text-muted-foreground">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        <p className="text-sm">Checking sign-in…</p>
-      </div>
+      <AuthCheckingPanel
+        label={auth.authReady ? "Checking sign-in…" : "Restoring session…"}
+      />
     );
   }
 
@@ -93,8 +130,11 @@ export function AuthGuard({
 }
 
 export function AdminAuthGuard({ children }: { children: ReactNode }) {
+  const auth = useAdminAuth();
   return (
     <AuthGuard
+      portal="admin"
+      auth={auth}
       allowedRoles={ADMIN_ROLES}
       loginPath="/"
       wrongRoleRedirect="/driver-dashboard"
@@ -105,8 +145,11 @@ export function AdminAuthGuard({ children }: { children: ReactNode }) {
 }
 
 export function DriverAuthGuard({ children }: { children: ReactNode }) {
+  const auth = useDriverAuth();
   return (
     <AuthGuard
+      portal="driver"
+      auth={auth}
       allowedRoles={["driver"]}
       loginPath="/driver-login"
       wrongRoleRedirect="/dashboard"

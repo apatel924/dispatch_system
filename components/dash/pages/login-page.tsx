@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Mail, Lock, Eye, EyeOff, Shield, MessageSquare, LogIn, MapPin, Bell, FileCheck, Users, Loader2 } from "lucide-react";
 import { Logo } from "@/components/dash/brand/logo";
-import { DevDualLoginHint } from "@/components/dash/auth/dev-dual-login-hint";
+import { DualPortalHint } from "@/components/dash/auth/dev-dual-login-hint";
 import { OrderStatusBadge } from "@/components/dash/status-badge";
 import {
   AUTH_NOT_CONFIGURED_MESSAGE,
@@ -40,7 +40,7 @@ export function LoginPage() {
 
     setSubmitting(true);
     try {
-      await signInWithEmail(email.trim(), password);
+      await signInWithEmail("admin", email.trim(), password);
       const { redirectTo, error: redirectError } = await resolvePostLoginRedirect("admin");
       if (redirectError && !redirectTo) {
         setError(redirectError);
@@ -79,7 +79,7 @@ export function LoginPage() {
                 </p>
               )}
 
-              <DevDualLoginHint />
+              <DualPortalHint />
 
               {error && (
                 <p className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

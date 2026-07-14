@@ -43,12 +43,12 @@ export function SettingsPage() {
     let cancelled = false;
 
     const loadRole = async () => {
-      const role = await getCurrentUserRole();
+      const role = await getCurrentUserRole("admin");
       if (!cancelled) setCurrentRole(role);
     };
 
     void loadRole();
-    const unsubscribe = subscribeToAuthState(() => {
+    const unsubscribe = subscribeToAuthState("admin", () => {
       void loadRole();
     });
 

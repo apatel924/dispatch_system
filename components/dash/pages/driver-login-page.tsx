@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Mail, Lock, LogIn, MessageSquare, ShieldCheck, Loader2 } from "lucide-react";
 import { Logo } from "@/components/dash/brand/logo";
-import { DevDualLoginHint } from "@/components/dash/auth/dev-dual-login-hint";
+import { DualPortalHint } from "@/components/dash/auth/dev-dual-login-hint";
 import {
   AUTH_NOT_CONFIGURED_MESSAGE,
   isAuthConfigured,
@@ -40,7 +40,7 @@ export function DriverLogin() {
 
     setSubmitting(true);
     try {
-      await signInWithEmail(email.trim(), password);
+      await signInWithEmail("driver", email.trim(), password);
       const { redirectTo, error: redirectError } = await resolvePostLoginRedirect("driver");
       if (redirectError) {
         if (redirectTo) {
@@ -77,7 +77,7 @@ export function DriverLogin() {
             </p>
           )}
 
-          <DevDualLoginHint />
+          <DualPortalHint />
 
           {error && (
             <p className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

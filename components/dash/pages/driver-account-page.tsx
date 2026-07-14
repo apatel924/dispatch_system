@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Phone, Mail, Truck, LogOut, ChevronRight, Bell } from "lucide-react";
 import { DriverBottomNav } from "@/components/dash/driver/bottom-nav";
 import { useDriverSession } from "@/lib/dash/hooks/use-driver-session";
-import { signOutUser } from "@/lib/auth/firebase-client";
+import { signOutDriver } from "@/lib/auth/firebase-client";
 
 export function DriverAccountPage() {
   const router = useRouter();
@@ -16,7 +16,7 @@ export function DriverAccountPage() {
   const handleSignOut = async () => {
     setSigningOut(true);
     try {
-      await signOutUser();
+      await signOutDriver();
       router.push("/driver-login");
     } catch {
       setSigningOut(false);

@@ -21,9 +21,24 @@ function mergeOrders(
   }
 }
 
+function isMissingIndexError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = "code" in err ? err.code : undefined;
+  const message = "message" in err ? String(err.message) : "";
+  return (
+    code === 9 ||
+    code === "failed-precondition" ||
+    message.includes("FAILED_PRECONDITION") ||
+    message.includes("requires an index")
+  );
+}
+
 /**
  * Fetch terminal orders whose status-entered timestamps fall in a local-day UTC range.
  * Includes a legacy pass for orders missing dedicated timestamp fields.
+ *
+ * The legacy `status` + `updatedAt` query needs a composite index. If that index is
+ * missing, continue with dedicated timestamp queries so dashboard/reports stay up.
  */
 export async function fetchTerminalOrdersInUtcRange(
   startUtcIso: string,
@@ -31,7 +46,7 @@ export async function fetchTerminalOrdersInUtcRange(
 ): Promise<ReportingOrderFetchResult> {
   const db = getAdminFirestore();
 
-  const [deliveredSnap, failedSnap, returnedSnap, legacySnap] = await Promise.all([
+  const [deliveredSnap, failedSnap, returnedSnap] = await Promise.all([
     db
       .collection(COLLECTIONS.orders)
       .where("deliveredAt", ">=", startUtcIso)
@@ -47,12 +62,6 @@ export async function fetchTerminalOrdersInUtcRange(
       .where("returnedAt", ">=", startUtcIso)
       .where("returnedAt", "<", endExclusiveUtcIso)
       .get(),
-    db
-      .collection(COLLECTIONS.orders)
-      .where("status", "in", [...TERMINAL_STATUSES])
-      .where("updatedAt", ">=", startUtcIso)
-      .where("updatedAt", "<", endExclusiveUtcIso)
-      .get(),
   ]);
 
   const byId = new Map<string, Order>();
@@ -60,8 +69,27 @@ export async function fetchTerminalOrdersInUtcRange(
   mergeOrders(byId, failedSnap.docs);
   mergeOrders(byId, returnedSnap.docs);
 
+  let legacyDocs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+  try {
+    const legacySnap = await db
+      .collection(COLLECTIONS.orders)
+      .where("status", "in", [...TERMINAL_STATUSES])
+      .where("updatedAt", ">=", startUtcIso)
+      .where("updatedAt", "<", endExclusiveUtcIso)
+      .get();
+    legacyDocs = legacySnap.docs;
+  } catch (err) {
+    if (isMissingIndexError(err)) {
+      console.warn(
+        "[order-reporting] Skipping legacy updatedAt fallback — deploy orders(status, updatedAt) index.",
+      );
+    } else {
+      throw err;
+    }
+  }
+
   let legacyFallbackCount = 0;
-  for (const doc of legacySnap.docs) {
+  for (const doc of legacyDocs) {
     const order = docToOrder(doc.id, doc.data());
     if (byId.has(order.id)) continue;
     if (!orderUsesLegacyReportingTimestamp(order)) continue;

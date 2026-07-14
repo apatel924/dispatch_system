@@ -7,7 +7,7 @@ import {
   apiDriverToUiProfile,
   getMockDriverProfile,
 } from "@/lib/dash/api/driver-adapters";
-import { fetchDriverDetail } from "@/lib/dash/api/client";
+import { fetchDriverProfile } from "@/lib/dash/api/driver-client";
 import {
   getDriverAuthClaims,
   isAuthConfigured,
@@ -47,7 +47,7 @@ export function useDriverSession() {
         return;
       }
 
-      const { driver: apiDriver } = await fetchDriverDetail(driverId);
+      const { driver: apiDriver } = await fetchDriverProfile(driverId);
       setDriver(apiDriverToUiProfile(apiDriver));
       setSource("api");
     } catch (err) {
@@ -60,7 +60,7 @@ export function useDriverSession() {
   useEffect(() => {
     load();
     if (!isAuthConfigured()) return;
-    return subscribeToAuthState(() => {
+    return subscribeToAuthState("driver", () => {
       load();
     });
   }, [load]);

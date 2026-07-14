@@ -5,15 +5,16 @@ import type {
   OrderStatus,
   OrderStatusEvent,
   ProofAsset,
+  DriverProfile,
 } from "@/lib/types/backend";
-import { adminFetch } from "@/lib/dash/api/client";
+import { driverFetch } from "@/lib/dash/api/client";
 import type { UploadProofInput } from "@/lib/server/validation/proofs";
 
 export async function fetchDriverOrders(scope: "today" | "active" | "completed" | "route" = "active"): Promise<{
   orders: Order[];
 }> {
   const qs = new URLSearchParams({ scope });
-  return adminFetch(`/api/driver/orders?${qs.toString()}`);
+  return driverFetch(`/api/driver/orders?${qs.toString()}`);
 }
 
 export async function fetchDriverOrderDetail(id: string): Promise<{
@@ -22,11 +23,15 @@ export async function fetchDriverOrderDetail(id: string): Promise<{
   proofs: ProofAsset[];
   consumerNotes: ConsumerNote[];
 }> {
-  return adminFetch(`/api/driver/orders/${encodeURIComponent(id)}`);
+  return driverFetch(`/api/driver/orders/${encodeURIComponent(id)}`);
+}
+
+export async function fetchDriverProfile(id: string): Promise<{ driver: DriverProfile }> {
+  return driverFetch(`/api/drivers/${encodeURIComponent(id)}`);
 }
 
 export async function fetchOrderProofs(id: string): Promise<{ proofs: ProofAsset[] }> {
-  return adminFetch(`/api/orders/${encodeURIComponent(id)}/proofs`);
+  return driverFetch(`/api/orders/${encodeURIComponent(id)}/proofs`);
 }
 
 export async function postOrderProof(
@@ -43,7 +48,7 @@ export async function postOrderProof(
   }
 
   try {
-    return await adminFetch(`/api/orders/${encodeURIComponent(orderId)}/proofs`, {
+    return await driverFetch(`/api/orders/${encodeURIComponent(orderId)}/proofs`, {
       method: "POST",
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -57,7 +62,7 @@ export async function postOrderStatus(
   orderId: string,
   body: { status: OrderStatus; stepKey?: DeliveryStepKey; note?: string },
 ): Promise<{ order: Order; event: OrderStatusEvent }> {
-  return adminFetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
+  return driverFetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
     method: "POST",
     body: JSON.stringify(body),
   });

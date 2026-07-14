@@ -12,7 +12,11 @@ import type { ReportsOverview } from "@/lib/server/services/reports";
 import type { DashboardStats } from "@/lib/server/services/dashboard-stats";
 import type { ReviewProofInput } from "@/lib/server/validation/proofs";
 import type { OrderImportInput } from "@/lib/server/validation/import";
-import { getCurrentIdToken, isAuthConfigured } from "@/lib/auth/firebase-client";
+import {
+  getCurrentIdToken,
+  isAuthConfigured,
+  type AuthPortal,
+} from "@/lib/auth/firebase-client";
 
 export class AdminApiError extends Error {
   readonly status: number;
@@ -24,11 +28,11 @@ export class AdminApiError extends Error {
   }
 }
 
-async function authHeaders(): Promise<HeadersInit> {
+async function authHeaders(portal: AuthPortal): Promise<HeadersInit> {
   const headers: Record<string, string> = {};
   if (isAuthConfigured()) {
     try {
-      const token = await getCurrentIdToken();
+      const token = await getCurrentIdToken(portal);
       if (token) headers.Authorization = `Bearer ${token}`;
     } catch {
       // No session — request may 401
@@ -37,11 +41,16 @@ async function authHeaders(): Promise<HeadersInit> {
   return headers;
 }
 
-export async function adminFetch<T>(
+/**
+ * Authenticated fetch using the specified portal's Firebase Auth token.
+ * Admin helpers must use "admin"; driver helpers must use "driver".
+ */
+export async function portalFetch<T>(
+  portal: AuthPortal,
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const headers = new Headers(await authHeaders());
+  const headers = new Headers(await authHeaders(portal));
   if (init?.headers) {
     const extra = new Headers(init.headers);
     extra.forEach((v, k) => headers.set(k, v));
@@ -58,6 +67,22 @@ export async function adminFetch<T>(
     throw new AdminApiError(message, res.status);
   }
   return res.json() as Promise<T>;
+}
+
+/** Admin / dispatcher API calls — always uses adminAuth token. */
+export async function adminFetch<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  return portalFetch<T>("admin", path, init);
+}
+
+/** Driver API calls — always uses driverAuth token. */
+export async function driverFetch<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  return portalFetch<T>("driver", path, init);
 }
 
 export async function fetchOrdersList(params?: {

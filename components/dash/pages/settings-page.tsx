@@ -8,15 +8,11 @@ import { Logo } from "@/components/dash/brand/logo";
 import { BarnetIntegrationsCard } from "@/components/dash/integrations/barnet-integrations-card";
 import { getCurrentUserRole, subscribeToAuthState } from "@/lib/auth/firebase-client";
 import { useExternalOrderProvider } from "@/lib/dash/hooks/use-external-order-provider";
-import {
-  fetchOrderProviderEnvDiagnostics,
-  fetchOrderProviderHealthWithSync,
-} from "@/lib/dash/api/client";
+import { useBarnetSyncHealth } from "@/lib/dash/hooks/use-barnet-sync-health";
+import { fetchOrderProviderEnvDiagnostics } from "@/lib/dash/api/client";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import type {
-  ExternalOrderProviderSyncState,
   OrderProviderEnvDiagnosticsResponse,
-  OrderProviderHealthWithSync,
 } from "@/lib/dash/api/client";
 import type { UserRole } from "@/lib/types/backend";
 
@@ -31,8 +27,17 @@ export function SettingsPage() {
     previewLiveOrders,
   } = useExternalOrderProvider();
 
-  const [healthWithSync, setHealthWithSync] = useState<OrderProviderHealthWithSync | null>(null);
-  const [syncState, setSyncState] = useState<ExternalOrderProviderSyncState | null>(null);
+  const {
+    health: healthWithSync,
+    syncHealth,
+    syncState,
+    error: syncHealthError,
+    refresh: refreshSyncHealth,
+    runManualSync,
+  } = useBarnetSyncHealth();
+
+  const [liveSyncing, setLiveSyncing] = useState(false);
+  const [manualSyncMessage, setManualSyncMessage] = useState<string | null>(null);
   const [currentRole, setCurrentRole] = useState<UserRole | null>(null);
   const [envDiagnostics, setEnvDiagnostics] =
     useState<OrderProviderEnvDiagnosticsResponse | null>(null);
@@ -58,28 +63,38 @@ export function SettingsPage() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!isApiEnabled()) return;
-    void fetchOrderProviderHealthWithSync()
-      .then((result) => {
-        setHealthWithSync(result);
-        setSyncState(result.syncState ?? null);
-      })
-      .catch(() => {
-        setHealthWithSync(providerHealth);
-      });
-  }, [providerHealth]);
-
   const handleCheckConnection = async () => {
     await checkLiveConfig(true);
-    if (isApiEnabled()) {
-      try {
-        const result = await fetchOrderProviderHealthWithSync();
-        setHealthWithSync(result);
-        setSyncState(result.syncState ?? null);
-      } catch {
-        // health refresh optional
+    await refreshSyncHealth();
+  };
+
+  const handleManualSync = async () => {
+    if (!isApiEnabled()) {
+      setManualSyncMessage("Enable NEXT_PUBLIC_USE_API=true to run live sync");
+      return;
+    }
+    setLiveSyncing(true);
+    setManualSyncMessage(null);
+    try {
+      const result = await runManualSync();
+      if (result.skipped) {
+        setManualSyncMessage(
+          result.message ??
+            (result.reason === "outside_operating_hours"
+              ? "Scanning resumes at 8:30 AM Edmonton time."
+              : result.reason === "sync_already_running"
+                ? "Sync already in progress."
+                : "Synchronization skipped."),
+        );
+      } else {
+        setManualSyncMessage(
+          `Live sync across ${result.pagesScanned} page(s): ${result.deliveryOrdersFound} delivery found — ${result.inserted} inserted, ${result.updated} updated`,
+        );
       }
+    } catch (err) {
+      setManualSyncMessage(err instanceof Error ? err.message : "Live sync failed");
+    } finally {
+      setLiveSyncing(false);
     }
   };
 
@@ -198,17 +213,20 @@ export function SettingsPage() {
           <BarnetIntegrationsCard
             health={healthWithSync ?? providerHealth}
             syncState={syncState}
+            syncHealth={syncHealth}
             liveChecking={liveChecking}
             livePreviewing={livePreviewing}
+            liveSyncing={liveSyncing}
             envDiagnostics={envDiagnostics}
             envDiagnosticsLoading={envDiagnosticsLoading}
             envDiagnosticsError={envDiagnosticsError}
             showEnvDiagnostics={currentRole === "admin"}
-            liveMessage={liveMessage}
-            error={providerError}
+            liveMessage={manualSyncMessage ?? liveMessage}
+            error={syncHealthError ?? providerError}
             onCheckConnection={() => void handleCheckConnection()}
             onPreviewOrders={() => void previewLiveOrders()}
             onRunEnvDiagnostic={() => void handleRunEnvDiagnostic()}
+            onManualSync={() => void handleManualSync()}
           />
 
           <SectionCard title="Security & Privacy" icon={<Shield className="h-4 w-4" />} description="Security, data protection, and compliance settings.">

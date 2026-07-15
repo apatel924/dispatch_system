@@ -1,9 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { usePathname } from "next/navigation";
+import { useCallback } from "react";
 import type { DataSource } from "@/lib/dash/api/config";
-import { isApiEnabled } from "@/lib/dash/api/config";
-import { ORDER_SYNC_POLL_MS } from "@/lib/delivery-workflow";
+import { isApiEnabled, shouldUseMockData } from "@/lib/dash/api/config";
+import {
+  CACHE_DRIVER_ORDERS_MS,
+  ORDER_SYNC_POLL_MS,
+} from "@/lib/dash/query/cache-policy";
 import {
   getMockActiveOrders,
   getMockCompletedOrders,
@@ -12,107 +21,145 @@ import {
 } from "@/lib/dash/api/driver-adapters";
 import { fetchDriverOrders } from "@/lib/dash/api/driver-client";
 import type { DriverOrder as UiDriverOrder } from "@/lib/dash/driver-mock-data";
-import { usePolling } from "@/lib/dash/hooks/use-polling";
+import { useDriverSession } from "@/lib/dash/hooks/use-driver-session";
+import {
+  DRIVER_ORDERS_POLL_ROUTES,
+  driverKeys,
+  shouldPollQuery,
+} from "@/lib/dash/query/query-keys";
 
 type CompletedRow = Pick<UiDriverOrder, "id" | "customer" | "eta">;
 
+type OrdersBundle = {
+  activeOrders: UiDriverOrder[];
+  completedOrders: CompletedRow[];
+  source: DataSource;
+};
+
+async function fetchDriverOrdersBundle(): Promise<OrdersBundle> {
+  if (shouldUseMockData()) {
+    return {
+      activeOrders: getMockActiveOrders(),
+      completedOrders: getMockCompletedOrders(),
+      source: "mock",
+    };
+  }
+  if (!isApiEnabled()) {
+    throw new Error("API is not enabled. Set NEXT_PUBLIC_USE_API=true.");
+  }
+
+  const [activeRes, completedRes] = await Promise.all([
+    fetchDriverOrders("active"),
+    fetchDriverOrders("completed"),
+  ]);
+
+  const active = activeRes.orders.map(orderToDriverOrder);
+  const completedFromApi = completedRes.orders.map(orderToDriverOrder);
+  const { completed: splitCompleted } = splitDriverOrders(completedFromApi);
+
+  return {
+    activeOrders: active,
+    completedOrders:
+      splitCompleted.length > 0
+        ? splitCompleted
+        : completedFromApi.map((o) => ({
+            id: o.id,
+            customer: o.customer,
+            eta: o.eta,
+          })),
+    source: "api",
+  };
+}
+
 export function useDriverOrders() {
-  const [activeOrders, setActiveOrders] = useState<UiDriverOrder[]>(getMockActiveOrders);
-  const [completedOrders, setCompletedOrders] = useState<CompletedRow[]>(getMockCompletedOrders);
-  const [source, setSource] = useState<DataSource>("mock");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const pathname = usePathname();
+  const queryClient = useQueryClient();
+  const { driverId } = useDriverSession();
   const apiEnabled = isApiEnabled();
+  const mockMode = shouldUseMockData();
+  const scopeKey = driverId ?? (mockMode ? "mock" : "pending");
 
-  const load = useCallback(async (opts?: { silent?: boolean }) => {
-    if (!apiEnabled) {
-      setActiveOrders(getMockActiveOrders());
-      setCompletedOrders(getMockCompletedOrders());
-      setSource("mock");
-      setError(null);
-      return;
-    }
+  const query = useQuery({
+    queryKey: driverKeys.orders(scopeKey, "active"),
+    queryFn: fetchDriverOrdersBundle,
+    enabled: mockMode || (apiEnabled && Boolean(driverId)),
+    staleTime: CACHE_DRIVER_ORDERS_MS,
+    placeholderData: keepPreviousData,
+    refetchInterval: () => {
+      if (!apiEnabled || !driverId) return false;
+      if (!shouldPollQuery(pathname, DRIVER_ORDERS_POLL_ROUTES)) return false;
+      return ORDER_SYNC_POLL_MS;
+    },
+  });
 
-    if (!opts?.silent) setLoading(true);
-    setError(null);
-    try {
-      const [activeRes, completedRes] = await Promise.all([
-        fetchDriverOrders("active"),
-        fetchDriverOrders("completed"),
-      ]);
-
-      const active = activeRes.orders.map(orderToDriverOrder);
-      const completedFromApi = completedRes.orders.map(orderToDriverOrder);
-      const { completed: splitCompleted } = splitDriverOrders(completedFromApi);
-
-      setActiveOrders(active);
-      setCompletedOrders(
-        splitCompleted.length > 0
-          ? splitCompleted
-          : completedFromApi.map((o) => ({
-              id: o.id,
-              customer: o.customer,
-              eta: o.eta,
-            })),
-      );
-      setSource("api");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load driver orders");
-    } finally {
-      if (!opts?.silent) setLoading(false);
-    }
-  }, [apiEnabled]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  usePolling(
-    () => load({ silent: true }),
-    ORDER_SYNC_POLL_MS,
-    apiEnabled,
+  const refresh = useCallback(
+    async (_opts?: { silent?: boolean }) => {
+      await queryClient.invalidateQueries({
+        queryKey: driverKeys.orders(scopeKey, "active"),
+      });
+    },
+    [queryClient, scopeKey],
   );
 
   return {
-    activeOrders,
-    completedOrders,
-    source,
-    loading,
-    error,
-    refresh: load,
+    activeOrders: query.data?.activeOrders ?? [],
+    completedOrders: query.data?.completedOrders ?? [],
+    source: query.data?.source ?? (mockMode ? "mock" : "api"),
+    loading:
+      mockMode
+        ? false
+        : (apiEnabled && !driverId) || (query.isPending && !query.data),
+    refreshing: query.isFetching && !!query.data,
+    error: query.error instanceof Error ? query.error.message : null,
+    refresh,
   };
 }
 
 export function useDriverRouteOrders() {
-  const [stops, setStops] = useState<UiDriverOrder[]>(getMockActiveOrders);
-  const [source, setSource] = useState<DataSource>("mock");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const pathname = usePathname();
+  const queryClient = useQueryClient();
+  const { driverId } = useDriverSession();
+  const apiEnabled = isApiEnabled();
+  const mockMode = shouldUseMockData();
+  const scopeKey = driverId ?? (mockMode ? "mock" : "pending");
 
-  const load = useCallback(async () => {
-    if (!isApiEnabled()) {
-      setStops(getMockActiveOrders());
-      setSource("mock");
-      setError(null);
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-    try {
+  const query = useQuery({
+    queryKey: driverKeys.orders(scopeKey, "route"),
+    queryFn: async (): Promise<{ stops: UiDriverOrder[]; source: DataSource }> => {
+      if (shouldUseMockData()) {
+        return { stops: getMockActiveOrders(), source: "mock" };
+      }
+      if (!isApiEnabled()) {
+        throw new Error("API is not enabled. Set NEXT_PUBLIC_USE_API=true.");
+      }
       const { orders } = await fetchDriverOrders("route");
-      setStops(orders.map(orderToDriverOrder));
-      setSource("api");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load route stops");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+      return { stops: orders.map(orderToDriverOrder), source: "api" };
+    },
+    enabled: mockMode || (apiEnabled && Boolean(driverId)),
+    staleTime: CACHE_DRIVER_ORDERS_MS,
+    placeholderData: keepPreviousData,
+    refetchInterval: () => {
+      if (!apiEnabled || !driverId) return false;
+      if (!shouldPollQuery(pathname, DRIVER_ORDERS_POLL_ROUTES)) return false;
+      return ORDER_SYNC_POLL_MS;
+    },
+  });
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  const refresh = useCallback(async () => {
+    await queryClient.invalidateQueries({
+      queryKey: driverKeys.orders(scopeKey, "route"),
+    });
+  }, [queryClient, scopeKey]);
 
-  return { stops, source, loading, error, refresh: load };
+  return {
+    stops: query.data?.stops ?? [],
+    source: query.data?.source ?? (mockMode ? "mock" : "api"),
+    loading:
+      mockMode
+        ? false
+        : (apiEnabled && !driverId) || (query.isPending && !query.data),
+    refreshing: query.isFetching && !!query.data,
+    error: query.error instanceof Error ? query.error.message : null,
+    refresh,
+  };
 }

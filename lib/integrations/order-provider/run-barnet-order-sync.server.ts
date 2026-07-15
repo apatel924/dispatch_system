@@ -1,11 +1,15 @@
 import { getAdminFirestore } from "@/lib/server/firebase-admin";
-import { omitUndefined } from "@/lib/server/firestore/helpers";
+import { deepOmitUndefined } from "@/lib/server/firestore/helpers";
 import type { BarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-client.server";
 import { fetchBarnetOrders } from "@/lib/integrations/order-provider/barnet-client.server";
 import {
   enrichBarnetDeliveryOrder,
   type BarnetCustomerCache,
 } from "@/lib/integrations/order-provider/barnet-customer-enrichment.server";
+import {
+  evaluateBarnetOrderDecision,
+  type BarnetOrderExclusionReason,
+} from "@/lib/integrations/order-provider/barnet-order-decision";
 import {
   getBarnetEnrichmentConcurrency,
   getBarnetSyncConsecutiveKnownThreshold,
@@ -14,7 +18,6 @@ import {
   computeBarnetOrderSourceHash,
   readStoredBarnetSourceHash,
 } from "@/lib/integrations/order-provider/barnet-sync-hash.server";
-import { classifyBarnetOrder } from "@/lib/integrations/order-provider/classify-barnet-order";
 import { assertLiveSyncAllowed } from "@/lib/integrations/order-provider/env.server";
 import { getExternalOrderProviderConfig } from "@/lib/integrations/order-provider/env.server";
 import { hydrateNormalizedExternalOrder } from "@/lib/integrations/order-provider/external-order-intake";
@@ -27,7 +30,6 @@ import { getExternalOrderSyncPaginationConfig } from "@/lib/integrations/order-p
 import type { ExternalOrderSyncResult } from "@/lib/integrations/order-provider/types";
 
 const COLLECTION = "externalOrders";
-const SYNC_STATE_DOC = "integrationState/orderProvider";
 
 export interface BarnetOrderSyncRunResult {
   pagesScanned: number;
@@ -36,19 +38,25 @@ export interface BarnetOrderSyncRunResult {
   newDeliveries: number;
   updatedDeliveries: number;
   unchangedOrders: number;
+  needsReview: number;
+  readyToDispatch: number;
   pickupOrdersIgnored: number;
   unknownOrdersIgnored: number;
+  invalidOrders: number;
+  enrichmentErrors: number;
+  syncErrors: number;
+  exclusionReasons: Record<string, number>;
 }
 
 function nowIso(): string {
   return new Date().toISOString();
 }
 
-function coerceExternalOrderId(order: BarnetOrderRaw): string {
-  const id = order.id;
-  if (id === undefined || id === null) return "unknown";
-  const text = String(id).trim();
-  return text.length > 0 ? text : "unknown";
+function bumpExclusion(
+  result: BarnetOrderSyncRunResult,
+  reason: BarnetOrderExclusionReason,
+): void {
+  result.exclusionReasons[reason] = (result.exclusionReasons[reason] ?? 0) + 1;
 }
 
 function preserveAssignmentFields(
@@ -83,56 +91,19 @@ function preserveAssignmentFields(
   };
 }
 
-async function writeSyncStateSuccess(
-  result: BarnetOrderSyncRunResult,
-  now: string,
-): Promise<void> {
-  const db = getAdminFirestore();
-  await db.doc(SYNC_STATE_DOC).set(
-    omitUndefined({
-      lastSuccessfulSyncAt: now,
-      lastError: null,
-      lastSyncSummary: {
-        inserted: result.newDeliveries,
-        updated: result.updatedDeliveries,
-        deliveryOrdersFound: result.deliveryCandidates,
-        pagesScanned: result.pagesScanned,
-      },
-    }),
-    { merge: true },
-  );
-}
-
-async function writeSyncStateFailure(message: string): Promise<void> {
-  const db = getAdminFirestore();
-  const snap = await db.doc(SYNC_STATE_DOC).get();
-  const data = snap.data() ?? {};
-
-  await db.doc(SYNC_STATE_DOC).set(
-    omitUndefined({
-      lastSuccessfulSyncAt:
-        typeof data.lastSuccessfulSyncAt === "string" ? data.lastSuccessfulSyncAt : null,
-      lastError: message,
-      lastSyncSummary:
-        data.lastSyncSummary && typeof data.lastSyncSummary === "object"
-          ? data.lastSyncSummary
-          : null,
-    }),
-    { merge: true },
-  );
-}
-
 interface DeliverySyncTask {
   rawOrder: BarnetOrderRaw;
   sourceHash: string;
   isNew: boolean;
+  externalOrderId: string;
 }
 
 /**
  * Incremental Barnet live sync:
- * - classifies pickup vs delivery before enrichment
+ * - classifies pickup vs delivery before enrichment (shared decision helper)
+ * - persists reviewable deliveries even when not dispatch-ready
  * - enriches only new or changed delivery orders
- * - stops after consecutive known orders (pickup or unchanged delivery)
+ * - stops after consecutive *unchanged delivery* orders (pickups do not count)
  */
 export async function runBarnetOrderSync(): Promise<BarnetOrderSyncRunResult> {
   assertLiveSyncAllowed();
@@ -154,15 +125,20 @@ export async function runBarnetOrderSync(): Promise<BarnetOrderSyncRunResult> {
     newDeliveries: 0,
     updatedDeliveries: 0,
     unchangedOrders: 0,
+    needsReview: 0,
+    readyToDispatch: 0,
     pickupOrdersIgnored: 0,
     unknownOrdersIgnored: 0,
+    invalidOrders: 0,
+    enrichmentErrors: 0,
+    syncErrors: 0,
+    exclusionReasons: {},
   };
 
   let consecutiveKnown = 0;
   let stopScanning = false;
 
-  try {
-    for (let page = 1; page <= pagination.pages && !stopScanning; page += 1) {
+  for (let page = 1; page <= pagination.pages && !stopScanning; page += 1) {
       const orders = await fetchBarnetOrders({
         page,
         itemsOnPage: pagination.itemsPerPage,
@@ -178,32 +154,48 @@ export async function runBarnetOrderSync(): Promise<BarnetOrderSyncRunResult> {
 
       for (const rawOrder of orders) {
         result.ordersSeen += 1;
-        const kind = classifyBarnetOrder(rawOrder);
 
-        if (kind === "pickup") {
+        const decision = evaluateBarnetOrderDecision(rawOrder);
+
+        if (decision.classification === "pickup") {
           result.pickupOrdersIgnored += 1;
-          result.unchangedOrders += 1;
-          consecutiveKnown += 1;
-          if (consecutiveKnown >= consecutiveKnownThreshold) {
-            stopScanning = true;
-            break;
-          }
+          bumpExclusion(result, "pickup");
+          // Pickups are never stored — do not count toward consecutive-known
+          // early stop, or rare deliveries on later pages are skipped.
           continue;
         }
 
-        if (kind === "unknown") {
+        if (decision.classification === "unknown") {
           result.unknownOrdersIgnored += 1;
-          result.unchangedOrders += 1;
+          bumpExclusion(result, decision.exclusionReason ?? "unknown_fulfillment");
+          consecutiveKnown = 0;
+          continue;
+        }
+
+        if (!decision.persistable || !decision.externalOrderId) {
+          result.invalidOrders += 1;
+          bumpExclusion(
+            result,
+            decision.exclusionReason ?? "malformed_payload",
+          );
           consecutiveKnown = 0;
           continue;
         }
 
         result.deliveryCandidates += 1;
-        const docRef = db
-          .collection(COLLECTION)
-          .doc(barnetDocumentId(coerceExternalOrderId(rawOrder)));
+        const externalId = decision.externalOrderId;
+
+        const docRef = db.collection(COLLECTION).doc(barnetDocumentId(externalId));
         const existingSnap = await docRef.get();
-        const sourceHash = computeBarnetOrderSourceHash(rawOrder, { now });
+        let sourceHash: string;
+        try {
+          sourceHash = computeBarnetOrderSourceHash(rawOrder, { now });
+        } catch {
+          result.invalidOrders += 1;
+          bumpExclusion(result, "malformed_payload");
+          consecutiveKnown = 0;
+          continue;
+        }
 
         if (existingSnap.exists) {
           const existing = hydrateNormalizedExternalOrder(
@@ -212,6 +204,11 @@ export async function runBarnetOrderSync(): Promise<BarnetOrderSyncRunResult> {
           const storedHash = readStoredBarnetSourceHash(existing);
           if (storedHash === sourceHash) {
             result.unchangedOrders += 1;
+            if (existing.needsReview || !existing.dispatchReady) {
+              result.needsReview += 1;
+            } else {
+              result.readyToDispatch += 1;
+            }
             consecutiveKnown += 1;
             if (consecutiveKnown >= consecutiveKnownThreshold) {
               stopScanning = true;
@@ -220,9 +217,19 @@ export async function runBarnetOrderSync(): Promise<BarnetOrderSyncRunResult> {
             continue;
           }
 
-          deliveryTasks.push({ rawOrder, sourceHash, isNew: false });
+          deliveryTasks.push({
+            rawOrder,
+            sourceHash,
+            isNew: false,
+            externalOrderId: externalId,
+          });
         } else {
-          deliveryTasks.push({ rawOrder, sourceHash, isNew: true });
+          deliveryTasks.push({
+            rawOrder,
+            sourceHash,
+            isNew: true,
+            externalOrderId: externalId,
+          });
         }
 
         consecutiveKnown = 0;
@@ -233,48 +240,66 @@ export async function runBarnetOrderSync(): Promise<BarnetOrderSyncRunResult> {
           deliveryTasks,
           enrichmentConcurrency,
           async (task) => {
-            const docRef = db
-              .collection(COLLECTION)
-              .doc(barnetDocumentId(coerceExternalOrderId(task.rawOrder)));
-            const existingSnap = await docRef.get();
-            const existingData = existingSnap.exists
-              ? hydrateNormalizedExternalOrder(existingSnap.data() as Record<string, unknown>)
-              : null;
-            const preserve = existingData
-              ? {
-                  createdAt: existingData.createdAt ?? now,
+            try {
+              const docRef = db
+                .collection(COLLECTION)
+                .doc(barnetDocumentId(task.externalOrderId));
+              const existingSnap = await docRef.get();
+              const existingData = existingSnap.exists
+                ? hydrateNormalizedExternalOrder(
+                    existingSnap.data() as Record<string, unknown>,
+                  )
+                : null;
+              const preserve = existingData
+                ? {
+                    createdAt: existingData.createdAt ?? now,
+                    updatedAt: now,
+                  }
+                : undefined;
+
+              const base = normalizeBarnetOrder(task.rawOrder, {
+                now,
+                preserveTimestamps: preserve,
+              });
+              const enriched = await enrichBarnetDeliveryOrder(
+                base,
+                task.rawOrder,
+                customerCache,
+              );
+              const toStore = preserveAssignmentFields(
+                {
+                  ...enriched,
+                  sourceLocationId: enriched.sourceLocationId ?? locationId,
+                  syncSourceHash: task.sourceHash,
+                  lastSyncedAt: now,
                   updatedAt: now,
-                }
-              : undefined;
+                },
+                existingData,
+              );
 
-            const base = normalizeBarnetOrder(task.rawOrder, {
-              now,
-              preserveTimestamps: preserve,
-            });
-            const enriched = await enrichBarnetDeliveryOrder(
-              base,
-              task.rawOrder,
-              customerCache,
-            );
-            const toStore = preserveAssignmentFields(
-              {
-                ...enriched,
-                sourceLocationId: enriched.sourceLocationId ?? locationId,
-                syncSourceHash: task.sourceHash,
-                lastSyncedAt: now,
-                updatedAt: now,
-              },
-              existingData,
-            );
+              await docRef.set(
+                deepOmitUndefined(toStore as unknown as Record<string, unknown>),
+              );
 
-            await docRef.set(
-              omitUndefined(toStore as unknown as Record<string, unknown>),
-            );
+              if (task.isNew) {
+                result.newDeliveries += 1;
+              } else {
+                result.updatedDeliveries += 1;
+              }
 
-            if (task.isNew) {
-              result.newDeliveries += 1;
-            } else {
-              result.updatedDeliveries += 1;
+              if (toStore.needsReview || !toStore.dispatchReady) {
+                result.needsReview += 1;
+              } else {
+                result.readyToDispatch += 1;
+              }
+            } catch (orderErr) {
+              result.enrichmentErrors += 1;
+              result.syncErrors += 1;
+              console.warn(
+                `[order-provider] order sync failed for externalId=${task.externalOrderId}: ${
+                  orderErr instanceof Error ? orderErr.message : "unknown"
+                }`,
+              );
             }
           },
         );
@@ -288,18 +313,11 @@ export async function runBarnetOrderSync(): Promise<BarnetOrderSyncRunResult> {
       }
     }
 
-    await writeSyncStateSuccess(result, now);
+  console.info(
+    `[order-provider] live sync complete: pages=${result.pagesScanned} seen=${result.ordersSeen} delivery=${result.deliveryCandidates} new=${result.newDeliveries} updated=${result.updatedDeliveries} unchanged=${result.unchangedOrders} needsReview=${result.needsReview} ready=${result.readyToDispatch} enrichmentErrors=${result.enrichmentErrors}`,
+  );
 
-    console.info(
-      `[order-provider] live sync complete: pages=${result.pagesScanned} seen=${result.ordersSeen} delivery=${result.deliveryCandidates} new=${result.newDeliveries} updated=${result.updatedDeliveries} unchanged=${result.unchangedOrders}`,
-    );
-
-    return result;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Live sync failed";
-    await writeSyncStateFailure(message);
-    throw err;
-  }
+  return result;
 }
 
 export function toExternalOrderSyncResult(
@@ -314,5 +332,12 @@ export function toExternalOrderSyncResult(
     inserted: run.newDeliveries,
     updated: run.updatedDeliveries,
     total: run.newDeliveries + run.updatedDeliveries,
+    unchangedOrders: run.unchangedOrders,
+    needsReview: run.needsReview,
+    readyToDispatch: run.readyToDispatch,
+    invalidOrders: run.invalidOrders,
+    enrichmentErrors: run.enrichmentErrors,
+    syncErrors: run.syncErrors,
+    exclusionReasons: run.exclusionReasons,
   };
 }

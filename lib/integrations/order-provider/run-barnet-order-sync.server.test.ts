@@ -110,6 +110,8 @@ function deliveryOrder(id: number, overrides: Partial<BarnetOrderRaw> = {}): Bar
 describe("runBarnetOrderSync", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchBarnetOrders.mockReset();
+    enrichBarnetDeliveryOrder.mockReset();
     docStore.clear();
     Object.keys(integrationDocData).forEach((key) => delete integrationDocData[key]);
 
@@ -120,6 +122,8 @@ describe("runBarnetOrderSync", () => {
       customerEnrichmentStatus: "success",
       customerMessagingReady: true,
       dispatchReady: true,
+      needsReview: false,
+      reviewReasons: [],
       missingFields: [],
       dispatchStatus: "ready",
     }));
@@ -216,7 +220,7 @@ describe("runBarnetOrderSync", () => {
     );
   });
 
-  it("stops early after consecutive known pickup orders", async () => {
+  it("does not stop early on consecutive pickup orders (deliveries on later pages must be reachable)", async () => {
     fetchBarnetOrders
       .mockResolvedValueOnce([
         pickupOrder(1),
@@ -225,12 +229,217 @@ describe("runBarnetOrderSync", () => {
         pickupOrder(4),
         pickupOrder(5),
       ])
-      .mockResolvedValueOnce([pickupOrder(6)]);
+      .mockResolvedValueOnce([deliveryOrder(600)])
+      .mockResolvedValueOnce([]);
+
+    const result = await runBarnetOrderSync();
+
+    expect(result.pagesScanned).toBeGreaterThanOrEqual(2);
+    expect(result.deliveryCandidates).toBe(1);
+    expect(result.newDeliveries).toBe(1);
+    expect(result.needsReview).toBe(0);
+    expect(docStore.has("barnet_600")).toBe(true);
+    expect(fetchBarnetOrders).toHaveBeenCalledTimes(3);
+  });
+
+  it("persists missing-address delivery as needs-review (not promoted)", async () => {
+    const raw = deliveryOrder(701, {
+      address: undefined,
+      city: undefined,
+      state: undefined,
+      zip: undefined,
+    });
+    // Remove address keys entirely
+    delete (raw as { address?: string }).address;
+    delete (raw as { city?: string }).city;
+    delete (raw as { state?: string }).state;
+    delete (raw as { zip?: string }).zip;
+
+    enrichBarnetDeliveryOrder.mockImplementation(async (order) => ({
+      ...order,
+      customerName: "Test Customer",
+      customerPhone: "555-0100",
+      customerEnrichmentStatus: "success",
+      customerMessagingReady: true,
+      dispatchReady: false,
+      needsReview: true,
+      reviewReasons: ["missing_address"],
+      missingFields: ["address", "city", "state", "zip"],
+      dispatchStatus: "needs_review",
+    }));
+
+    fetchBarnetOrders.mockResolvedValueOnce([raw]).mockResolvedValueOnce([]);
+
+    const result = await runBarnetOrderSync();
+
+    expect(result.deliveryCandidates).toBe(1);
+    expect(result.newDeliveries).toBe(1);
+    expect(result.needsReview).toBe(1);
+    expect(result.readyToDispatch).toBe(0);
+    const stored = docStore.get("barnet_701");
+    expect(stored).toBeTruthy();
+    expect(stored?.dispatchReady).toBe(false);
+    expect(stored?.needsReview).toBe(true);
+    expect(stored?.reviewReasons).toContain("missing_address");
+    expect(stored?.promoted).toBe(false);
+  });
+
+  it("counts unchanged needs-review orders without losing them", async () => {
+    const raw = deliveryOrder(702, {
+      address: undefined,
+      city: undefined,
+      state: undefined,
+      zip: undefined,
+    });
+    delete (raw as { address?: string }).address;
+    delete (raw as { city?: string }).city;
+    delete (raw as { state?: string }).state;
+    delete (raw as { zip?: string }).zip;
+
+    const hash = computeBarnetOrderSourceHash(raw);
+    docStore.set("barnet_702", {
+      provider: "barnet",
+      externalOrderId: "702",
+      syncSourceHash: hash,
+      rawPayload: raw,
+      items: [{ name: "Item", quantity: 1 }],
+      deliveryAddress: null,
+      customer: { name: null, phone: null, email: null },
+      isDelivery: true,
+      dispatchReady: false,
+      needsReview: true,
+      reviewReasons: ["missing_address"],
+      createdAt: "2026-07-12T09:00:00Z",
+      updatedAt: "2026-07-12T09:00:00Z",
+      assignmentStatus: "unassigned",
+      promoted: false,
+    });
+
+    fetchBarnetOrders.mockResolvedValueOnce([raw]).mockResolvedValueOnce([]);
+
+    const result = await runBarnetOrderSync();
+
+    expect(result.unchangedOrders).toBe(1);
+    expect(result.newDeliveries).toBe(0);
+    expect(result.updatedDeliveries).toBe(0);
+    expect(result.needsReview).toBe(1);
+    expect(docStore.size).toBe(1);
+  });
+
+  it("updates the same document when a valid address later appears", async () => {
+    const stale = deliveryOrder(703);
+    delete (stale as { address?: string }).address;
+    delete (stale as { city?: string }).city;
+    delete (stale as { state?: string }).state;
+    delete (stale as { zip?: string }).zip;
+    const staleHash = computeBarnetOrderSourceHash(stale);
+    docStore.set("barnet_703", {
+      provider: "barnet",
+      externalOrderId: "703",
+      syncSourceHash: staleHash,
+      rawPayload: stale,
+      items: [{ name: "Item", quantity: 1 }],
+      deliveryAddress: null,
+      customer: { name: null, phone: null, email: null },
+      isDelivery: true,
+      dispatchReady: false,
+      needsReview: true,
+      reviewReasons: ["missing_address"],
+      createdAt: "2026-07-12T09:00:00Z",
+      updatedAt: "2026-07-12T09:00:00Z",
+      assignmentStatus: "unassigned",
+      promoted: false,
+    });
+
+    const fixed = deliveryOrder(703);
+    enrichBarnetDeliveryOrder.mockImplementation(async (order) => ({
+      ...order,
+      customerName: "Test Customer",
+      customerPhone: "555-0100",
+      customerEnrichmentStatus: "success",
+      customerMessagingReady: true,
+      dispatchReady: true,
+      needsReview: false,
+      reviewReasons: [],
+      missingFields: [],
+      dispatchStatus: "ready",
+    }));
+
+    fetchBarnetOrders.mockResolvedValueOnce([fixed]).mockResolvedValueOnce([]);
+
+    const result = await runBarnetOrderSync();
+
+    expect(result.updatedDeliveries).toBe(1);
+    expect(result.newDeliveries).toBe(0);
+    expect(result.readyToDispatch).toBe(1);
+    expect(result.needsReview).toBe(0);
+    expect(docStore.size).toBe(1);
+    expect(docStore.get("barnet_703")?.dispatchReady).toBe(true);
+    expect(docStore.get("barnet_703")?.needsReview).toBe(false);
+  });
+
+  it("stops early after consecutive unchanged delivery orders", async () => {
+    const known = [deliveryOrder(801), deliveryOrder(802), deliveryOrder(803), deliveryOrder(804), deliveryOrder(805)];
+    for (const raw of known) {
+      const hash = computeBarnetOrderSourceHash(raw);
+      docStore.set(`barnet_${raw.id}`, {
+        provider: "barnet",
+        externalOrderId: String(raw.id),
+        syncSourceHash: hash,
+        rawPayload: raw,
+        items: raw.items,
+        deliveryAddress: "123 Main St, Edmonton, AB, T5J 0A1",
+        customer: { name: null, phone: null, email: null },
+        isDelivery: true,
+        dispatchReady: true,
+        needsReview: false,
+        reviewReasons: [],
+        createdAt: "2026-07-12T09:00:00Z",
+        updatedAt: "2026-07-12T09:00:00Z",
+        assignmentStatus: "unassigned",
+        promoted: false,
+      });
+    }
+
+    fetchBarnetOrders
+      .mockResolvedValueOnce(known)
+      .mockResolvedValueOnce([deliveryOrder(806)]);
 
     const result = await runBarnetOrderSync();
 
     expect(result.pagesScanned).toBe(1);
-    expect(result.ordersSeen).toBe(5);
+    expect(result.unchangedOrders).toBe(5);
     expect(fetchBarnetOrders).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues when one enrichment fails and counts the error", async () => {
+    fetchBarnetOrders
+      .mockResolvedValueOnce([deliveryOrder(501), deliveryOrder(502)])
+      .mockResolvedValueOnce([]);
+
+    enrichBarnetDeliveryOrder
+      .mockImplementationOnce(async () => {
+        throw new Error("enrichment failed");
+      })
+      .mockImplementationOnce(async (order) => ({
+        ...order,
+        customerName: "Test Customer",
+        customerPhone: "555-0100",
+        customerEnrichmentStatus: "success",
+        customerMessagingReady: true,
+        dispatchReady: true,
+        needsReview: false,
+        reviewReasons: [],
+        missingFields: [],
+        dispatchStatus: "ready",
+      }));
+
+    const result = await runBarnetOrderSync();
+
+    expect(result.deliveryCandidates).toBe(2);
+    expect(result.enrichmentErrors).toBe(1);
+    expect(result.newDeliveries).toBe(1);
+    expect(docStore.has("barnet_502")).toBe(true);
+    expect(docStore.has("barnet_501")).toBe(false);
   });
 });

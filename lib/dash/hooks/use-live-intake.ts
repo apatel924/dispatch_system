@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import {
   assignExternalOrderDriverApi,
@@ -20,14 +21,17 @@ import {
   type ExternalOrderProviderSyncState,
   type LiveOrderDetailDiagnostics,
   type OrderProviderHealthWithSync,
+  type OrderProviderSyncResponse,
   type SafeBarnetLocationRow,
 } from "@/lib/dash/api/client";
+import { intakeKeys } from "@/lib/dash/query/query-keys";
 
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
 export function useLiveIntake() {
+  const queryClient = useQueryClient();
   const [health, setHealth] = useState<OrderProviderHealthWithSync | null>(null);
   const [orders, setOrders] = useState<ExternalOrderIntakeRow[]>([]);
   const [previewRows, setPreviewRows] = useState<ExternalOrderIntakeRow[]>([]);
@@ -40,6 +44,7 @@ export function useLiveIntake() {
     assigned: 0,
   });
   const [syncState, setSyncState] = useState<ExternalOrderProviderSyncState | null>(null);
+  const [lastSyncResult, setLastSyncResult] = useState<OrderProviderSyncResponse | null>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<ExternalOrderIntakeDetail | null>(null);
   const [discoveredLocations, setDiscoveredLocations] = useState<SafeBarnetLocationRow[]>([]);
@@ -101,15 +106,19 @@ export function useLiveIntake() {
       setOrders(intakeResult.orders);
       setSummary(intakeResult.summary);
       setSyncState(intakeResult.syncState);
+      queryClient.setQueryData(intakeKeys.imported(100), intakeResult);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load live intake");
+      throw err;
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [queryClient]);
 
   useEffect(() => {
-    void loadIntake();
+    void loadIntake().catch(() => {
+      /* initial load errors are stored on state */
+    });
   }, [loadIntake]);
 
   const loadDetail = useCallback(async (docId: string) => {
@@ -190,6 +199,7 @@ export function useLiveIntake() {
         alreadyImported: importedIdSet.has(row.externalOrderId),
       }));
       setPreviewRows(rows);
+      setLastSyncResult(null);
       setScanStats({
         pagesScanned: result.pagesScanned,
         totalOrdersSeen: result.totalOrdersSeen,
@@ -256,19 +266,57 @@ export function useLiveIntake() {
     setError(null);
     try {
       const result = await runLiveOrderProviderSync();
-      setPreviewRows([]);
-      await loadIntake();
-      setMessage(
-        `Synced ${result.deliveryOrdersFound} delivery order(s): ${result.inserted} new, ${result.updated} updated`,
-      );
-      return { ok: true as const, result };
+      if (result.skipped) {
+        setMessage(result.message ?? "Synchronization skipped.");
+        return { ok: true as const, result };
+      }
+
+      try {
+        await queryClient.invalidateQueries({ queryKey: intakeKeys.all });
+        await loadIntake();
+        // Switch to imported view only after refresh succeeds.
+        setPreviewRows([]);
+        setScanStats({
+          pagesScanned: result.pagesScanned,
+          totalOrdersSeen: result.totalOrdersSeen,
+          deliveryOrdersFound: result.deliveryOrdersFound,
+          pickupOrdersIgnored: result.pickupOrdersIgnored,
+          unknownOrdersIgnored: result.unknownOrdersIgnored,
+        });
+        setLastSyncResult(result);
+        const skipped =
+          (result.pickupOrdersIgnored ?? 0) +
+          (result.unknownOrdersIgnored ?? 0) +
+          (result.invalidOrders ?? 0);
+        setMessage(
+          [
+            `Delivery found: ${result.deliveryOrdersFound}`,
+            `Imported: ${result.inserted}`,
+            `Updated: ${result.updated}`,
+            `Unchanged: ${result.unchangedOrders ?? 0}`,
+            `Ready to dispatch: ${result.readyToDispatch ?? 0}`,
+            `Needs review: ${result.needsReview ?? 0}`,
+            `Skipped: ${skipped}`,
+          ].join(" · "),
+        );
+        return { ok: true as const, result };
+      } catch (refreshErr) {
+        setError(
+          refreshErr instanceof Error
+            ? `Sync completed but failed to refresh imported orders: ${refreshErr.message}`
+            : "Sync completed but failed to refresh imported orders",
+        );
+        // Keep preview rows so the order does not vanish unexplained.
+        setLastSyncResult(result);
+        return { ok: false as const, result };
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sync failed");
       return { ok: false as const };
     } finally {
       setLiveSyncing(false);
     }
-  }, [loadIntake]);
+  }, [loadIntake, queryClient]);
 
   const probeOrderDetail = useCallback(async (params?: { id?: string; number?: string }) => {
     if (!isApiEnabled()) return { ok: false as const };
@@ -362,6 +410,7 @@ export function useLiveIntake() {
     previewRows,
     summary,
     syncState,
+    lastSyncResult,
     selectedOrderId,
     selectedDetail,
     discoveredLocations,

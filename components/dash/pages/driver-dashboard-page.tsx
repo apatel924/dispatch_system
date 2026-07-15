@@ -12,6 +12,8 @@ import { isDriverOnline, pickActiveOrder } from "@/lib/dash/api/driver-adapters"
 import { useDriverSession } from "@/lib/dash/hooks/use-driver-session";
 import { useDriverOrders } from "@/lib/dash/hooks/use-driver-orders";
 import { getOrderProofs, orderMapsUrl, getDeliveryLocation } from "@/lib/dash/driver-store";
+import { DriverAssignmentSkeleton } from "@/components/dash/ui/skeletons";
+import { DashErrorState } from "@/components/dash/ui/query-state";
 
 function formatTodayHeader(): string {
   return new Date().toLocaleDateString("en-US", {
@@ -24,30 +26,38 @@ function formatTodayHeader(): string {
 
 export function DriverDashboard() {
   const apiEnabled = isApiEnabled();
-  const { driver, refresh: refreshDriver } = useDriverSession();
-  const { activeOrders, completedOrders, loading } = useDriverOrders();
+  const { driver, loading: sessionLoading, error: sessionError, refresh: refreshDriver } = useDriverSession();
+  const { activeOrders, completedOrders, loading, error: ordersError } = useDriverOrders();
   const [statusUpdating, setStatusUpdating] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [mockOnline, setMockOnline] = useState(true);
 
-  const online = apiEnabled ? isDriverOnline(driver.status) : mockOnline;
+  const online = apiEnabled
+    ? isDriverOnline(driver?.status ?? "Inactive")
+    : mockOnline;
   const availabilityLabel = !online
     ? "Offline"
-    : driver.status === "Busy"
+    : driver?.status === "Busy"
       ? "Busy"
       : "Available";
-  const assignedCount = apiEnabled ? driver.activeDeliveries : activeOrders.length;
-  const completedCount = apiEnabled ? driver.completedToday : completedOrders.length;
-  const failedCount = apiEnabled ? driver.failedToday : 0;
+  const assignedCount = apiEnabled
+    ? (driver?.activeDeliveries ?? null)
+    : activeOrders.length;
+  const completedCount = apiEnabled
+    ? (driver?.completedToday ?? null)
+    : completedOrders.length;
+  const failedCount = apiEnabled ? (driver?.failedToday ?? null) : 0;
 
   const active = pickActiveOrder(activeOrders);
   const assignments = active ? activeOrders.filter((o) => o.id !== active.id) : [];
+  const showAssignmentSkeleton = loading && activeOrders.length === 0;
 
   const toggleAvailability = useCallback(async () => {
     if (!apiEnabled) {
       setMockOnline((v) => !v);
       return;
     }
+    if (!driver) return;
     const nextStatus = online ? "Inactive" : "Available";
     setStatusUpdating(true);
     setStatusError(null);
@@ -59,7 +69,7 @@ export function DriverDashboard() {
     } finally {
       setStatusUpdating(false);
     }
-  }, [apiEnabled, driver.id, online, refreshDriver]);
+  }, [apiEnabled, driver, online, refreshDriver]);
 
   return (
     <div className="min-h-screen bg-background pb-24">
@@ -76,14 +86,29 @@ export function DriverDashboard() {
           </button>
         </header>
 
+        {(sessionError || ordersError) && (
+          <div className="mt-3 space-y-2">
+            {sessionError && <DashErrorState message={sessionError} />}
+            {ordersError && <DashErrorState message={ordersError} />}
+          </div>
+        )}
+
         <div className="mt-4 flex items-center gap-3 rounded-2xl border border-border bg-card p-4">
           <div className="flex-1">
-            <div className="text-lg font-bold">Good morning, {driver.name.split(" ")[0]}</div>
-            <div className="text-xs text-muted-foreground">{assignedCount} deliveries assigned today</div>
+            <div className="text-lg font-bold">
+              {sessionLoading && !driver
+                ? "Loading…"
+                : `Good morning${driver ? `, ${driver.name.split(" ")[0]}` : ""}`}
+            </div>
+            <div className="min-h-[1rem] text-xs text-muted-foreground">
+              {assignedCount === null || sessionLoading
+                ? "Loading assignments…"
+                : `${assignedCount} deliveries assigned today`}
+            </div>
           </div>
           <button
             type="button"
-            disabled={statusUpdating}
+            disabled={statusUpdating || !driver}
             onClick={() => void toggleAvailability()}
             className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold disabled:opacity-60 ${online ? "border-success/40 bg-success-soft text-success" : "border-border bg-secondary text-muted-foreground"}`}
           >
@@ -99,16 +124,17 @@ export function DriverDashboard() {
         )}
 
         <div className="mt-4 grid grid-cols-3 gap-2">
-          <MiniStat icon={ClipboardList} tone="bg-purple-soft text-purple" value={assignedCount} label="Assigned" />
-          <MiniStat icon={CheckCircle2} tone="bg-success-soft text-success" value={completedCount} label="Completed" />
-          <MiniStat icon={XCircle} tone="bg-primary/10 text-primary" value={failedCount} label="Failed" />
+          <MiniStat icon={ClipboardList} tone="bg-purple-soft text-purple" value={assignedCount} label="Assigned" loading={sessionLoading} />
+          <MiniStat icon={CheckCircle2} tone="bg-success-soft text-success" value={completedCount} label="Completed" loading={sessionLoading} />
+          <MiniStat icon={XCircle} tone="bg-primary/10 text-primary" value={failedCount} label="Failed" loading={sessionLoading} />
         </div>
 
-        {loading && !active ? (
-          <section className="mt-4 rounded-2xl border border-border bg-card p-8 text-center text-sm text-muted-foreground">
-            Loading deliveries…
-          </section>
-        ) : active ? (
+        {showAssignmentSkeleton ? (
+          <div className="mt-4 space-y-4">
+            <DriverAssignmentSkeleton />
+            <DriverAssignmentSkeleton />
+          </div>
+        ) : active && driver ? (
           <>
             <section className="mt-4 rounded-2xl border border-border bg-card p-4">
               <div className="flex items-center justify-between">
@@ -133,7 +159,7 @@ export function DriverDashboard() {
                 <Link href={`/driver-orders/${active.id}`} className="flex h-12 items-center justify-center gap-1.5 rounded-xl bg-primary text-sm font-semibold text-primary-foreground hover:bg-primary/90">
                   <Package className="h-4 w-4" /> Open Order
                 </Link>
-                <a href={orderMapsUrl(active, getOrderProofs(active.id).completedSteps)} target="_blank" rel="noopener noreferrer" className="flex h-12 items-center justify-center gap-1.5 rounded-xl border border-primary text-sm font-semibold text-primary hover:bg-primary/5">
+                <a href={orderMapsUrl(active, getOrderProofs(driver.id, active.id).completedSteps)} target="_blank" rel="noopener noreferrer" className="flex h-12 items-center justify-center gap-1.5 rounded-xl border border-primary text-sm font-semibold text-primary hover:bg-primary/5">
                   <MapPin className="h-4 w-4" /> Open Maps
                 </a>
               </div>
@@ -195,12 +221,31 @@ export function DriverDashboard() {
   );
 }
 
-function MiniStat({ icon: Icon, tone, value, label }: { icon: React.ElementType; tone: string; value: number; label: string }) {
+function MiniStat({
+  icon: Icon,
+  tone,
+  value,
+  label,
+  loading,
+}: {
+  icon: React.ElementType;
+  tone: string;
+  value: number | null;
+  label: string;
+  loading?: boolean;
+}) {
+  const showSkeleton = loading || value === null;
   return (
-    <div className="rounded-xl border border-border bg-card p-3">
+    <div className="rounded-xl border border-border bg-card p-3" aria-busy={showSkeleton || undefined}>
       <div className="flex items-center gap-2">
         <div className={`grid h-8 w-8 place-items-center rounded-lg ${tone}`}><Icon className="h-4 w-4" /></div>
-        <div className="text-xl font-bold leading-none">{value}</div>
+        <div className="min-h-[1.25rem] min-w-[1.5rem] text-xl font-bold leading-none tabular-nums">
+          {showSkeleton ? (
+            <span className="inline-block h-5 w-8 animate-pulse rounded bg-secondary" aria-hidden />
+          ) : (
+            value
+          )}
+        </div>
       </div>
       <div className="mt-2 text-[11px] text-muted-foreground">{label}</div>
     </div>

@@ -31,19 +31,56 @@ export function formatEdmontonExact(iso: string | null | undefined): string {
   });
 }
 
+export function isBarnetSyncLeaseActive(input: {
+  lastRunStatus?: string | null;
+  lastStartedAt?: string | null;
+  lastRunId?: string | null;
+  lockRunId?: string | null;
+  lockExpiresAt?: string | null;
+  nowMs?: number;
+}): boolean {
+  if (input.lastRunStatus !== "running") return false;
+  if (!input.lastStartedAt) return false;
+  const expires = input.lockExpiresAt ? Date.parse(input.lockExpiresAt) : NaN;
+  const nowMs = input.nowMs ?? Date.now();
+  if (!Number.isFinite(expires) || expires <= nowMs) return false;
+  if (!input.lockRunId || !input.lastRunId) return false;
+  return input.lockRunId === input.lastRunId;
+}
+
 export function describeBarnetSyncResult(input: {
   lastResult?: string | null;
   lastRunStatus?: string | null;
+  lastAttemptResult?: string | null;
   isRunning?: boolean;
+  /** When false, never show “currently running”. When omitted, trust `isRunning`. */
+  leaseActive?: boolean;
   inserted?: number | null;
 }): string | null {
-  if (input.isRunning || input.lastResult === "running" || input.lastRunStatus === "running") {
+  const leaseActive = input.leaseActive ?? Boolean(input.isRunning);
+  if (
+    (input.isRunning && leaseActive) ||
+    (input.lastResult === "running" && leaseActive) ||
+    (input.lastRunStatus === "running" && leaseActive)
+  ) {
     return "Sync currently running";
   }
+
+  if (
+    input.lastRunStatus === "running" ||
+    input.lastResult === "running" ||
+    input.lastAttemptResult === "timed_out_or_expired" ||
+    input.lastResult === "timed_out_or_expired" ||
+    input.lastRunStatus === "timed_out_or_expired"
+  ) {
+    return "Previous sync did not complete — awaiting the next scheduled run";
+  }
+
   switch (input.lastResult) {
     case "skipped_quiet_hours":
       return "Skipped during quiet hours";
     case "skipped_locked":
+    case "skipped_lock_active":
       return "Skipped — sync already running";
     case "skipped_disabled":
       return "Sync disabled";
@@ -62,6 +99,12 @@ export function describeBarnetSyncResult(input: {
     default:
       if (input.lastRunStatus === "failed") return "Last scan failed";
       if (input.lastRunStatus === "skipped_outside_hours") {
+        return "Skipped during quiet hours";
+      }
+      if (input.lastAttemptResult === "skipped_lock_active") {
+        return "Skipped — sync already running";
+      }
+      if (input.lastAttemptResult === "skipped_quiet_hours") {
         return "Skipped during quiet hours";
       }
       return null;

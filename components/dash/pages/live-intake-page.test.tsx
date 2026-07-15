@@ -173,9 +173,10 @@ describe("LiveIntakePage sync summary and review pills", () => {
     render(<LiveIntakePage />, { wrapper });
 
     await waitFor(() => {
-      expect(screen.getByText(/Last scan:/i)).toBeTruthy();
+      expect(screen.getByText(/Last completed scan:/i)).toBeTruthy();
     });
     expect(screen.getByText(/Last successful sync:/i)).toBeTruthy();
+    expect(screen.getByText(/Last cron attempt:/i)).toBeTruthy();
     expect(screen.getByText(/Last scan imported 1 new delivery order/i)).toBeTruthy();
     expect(screen.getAllByText(/Delivery found: 1/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Imported: 1/).length).toBeGreaterThan(0);

@@ -50,11 +50,15 @@ function BarnetSyncStatusBanner({
   syncHealth: BarnetSyncHealthView | null;
   liveSyncing: boolean;
 }) {
+  const lastAttemptAt =
+    syncHealth?.lastAttemptAt ??
+    syncHealth?.lastAttemptedSyncAt ??
+    syncState?.lastAttemptAt ??
+    syncState?.lastAttemptedSyncAt ??
+    null;
   const lastScanAt =
     syncHealth?.lastScanAt ??
     syncState?.lastScanAt ??
-    syncHealth?.lastAttemptedSyncAt ??
-    syncState?.lastAttemptedSyncAt ??
     null;
   const lastSuccessfulAt =
     syncHealth?.lastSuccessfulSyncAt ?? syncState?.lastSuccessfulSyncAt ?? null;
@@ -62,30 +66,48 @@ function BarnetSyncStatusBanner({
     syncHealth?.lastResult ??
     syncState?.lastResult ??
     null;
+  const lastAttemptResult =
+    syncHealth?.lastAttemptResult ??
+    syncState?.lastAttemptResult ??
+    null;
   const inserted = syncHealth?.counts?.inserted ?? syncState?.lastSyncSummary?.inserted ?? 0;
+  const leaseActive = liveSyncing || syncHealth?.isRunning === true;
   const summary = describeBarnetSyncResult({
     lastResult,
     lastRunStatus: syncHealth?.lastRunStatus,
-    isRunning: liveSyncing || syncHealth?.isRunning === true,
+    lastAttemptResult,
+    isRunning: leaseActive,
+    leaseActive,
     inserted,
   });
 
   return (
     <div
       className="mt-3 rounded-lg border border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground"
-      title={`Last scan: ${formatEdmontonExact(lastScanAt)}\nLast successful sync: ${formatEdmontonExact(lastSuccessfulAt)}`}
+      title={`Last cron attempt: ${formatEdmontonExact(lastAttemptAt)}\nLast completed scan: ${formatEdmontonExact(lastScanAt)}\nLast successful sync: ${formatEdmontonExact(lastSuccessfulAt)}`}
     >
       <p>
-        <span className="font-semibold text-foreground">Last scan: </span>
-        {formatEdmontonRelative(lastScanAt)}
+        <span className="font-semibold text-foreground">Last cron attempt: </span>
+        {formatEdmontonRelative(lastAttemptAt)}
         <span className="mx-2 text-border">·</span>
+        <span className="font-semibold text-foreground">Last completed scan: </span>
+        {formatEdmontonRelative(lastScanAt)}
+      </p>
+      <p className="mt-1">
         <span className="font-semibold text-foreground">Last successful sync: </span>
         {formatEdmontonRelative(lastSuccessfulAt)}
       </p>
       <p className="mt-1 text-[11px] text-muted-foreground/90">
-        {formatEdmontonExact(lastScanAt)}
+        Attempt {formatEdmontonExact(lastAttemptAt)}
+        <span className="mx-1">·</span>
+        Scan {formatEdmontonExact(lastScanAt)}
       </p>
-      {summary && <p className="mt-1 font-medium text-foreground">{summary}</p>}
+      {summary && (
+        <p className="mt-1 font-medium text-foreground">
+          <span className="font-semibold">Current result: </span>
+          {summary}
+        </p>
+      )}
     </div>
   );
 }

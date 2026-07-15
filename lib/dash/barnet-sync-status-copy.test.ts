@@ -3,6 +3,7 @@ import {
   describeBarnetSyncResult,
   formatEdmontonExact,
   formatEdmontonRelative,
+  isBarnetSyncLeaseActive,
 } from "@/lib/dash/barnet-sync-status-copy";
 
 describe("barnet sync status copy", () => {
@@ -28,7 +29,29 @@ describe("barnet sync status copy", () => {
       describeBarnetSyncResult({ lastResult: "failed" }),
     ).toBe("Last scan failed");
     expect(
-      describeBarnetSyncResult({ isRunning: true }),
+      describeBarnetSyncResult({ isRunning: true, leaseActive: true }),
     ).toBe("Sync currently running");
+  });
+
+  it("does not display currently running for an expired lease", () => {
+    expect(
+      describeBarnetSyncResult({
+        lastResult: "running",
+        lastRunStatus: "running",
+        isRunning: true,
+        leaseActive: false,
+      }),
+    ).toBe("Previous sync did not complete — awaiting the next scheduled run");
+
+    expect(
+      isBarnetSyncLeaseActive({
+        lastRunStatus: "running",
+        lastStartedAt: "2026-07-14T20:00:00.000Z",
+        lastRunId: "run-1",
+        lockRunId: "run-1",
+        lockExpiresAt: "2026-07-14T20:05:00.000Z",
+        nowMs: Date.parse("2026-07-14T20:10:00.000Z"),
+      }),
+    ).toBe(false);
   });
 });

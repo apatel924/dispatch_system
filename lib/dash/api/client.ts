@@ -591,6 +591,8 @@ export async function runLiveOrderProviderSync(options?: {
 export interface ExternalOrderProviderSyncState {
   lastSuccessfulSyncAt: string | null;
   lastAttemptedSyncAt?: string | null;
+  lastAttemptAt?: string | null;
+  lastAttemptResult?: string | null;
   lastScanAt?: string | null;
   lastNewOrderImportedAt?: string | null;
   lastResult?: string | null;
@@ -626,6 +628,8 @@ export interface BarnetSyncHealthView {
   isRunning: boolean;
   isLocked: boolean;
   lastAttemptedSyncAt: string | null;
+  lastAttemptAt?: string | null;
+  lastAttemptResult?: string | null;
   lastSuccessfulSyncAt: string | null;
   lastScanAt?: string | null;
   lastNewOrderImportedAt?: string | null;

@@ -38,6 +38,8 @@ export async function GET(request: Request) {
           isRunning: syncHealth.isRunning,
           isLocked: syncHealth.isLocked,
           lastAttemptedSyncAt: syncHealth.lastAttemptedSyncAt,
+          lastAttemptAt: syncHealth.syncState.lastAttemptAt ?? syncHealth.lastAttemptedSyncAt,
+          lastAttemptResult: syncHealth.syncState.lastAttemptResult ?? null,
           lastSuccessfulSyncAt: syncHealth.lastSuccessfulSyncAt,
           lastScanAt: syncHealth.syncState.lastScanAt ?? null,
           lastNewOrderImportedAt: syncHealth.syncState.lastNewOrderImportedAt ?? null,

@@ -5,6 +5,7 @@ import { edmontonWallTimeToUtc } from "@/lib/integrations/order-provider/barnet-
 const {
   acquireBarnetSyncLock,
   releaseBarnetSyncLock,
+  extendBarnetSyncLock,
   runBarnetOrderSync,
   getExternalOrderProviderConfig,
   markBarnetSyncRunStarted,
@@ -13,6 +14,7 @@ const {
 } = vi.hoisted(() => ({
   acquireBarnetSyncLock: vi.fn(),
   releaseBarnetSyncLock: vi.fn(),
+  extendBarnetSyncLock: vi.fn(),
   runBarnetOrderSync: vi.fn(),
   getExternalOrderProviderConfig: vi.fn(),
   markBarnetSyncRunStarted: vi.fn(),
@@ -23,6 +25,7 @@ const {
 vi.mock("@/lib/integrations/order-provider/sync-lock.server", () => ({
   acquireBarnetSyncLock,
   releaseBarnetSyncLock,
+  extendBarnetSyncLock,
 }));
 
 vi.mock("@/lib/integrations/order-provider/run-barnet-order-sync.server", () => ({
@@ -56,8 +59,13 @@ describe("executeBarnetSync", () => {
       liveSyncEnabled: true,
       liveReadsEnabled: true,
     });
-    acquireBarnetSyncLock.mockResolvedValue("acquired");
+    acquireBarnetSyncLock.mockResolvedValue({
+      status: "acquired",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      previousOwnerExecutionId: null,
+    });
     releaseBarnetSyncLock.mockResolvedValue(undefined);
+    extendBarnetSyncLock.mockResolvedValue(true);
     markBarnetSyncRunStarted.mockResolvedValue(undefined);
     persistBarnetSyncRunOutcome.mockResolvedValue(undefined);
     readBarnetSyncStateDoc.mockResolvedValue({
@@ -80,6 +88,8 @@ describe("executeBarnetSync", () => {
       dispatchOrdersCreated: 1,
       adminNotificationsCreated: 1,
       exclusionReasons: { pickup: 7, unknown_fulfillment: 1 },
+      failedPages: [],
+      pageFetchErrors: 0,
     });
   });
 
@@ -138,7 +148,11 @@ describe("executeBarnetSync", () => {
   });
 
   it("locked skip does not call Barnet and is not a provider failure", async () => {
-    acquireBarnetSyncLock.mockResolvedValue("skipped");
+    acquireBarnetSyncLock.mockResolvedValue({
+      status: "skipped",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      previousOwnerExecutionId: "other",
+    });
     const open = edmontonWallTimeToUtc(2026, 7, 14, 12, 0, 0);
     const result = await executeBarnetSync({
       runId: "locked",
@@ -153,6 +167,33 @@ describe("executeBarnetSync", () => {
     });
     expect(runBarnetOrderSync).not.toHaveBeenCalled();
     expect(releaseBarnetSyncLock).not.toHaveBeenCalled();
+  });
+
+  it("reclaims an expired lock and marks the abandoned run timed out", async () => {
+    acquireBarnetSyncLock.mockResolvedValue({
+      status: "reclaimed",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      previousOwnerExecutionId: "abandoned-run",
+    });
+    readBarnetSyncStateDoc.mockResolvedValue({
+      lastSuccessfulSyncAt: "2026-07-14T12:00:00.000Z",
+      lastStartedAt: "2026-07-14T11:00:00.000Z",
+      lastRunStatus: "running",
+    });
+    const open = edmontonWallTimeToUtc(2026, 7, 14, 12, 0, 0);
+    await executeBarnetSync({
+      runId: "fresh-run",
+      source: "cron",
+      now: open,
+    });
+    expect(persistBarnetSyncRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "abandoned-run",
+        status: "timed_out_or_expired",
+        scanCompleted: false,
+      }),
+    );
+    expect(runBarnetOrderSync).toHaveBeenCalled();
   });
 
   it("updates attempt+success timestamps on success via persist helper", async () => {
@@ -176,6 +217,7 @@ describe("executeBarnetSync", () => {
     expect(runBarnetOrderSync).toHaveBeenCalledWith({
       trigger: "cron",
       actor: null,
+      onPageBatchComplete: expect.any(Function),
     });
     expect(releaseBarnetSyncLock).toHaveBeenCalledWith("ok-run");
   });

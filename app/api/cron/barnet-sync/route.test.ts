@@ -50,13 +50,30 @@ describe("GET /api/cron/barnet-sync", () => {
     ensureFirebaseConfigured.mockReturnValue(null);
     executeBarnetCronSync.mockResolvedValue({
       ok: true,
+      trigger: "cron",
       pagesScanned: 1,
       ordersSeen: 20,
+      totalSeen: 20,
       deliveryCandidates: 0,
+      deliveryFound: 0,
       newDeliveries: 0,
+      imported: 0,
       updatedDeliveries: 0,
       unchangedOrders: 20,
+      alreadyImported: 20,
+      needsReview: 0,
+      readyToDispatch: 0,
+      pickupOrdersIgnored: 20,
+      pickupIgnored: 20,
+      unknownOrdersIgnored: 0,
+      invalid: 0,
+      enrichmentErrors: 0,
+      syncErrors: 0,
+      failed: 0,
+      dispatchOrdersCreated: 0,
+      adminNotificationsCreated: 0,
       durationMs: 2500,
+      status: "success",
     });
 
     const response = await GET(
@@ -67,15 +84,15 @@ describe("GET /api/cron/barnet-sync", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toContain("no-store");
-    await expect(response.json()).resolves.toEqual({
+    await expect(response.json()).resolves.toMatchObject({
       ok: true,
+      trigger: "cron",
       pagesScanned: 1,
-      ordersSeen: 20,
-      deliveryCandidates: 0,
-      newDeliveries: 0,
-      updatedDeliveries: 0,
-      unchangedOrders: 20,
-      durationMs: 2500,
+      totalSeen: 20,
+      deliveryFound: 0,
+      imported: 0,
+      alreadyImported: 20,
+      failed: 0,
     });
   });
 

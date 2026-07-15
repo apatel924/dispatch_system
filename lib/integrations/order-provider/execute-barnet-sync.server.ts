@@ -52,20 +52,29 @@ export type ExecuteBarnetSyncResult =
   | {
       ok: true;
       skipped?: false;
+      trigger: BarnetSyncSource;
       status: "success" | "partial";
       pagesScanned: number;
       ordersSeen: number;
+      totalSeen: number;
       deliveryCandidates: number;
+      deliveryFound: number;
       newDeliveries: number;
+      imported: number;
       updatedDeliveries: number;
       unchangedOrders: number;
+      alreadyImported: number;
       needsReview: number;
       readyToDispatch: number;
       pickupOrdersIgnored: number;
+      pickupIgnored: number;
       unknownOrdersIgnored: number;
       invalid: number;
       enrichmentErrors: number;
       syncErrors: number;
+      failed: number;
+      dispatchOrdersCreated: number;
+      adminNotificationsCreated: number;
       durationMs: number;
       exclusionReasons?: Record<string, number>;
     }
@@ -86,9 +95,30 @@ export interface ExecuteBarnetSyncOptions {
   now?: Date;
 }
 
-function logSyncEvent(payload: Record<string, unknown>): void {
+function logPrefix(source: BarnetSyncSource): string {
+  return source === "cron" ? "[barnet-cron]" : "[barnet-sync]";
+}
+
+function logSyncEvent(
+  source: BarnetSyncSource,
+  stage: string,
+  payload: Record<string, unknown>,
+): void {
+  const event =
+    source === "cron"
+      ? stage === "start"
+        ? "started"
+        : stage === "complete"
+          ? "completed"
+          : stage === "error"
+            ? "failed"
+            : stage === "skip"
+              ? "skipped"
+              : stage
+      : stage;
   console.info(
-    "[barnet-sync]",
+    logPrefix(source),
+    event,
     JSON.stringify(payload),
   );
 }
@@ -174,6 +204,9 @@ export async function getBarnetSyncHealthView(
   syncState: {
     lastSuccessfulSyncAt: string | null;
     lastAttemptedSyncAt: string | null;
+    lastScanAt: string | null;
+    lastNewOrderImportedAt: string | null;
+    lastResult: string | null;
     lastError: string | null;
     lastSyncSummary: Record<string, unknown> | null;
   };
@@ -198,6 +231,9 @@ export async function getBarnetSyncHealthView(
     syncState: {
       lastSuccessfulSyncAt: snapshot.lastSuccessfulSyncAt,
       lastAttemptedSyncAt: snapshot.lastAttemptedSyncAt,
+      lastScanAt: asString(data.lastScanAt),
+      lastNewOrderImportedAt: asString(data.lastNewOrderImportedAt),
+      lastResult: asString(data.lastResult),
       lastError: snapshot.lastSafeErrorMessage,
       lastSyncSummary:
         data.lastSyncSummary && typeof data.lastSyncSummary === "object"
@@ -241,10 +277,9 @@ export async function executeBarnetSync(
         priorLastRunStatus: asString(prior.lastRunStatus),
       }),
     });
-    logSyncEvent({
+    logSyncEvent(options.source, "skip", {
       runId,
-      source: options.source,
-      stage: "skip",
+      trigger: options.source,
       status: "not_configured",
       durationMs,
     });
@@ -302,10 +337,9 @@ export async function executeBarnetSync(
         priorLastRunStatus: asString(prior.lastRunStatus),
       }),
     });
-    logSyncEvent({
+    logSyncEvent(options.source, "skip", {
       runId,
-      source: options.source,
-      stage: "skip",
+      trigger: options.source,
       status: "disabled",
       durationMs,
     });
@@ -343,10 +377,9 @@ export async function executeBarnetSync(
         priorLastRunStatus: asString(prior.lastRunStatus),
       }),
     });
-    logSyncEvent({
+    logSyncEvent(options.source, "skip", {
       runId,
-      source: options.source,
-      stage: "skip",
+      trigger: options.source,
       status: "skipped_outside_hours",
       reason: OUTSIDE_OPERATING_HOURS_REASON,
       durationMs,
@@ -387,10 +420,9 @@ export async function executeBarnetSync(
         priorLastRunStatus: asString(prior.lastRunStatus),
       }),
     });
-    logSyncEvent({
+    logSyncEvent(options.source, "skip", {
       runId,
-      source: options.source,
-      stage: "skip",
+      trigger: options.source,
       status: "skipped_locked",
       durationMs,
       lockResult: "skipped",
@@ -417,15 +449,19 @@ export async function executeBarnetSync(
       actorId: options.actorId,
     });
 
-    logSyncEvent({
+    logSyncEvent(options.source, "start", {
       runId,
-      source: options.source,
-      stage: "start",
+      trigger: options.source,
       status: "running",
       lockResult: "acquired",
     });
 
-    const result = await runBarnetOrderSync();
+    const result = await runBarnetOrderSync({
+      trigger: options.source,
+      actor: options.actorId
+        ? { uid: options.actorId, role: "admin" as const }
+        : null,
+    });
     const completedAt = new Date().toISOString();
     const durationMs = Date.now() - startedAtMs;
     const status = resolveBarnetSyncRunStatus({
@@ -436,6 +472,51 @@ export async function executeBarnetSync(
     });
     if (status === "failed") {
       throw new Error("Unexpected hard failure status without throw");
+    }
+
+    if (options.source === "cron") {
+      console.info(
+        "[barnet-cron] scan-complete",
+        JSON.stringify({
+          runId,
+          trigger: options.source,
+          pagesScanned: result.pagesScanned,
+          deliveryFound: result.deliveryCandidates,
+          imported: result.newDeliveries,
+          existing: result.unchangedOrders,
+          failed: result.syncErrors,
+          durationMs,
+        }),
+      );
+      if (result.newDeliveries > 0) {
+        console.info(
+          "[barnet-cron] order-imported",
+          JSON.stringify({
+            runId,
+            imported: result.newDeliveries,
+            dispatchOrdersCreated: result.dispatchOrdersCreated,
+            notifications: result.adminNotificationsCreated,
+          }),
+        );
+      }
+      if (result.unchangedOrders > 0) {
+        console.info(
+          "[barnet-cron] order-existing",
+          JSON.stringify({
+            runId,
+            existing: result.unchangedOrders,
+          }),
+        );
+      }
+      if (result.needsReview > 0) {
+        console.info(
+          "[barnet-cron] order-needs-review",
+          JSON.stringify({
+            runId,
+            needsReview: result.needsReview,
+          }),
+        );
+      }
     }
 
     await persistBarnetSyncRunOutcome({
@@ -459,47 +540,52 @@ export async function executeBarnetSync(
         needsReview: result.needsReview,
         readyToDispatch: result.readyToDispatch,
       },
+      newOrdersImported: result.newDeliveries,
       providerConfigured: true,
       providerReadEnabled,
       previousSuccessfulSyncAt,
       actorId: options.actorId,
     });
 
-    logSyncEvent({
+    logSyncEvent(options.source, "complete", {
       runId,
-      source: options.source,
-      stage: "complete",
+      trigger: options.source,
       status,
       durationMs,
       pagesScanned: result.pagesScanned,
-      ordersExamined: result.ordersSeen,
-      deliveryOrdersFound: result.deliveryCandidates,
-      inserted: result.newDeliveries,
-      updated: result.updatedDeliveries,
-      unchanged: result.unchangedOrders,
-      enrichmentErrors: result.enrichmentErrors,
-      syncErrors: result.syncErrors,
-      invalid: result.invalidOrders,
+      deliveryFound: result.deliveryCandidates,
+      imported: result.newDeliveries,
+      existing: result.unchangedOrders,
+      failed: result.syncErrors,
       needsReview: result.needsReview,
-      readyToDispatch: result.readyToDispatch,
+      dispatchOrdersCreated: result.dispatchOrdersCreated,
     });
 
     return {
       ok: true,
+      trigger: options.source,
       status,
       pagesScanned: result.pagesScanned,
       ordersSeen: result.ordersSeen,
+      totalSeen: result.ordersSeen,
       deliveryCandidates: result.deliveryCandidates,
+      deliveryFound: result.deliveryCandidates,
       newDeliveries: result.newDeliveries,
+      imported: result.newDeliveries,
       updatedDeliveries: result.updatedDeliveries,
       unchangedOrders: result.unchangedOrders,
+      alreadyImported: result.unchangedOrders,
       needsReview: result.needsReview,
       readyToDispatch: result.readyToDispatch,
       pickupOrdersIgnored: result.pickupOrdersIgnored,
+      pickupIgnored: result.pickupOrdersIgnored,
       unknownOrdersIgnored: result.unknownOrdersIgnored,
       invalid: result.invalidOrders,
       enrichmentErrors: result.enrichmentErrors,
       syncErrors: result.syncErrors,
+      failed: result.syncErrors,
+      dispatchOrdersCreated: result.dispatchOrdersCreated,
+      adminNotificationsCreated: result.adminNotificationsCreated,
       durationMs,
       exclusionReasons: result.exclusionReasons,
     };
@@ -523,10 +609,9 @@ export async function executeBarnetSync(
       actorId: options.actorId,
     });
 
-    logSyncEvent({
+    logSyncEvent(options.source, "error", {
       runId,
-      source: options.source,
-      stage: "error",
+      trigger: options.source,
       status: "failed",
       durationMs,
       errorCode,
@@ -553,10 +638,9 @@ export async function executeBarnetSync(
     try {
       await releaseBarnetSyncLock(runId);
     } catch (releaseErr) {
-      logSyncEvent({
+      logSyncEvent(options.source, "lock_release_failed", {
         runId,
-        source: options.source,
-        stage: "lock_release_failed",
+        trigger: options.source,
         status: "failed",
         errorCode: "lock_release_failed",
       });

@@ -77,6 +77,8 @@ describe("executeBarnetSync", () => {
       invalidOrders: 0,
       enrichmentErrors: 0,
       syncErrors: 0,
+      dispatchOrdersCreated: 1,
+      adminNotificationsCreated: 1,
       exclusionReasons: { pickup: 7, unknown_fulfillment: 1 },
     });
   });
@@ -164,12 +166,17 @@ describe("executeBarnetSync", () => {
       expect.objectContaining({
         status: "success",
         previousSuccessfulSyncAt: "2026-07-14T12:00:00.000Z",
+        newOrdersImported: 1,
         counts: expect.objectContaining({
           inserted: 1,
           updated: 1,
         }),
       }),
     );
+    expect(runBarnetOrderSync).toHaveBeenCalledWith({
+      trigger: "cron",
+      actor: null,
+    });
     expect(releaseBarnetSyncLock).toHaveBeenCalledWith("ok-run");
   });
 
@@ -188,6 +195,8 @@ describe("executeBarnetSync", () => {
       invalidOrders: 0,
       enrichmentErrors: 1,
       syncErrors: 1,
+      dispatchOrdersCreated: 1,
+      adminNotificationsCreated: 1,
       exclusionReasons: {},
     });
     const open = edmontonWallTimeToUtc(2026, 7, 14, 12, 0, 0);

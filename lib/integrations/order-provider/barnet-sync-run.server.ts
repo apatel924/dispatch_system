@@ -76,6 +76,8 @@ function emptyCounts(): BarnetSyncRunCounts {
     invalid: 0,
     enrichmentErrors: 0,
     syncErrors: 0,
+    needsReview: 0,
+    readyToDispatch: 0,
   };
 }
 
@@ -92,10 +94,14 @@ export async function markBarnetSyncRunStarted(input: {
 
   await db.doc(BARNET_SYNC_STATE_DOC).set(
     omitUndefined({
+      provider: "barnet",
+      lastStartedAt: input.startedAt,
       lastAttemptedSyncAt: input.startedAt,
       lastRunId: input.runId,
       lastRunStatus: "running" satisfies BarnetSyncRunStatus,
       lastRunSource: input.source,
+      trigger: input.source,
+      lastResult: "running",
       lastDurationMs: null,
       lastSafeErrorMessage: null,
       lastErrorCode: null,
@@ -147,6 +153,8 @@ export async function persistBarnetSyncRunOutcome(input: {
   updateAttemptedAt?: boolean;
   /** When false, update summary state only (no history doc / prune). */
   recordHistory?: boolean;
+  /** Count of newly imported delivery orders this run (for lastNewOrderImportedAt). */
+  newOrdersImported?: number;
 }): Promise<void> {
   const db = getAdminFirestore();
   const counts = { ...emptyCounts(), ...input.counts };
@@ -160,13 +168,33 @@ export async function persistBarnetSyncRunOutcome(input: {
     ? input.completedAt
     : previousSuccess;
 
+  const lastResult =
+    input.status === "skipped_outside_hours"
+      ? "skipped_quiet_hours"
+      : input.status === "skipped_locked"
+        ? "skipped_locked"
+        : input.status === "disabled"
+          ? "skipped_disabled"
+          : input.status === "not_configured"
+            ? "skipped_not_configured"
+            : input.status === "failed"
+              ? "failed"
+              : input.status === "success" || input.status === "partial"
+                ? (input.newOrdersImported ?? counts.inserted) > 0
+                  ? "imported_new"
+                  : "no_new_orders"
+                : input.status;
+
   const statePatch: Record<string, unknown> = {
+    provider: "barnet",
     lastRunId: input.runId,
     lastRunStatus: input.status,
     lastRunSource: input.source,
+    trigger: input.source,
     lastDurationMs: input.durationMs,
     lastSafeErrorMessage: input.safeErrorMessage ?? null,
     lastErrorCode: input.errorCode ?? null,
+    lastResult,
     lastCounts: counts,
     lastSyncSummary: {
       inserted: counts.inserted,
@@ -177,6 +205,8 @@ export async function persistBarnetSyncRunOutcome(input: {
       invalid: counts.invalid,
       enrichmentErrors: counts.enrichmentErrors,
       syncErrors: counts.syncErrors,
+      needsReview: counts.needsReview ?? 0,
+      readyToDispatch: counts.readyToDispatch ?? 0,
     },
     lastError: input.safeErrorMessage ?? null,
     providerConfigured: input.providerConfigured,
@@ -186,16 +216,32 @@ export async function persistBarnetSyncRunOutcome(input: {
 
   if (input.updateAttemptedAt !== false) {
     statePatch.lastAttemptedSyncAt = input.completedAt;
+    // lastScanAt updates after every completed scan attempt (including zero new).
+    if (
+      input.status === "success" ||
+      input.status === "partial" ||
+      input.status === "failed"
+    ) {
+      statePatch.lastScanAt = input.completedAt;
+    }
   }
 
   if (isSuccessLike) {
     statePatch.lastSuccessfulSyncAt = lastSuccessfulSyncAt;
+    statePatch.lastCompletedAt = input.completedAt;
     statePatch.consecutiveFailures = 0;
+    if ((input.newOrdersImported ?? counts.inserted) > 0) {
+      statePatch.lastNewOrderImportedAt = input.completedAt;
+    }
   } else if (input.status === "failed") {
     if (previousSuccess) {
       statePatch.lastSuccessfulSyncAt = previousSuccess;
     }
+    statePatch.lastCompletedAt = input.completedAt;
     statePatch.consecutiveFailures = FieldValue.increment(1);
+  } else {
+    // Skips: record completed timestamp but do not imply a successful scan.
+    statePatch.lastCompletedAt = input.completedAt;
   }
   // skipped / disabled / not_configured: do not touch lastSuccessfulSyncAt
 
@@ -209,12 +255,14 @@ export async function persistBarnetSyncRunOutcome(input: {
     omitUndefined({
       runId: input.runId,
       source: input.source,
+      trigger: input.source,
       status: input.status,
       startedAt: input.startedAt,
       completedAt: input.completedAt,
       durationMs: input.durationMs,
       lastAttemptedSyncAt: input.completedAt,
       lastSuccessfulSyncAt,
+      lastResult,
       ...counts,
       errorCode: input.errorCode ?? null,
       safeErrorMessage: input.safeErrorMessage ?? null,

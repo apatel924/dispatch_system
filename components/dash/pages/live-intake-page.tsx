@@ -24,10 +24,21 @@ import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
 import { useLiveIntake } from "@/lib/dash/hooks/use-live-intake";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import type { ExternalOrderIntakeRow } from "@/lib/dash/api/client";
+import {
+  aggregateIntakeStatusPills,
+  summarizeRowPillLists,
+  type IntakeStatusPill,
+} from "@/lib/dash/intake-status-pills";
 
 const isDev = process.env.NODE_ENV === "development";
 
-function StatusPill({ label, tone }: { label: string; tone: "success" | "warning" | "muted" | "info" | "primary" }) {
+function StatusPill({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: "success" | "warning" | "muted" | "info" | "primary";
+}) {
   const tones = {
     success: "bg-success-soft text-success",
     warning: "bg-warning-soft text-warning-foreground",
@@ -42,21 +53,40 @@ function StatusPill({ label, tone }: { label: string; tone: "success" | "warning
   );
 }
 
-function rowPills(row: ExternalOrderIntakeRow) {
-  const pills: { label: string; tone: "success" | "warning" | "muted" | "info" | "primary" }[] = [];
+export function rowPills(row: ExternalOrderIntakeRow): IntakeStatusPill[] {
+  const pills: IntakeStatusPill[] = [];
   if (row.promoted) pills.push({ label: "Already in Orders", tone: "success" });
   if (row.dispatchReady) pills.push({ label: "Ready to Dispatch", tone: "success" });
-  if (!row.dispatchReady) pills.push({ label: "Needs Review", tone: "warning" });
-  if (row.missingFields.includes("customer_phone")) pills.push({ label: "Missing Phone", tone: "warning" });
-  if (row.missingFields.some((f) => f.includes("address") || f === "city" || f === "state" || f === "zip")) {
-    pills.push({ label: "Missing Address", tone: "warning" });
+  if (row.needsReview || !row.dispatchReady) {
+    pills.push({ label: "Needs Review", tone: "warning" });
   }
-  if (row.missingFields.includes("items")) pills.push({ label: "Missing Items", tone: "warning" });
+  const missingAddress =
+    row.reviewReasons?.includes("missing_address") ||
+    row.missingFields.some(
+      (f) => f.includes("address") || f === "city" || f === "state" || f === "zip",
+    );
+  if (missingAddress) pills.push({ label: "Missing Address", tone: "warning" });
+  if (
+    row.missingFields.includes("customer_phone") ||
+    row.reviewReasons?.includes("missing_customer_phone")
+  ) {
+    pills.push({ label: "Missing Phone", tone: "warning" });
+  }
+  if (row.missingFields.includes("items") || row.reviewReasons?.includes("missing_items")) {
+    pills.push({ label: "Missing Items", tone: "warning" });
+  }
   if (row.assignmentStatus === "assigned") pills.push({ label: "Already Assigned", tone: "info" });
-  if (row.alreadyImported || row.isPreview === false) {
-    if (row.isPreview && row.alreadyImported) pills.push({ label: "Duplicate/Existing", tone: "muted" });
+  if (row.isPreview && row.alreadyImported) {
+    pills.push({ label: "Duplicate/Existing", tone: "muted" });
   }
   return pills;
+}
+
+/** Summary pills across visible rows — deduped with counts. */
+export function summarizeIntakeRowPills(
+  rows: ReadonlyArray<ExternalOrderIntakeRow>,
+): ReturnType<typeof aggregateIntakeStatusPills> {
+  return summarizeRowPillLists(rows.map((row) => rowPills(row)));
 }
 
 function ConfirmModal({
@@ -271,6 +301,21 @@ export function LiveIntakePage() {
 
           {intake.message && <p className="mt-3 text-sm text-muted-foreground">{intake.message}</p>}
           {intake.error && <p className="mt-3 text-sm text-primary">{intake.error}</p>}
+          {intake.lastSyncResult && !intake.lastSyncResult.skipped && (
+            <div className="mt-3 rounded-lg border border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground">
+              <span className="font-semibold text-foreground">Last sync · </span>
+              Delivery found: {intake.lastSyncResult.deliveryOrdersFound}
+              {" · "}Imported: {intake.lastSyncResult.inserted}
+              {" · "}Updated: {intake.lastSyncResult.updated}
+              {" · "}Unchanged: {intake.lastSyncResult.unchangedOrders ?? 0}
+              {" · "}Ready: {intake.lastSyncResult.readyToDispatch ?? 0}
+              {" · "}Needs review: {intake.lastSyncResult.needsReview ?? 0}
+              {" · "}Skipped:{" "}
+              {(intake.lastSyncResult.pickupOrdersIgnored ?? 0) +
+                (intake.lastSyncResult.unknownOrdersIgnored ?? 0) +
+                (intake.lastSyncResult.invalidOrders ?? 0)}
+            </div>
+          )}
 
           {intake.discoveredLocations.length > 0 && (
             <div className="mt-4 rounded-lg border border-dashed border-border">
@@ -418,15 +463,21 @@ export function LiveIntakePage() {
                 </tbody>
               </table>
             </div>
-            {intake.tableRows.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {intake.tableRows.slice(0, 6).flatMap((row) =>
-                  rowPills(row).map((pill) => (
-                    <StatusPill key={`${row.id}-${pill.label}`} {...pill} />
-                  )),
-                )}
-              </div>
-            )}
+            {intake.tableRows.length > 0 && (() => {
+              const summaryPills = summarizeIntakeRowPills(intake.tableRows);
+              if (summaryPills.length === 0) return null;
+              return (
+                <div className="mt-3 flex flex-wrap gap-2" aria-label="Intake status summary">
+                  {summaryPills.map((pill) => (
+                    <StatusPill
+                      key={pill.label}
+                      label={pill.displayLabel}
+                      tone={pill.tone}
+                    />
+                  ))}
+                </div>
+              );
+            })()}
           </SectionCard>
 
           {detail ? (

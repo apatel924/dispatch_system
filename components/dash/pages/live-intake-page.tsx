@@ -29,8 +29,66 @@ import {
   summarizeRowPillLists,
   type IntakeStatusPill,
 } from "@/lib/dash/intake-status-pills";
+import {
+  describeBarnetSyncResult,
+  formatEdmontonExact,
+  formatEdmontonRelative,
+} from "@/lib/dash/barnet-sync-status-copy";
+import type {
+  BarnetSyncHealthView,
+  ExternalOrderProviderSyncState,
+} from "@/lib/dash/api/client";
 
 const isDev = process.env.NODE_ENV === "development";
+
+function BarnetSyncStatusBanner({
+  syncState,
+  syncHealth,
+  liveSyncing,
+}: {
+  syncState: ExternalOrderProviderSyncState | null;
+  syncHealth: BarnetSyncHealthView | null;
+  liveSyncing: boolean;
+}) {
+  const lastScanAt =
+    syncHealth?.lastScanAt ??
+    syncState?.lastScanAt ??
+    syncHealth?.lastAttemptedSyncAt ??
+    syncState?.lastAttemptedSyncAt ??
+    null;
+  const lastSuccessfulAt =
+    syncHealth?.lastSuccessfulSyncAt ?? syncState?.lastSuccessfulSyncAt ?? null;
+  const lastResult =
+    syncHealth?.lastResult ??
+    syncState?.lastResult ??
+    null;
+  const inserted = syncHealth?.counts?.inserted ?? syncState?.lastSyncSummary?.inserted ?? 0;
+  const summary = describeBarnetSyncResult({
+    lastResult,
+    lastRunStatus: syncHealth?.lastRunStatus,
+    isRunning: liveSyncing || syncHealth?.isRunning === true,
+    inserted,
+  });
+
+  return (
+    <div
+      className="mt-3 rounded-lg border border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground"
+      title={`Last scan: ${formatEdmontonExact(lastScanAt)}\nLast successful sync: ${formatEdmontonExact(lastSuccessfulAt)}`}
+    >
+      <p>
+        <span className="font-semibold text-foreground">Last scan: </span>
+        {formatEdmontonRelative(lastScanAt)}
+        <span className="mx-2 text-border">·</span>
+        <span className="font-semibold text-foreground">Last successful sync: </span>
+        {formatEdmontonRelative(lastSuccessfulAt)}
+      </p>
+      <p className="mt-1 text-[11px] text-muted-foreground/90">
+        {formatEdmontonExact(lastScanAt)}
+      </p>
+      {summary && <p className="mt-1 font-medium text-foreground">{summary}</p>}
+    </div>
+  );
+}
 
 function StatusPill({
   label,
@@ -301,6 +359,13 @@ export function LiveIntakePage() {
 
           {intake.message && <p className="mt-3 text-sm text-muted-foreground">{intake.message}</p>}
           {intake.error && <p className="mt-3 text-sm text-primary">{intake.error}</p>}
+
+          <BarnetSyncStatusBanner
+            syncState={intake.syncState}
+            syncHealth={intake.health?.syncHealth ?? null}
+            liveSyncing={intake.liveSyncing}
+          />
+
           {intake.lastSyncResult && !intake.lastSyncResult.skipped && (
             <div className="mt-3 rounded-lg border border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground">
               <span className="font-semibold text-foreground">Last sync · </span>

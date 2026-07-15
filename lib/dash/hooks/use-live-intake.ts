@@ -121,6 +121,39 @@ export function useLiveIntake() {
     });
   }, [loadIntake]);
 
+  // Lightweight sync-status refresh while Live Intake is open (does not trigger Barnet scans).
+  useEffect(() => {
+    if (!isApiEnabled()) return;
+
+    const refreshSyncMeta = async () => {
+      try {
+        const syncHealth = await fetchOrderProviderHealthWithSync();
+        setHealth(syncHealth);
+        setSyncState(syncHealth.syncState ?? null);
+      } catch {
+        /* ignore transient poll errors */
+      }
+    };
+
+    const id = window.setInterval(() => {
+      if (document.hidden) return;
+      void refreshSyncMeta();
+    }, 45_000);
+
+    const onFocus = () => {
+      if (document.hidden) return;
+      void refreshSyncMeta();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, []);
+
   const loadDetail = useCallback(async (docId: string) => {
     if (!isApiEnabled()) return;
 
@@ -217,6 +250,13 @@ export function useLiveIntake() {
       setMessage(
         `Previewed ${result.deliveryOrdersFound} delivery order(s) — not saved to Firestore`,
       );
+      try {
+        const syncHealth = await fetchOrderProviderHealthWithSync();
+        setHealth(syncHealth);
+        setSyncState(syncHealth.syncState ?? null);
+      } catch {
+        /* preview itself succeeded */
+      }
       return { ok: true as const };
     } catch (err) {
       setError(err instanceof Error ? err.message : "Preview failed");
@@ -299,6 +339,13 @@ export function useLiveIntake() {
             `Skipped: ${skipped}`,
           ].join(" · "),
         );
+        try {
+          const syncHealth = await fetchOrderProviderHealthWithSync();
+          setHealth(syncHealth);
+          setSyncState(syncHealth.syncState ?? null);
+        } catch {
+          /* sync itself succeeded */
+        }
         return { ok: true as const, result };
       } catch (refreshErr) {
         setError(

@@ -97,7 +97,19 @@ describe("LiveIntakePage sync summary and review pills", () => {
         alreadyImported: 1,
         assigned: 0,
       },
-      syncState: null,
+      syncState: {
+        lastSuccessfulSyncAt: "2026-07-14T19:45:00.000Z",
+        lastAttemptedSyncAt: "2026-07-14T19:45:00.000Z",
+        lastScanAt: "2026-07-14T19:45:00.000Z",
+        lastResult: "imported_new",
+        lastError: null,
+        lastSyncSummary: {
+          inserted: 1,
+          updated: 0,
+          deliveryOrdersFound: 1,
+          pagesScanned: 10,
+        },
+      },
       lastSyncResult: {
         ok: true,
         mode: "live",
@@ -161,8 +173,10 @@ describe("LiveIntakePage sync summary and review pills", () => {
     render(<LiveIntakePage />, { wrapper });
 
     await waitFor(() => {
-      expect(screen.getByText(/Last sync/i)).toBeTruthy();
+      expect(screen.getByText(/Last scan:/i)).toBeTruthy();
     });
+    expect(screen.getByText(/Last successful sync:/i)).toBeTruthy();
+    expect(screen.getByText(/Last scan imported 1 new delivery order/i)).toBeTruthy();
     expect(screen.getAllByText(/Delivery found: 1/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Imported: 1/).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Needs Review").length).toBeGreaterThan(0);

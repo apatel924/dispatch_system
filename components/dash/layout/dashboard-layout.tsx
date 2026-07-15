@@ -3,7 +3,9 @@
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { signOutAdmin } from "@/lib/auth/firebase-client";
+import { clearAuthenticatedQueryCache } from "@/lib/dash/query/query-keys";
 import {
   LayoutDashboard,
   ClipboardList,
@@ -37,10 +39,12 @@ export function DashboardLayout({ title, children, actions }: { title: string; c
   const [signingOut, setSigningOut] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
+  const queryClient = useQueryClient();
 
   const handleSignOut = async () => {
     setSigningOut(true);
     try {
+      clearAuthenticatedQueryCache(queryClient);
       await signOutAdmin();
       router.push("/");
     } catch {

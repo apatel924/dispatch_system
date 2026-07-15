@@ -6,11 +6,14 @@ import { OrderStatusBadge } from "@/components/dash/status-badge";
 import { DriverBottomNav } from "@/components/dash/driver/bottom-nav";
 import { sortRouteStops } from "@/lib/dash/api/driver-adapters";
 import { useDriverRouteOrders } from "@/lib/dash/hooks/use-driver-orders";
+import { useDriverSession } from "@/lib/dash/hooks/use-driver-session";
 import { getOrderProofs, orderMapsUrl, getDeliveryLocation } from "@/lib/dash/driver-store";
 
 export function DriverRoutePage() {
+  const { driver } = useDriverSession();
   const { stops, loading } = useDriverRouteOrders();
   const sortedStops = sortRouteStops(stops);
+  const driverId = driver?.id;
 
   return (
     <div className="min-h-screen bg-background pb-24">
@@ -61,7 +64,7 @@ export function DriverRoutePage() {
                     <Link href={`/driver-orders/${stop.id}`} className="flex h-10 items-center justify-center gap-1 rounded-lg bg-primary text-xs font-semibold text-primary-foreground hover:bg-primary/90">
                       <Package className="h-3.5 w-3.5" /> Open
                     </Link>
-                    <a href={orderMapsUrl(stop, getOrderProofs(stop.id).completedSteps)} target="_blank" rel="noopener noreferrer" className="flex h-10 items-center justify-center gap-1 rounded-lg border border-primary text-xs font-semibold text-primary hover:bg-primary/5">
+                    <a href={orderMapsUrl(stop, driverId ? getOrderProofs(driverId, stop.id).completedSteps : [])} target="_blank" rel="noopener noreferrer" className="flex h-10 items-center justify-center gap-1 rounded-lg border border-primary text-xs font-semibold text-primary hover:bg-primary/5">
                       <MapPin className="h-3.5 w-3.5" /> Navigate
                     </a>
                   </div>

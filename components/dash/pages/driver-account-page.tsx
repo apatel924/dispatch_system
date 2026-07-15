@@ -2,20 +2,36 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Phone, Mail, Truck, LogOut, ChevronRight, Bell } from "lucide-react";
 import { DriverBottomNav } from "@/components/dash/driver/bottom-nav";
 import { useDriverSession } from "@/lib/dash/hooks/use-driver-session";
 import { signOutDriver } from "@/lib/auth/firebase-client";
+import { prepareDriverProofLogout } from "@/lib/dash/driver-store";
+import { clearAuthenticatedQueryCache } from "@/lib/dash/query/query-keys";
+import { DashErrorState, DashLoadingState } from "@/components/dash/ui/query-state";
 
 export function DriverAccountPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [notifications, setNotifications] = useState(true);
   const [signingOut, setSigningOut] = useState(false);
-  const { driver, loading } = useDriverSession();
+  const { driver, loading, error } = useDriverSession();
 
   const handleSignOut = async () => {
-    setSigningOut(true);
+    if (!driver) return;
+    const driverId = driver.id;
     try {
+      const { hasUnsynced, clear } = prepareDriverProofLogout(driverId);
+      if (hasUnsynced) {
+        const confirmed = window.confirm(
+          "You have captured delivery proofs that are not uploaded yet. Signing out will delete them from this device so another driver cannot see them.\n\nPress OK to sign out and delete local proofs, or Cancel to stay and finish uploading.",
+        );
+        if (!confirmed) return;
+      }
+      setSigningOut(true);
+      clear();
+      clearAuthenticatedQueryCache(queryClient);
       await signOutDriver();
       router.push("/driver-login");
     } catch {
@@ -31,7 +47,15 @@ export function DriverAccountPage() {
         </header>
 
         {loading && !driver ? (
-          <div className="mt-8 text-center text-sm text-muted-foreground">Loading profile…</div>
+          <div className="mt-8 text-center text-sm text-muted-foreground">
+            <DashLoadingState message="Loading profile…" />
+          </div>
+        ) : error && !driver ? (
+          <div className="mt-8">
+            <DashErrorState message={error} />
+          </div>
+        ) : !driver ? (
+          <div className="mt-8 text-center text-sm text-muted-foreground">No profile loaded</div>
         ) : (
           <>
             <div className="mt-4 flex items-center gap-4 rounded-2xl border border-border bg-card p-4">
@@ -67,7 +91,7 @@ export function DriverAccountPage() {
 
         <button
           type="button"
-          onClick={handleSignOut}
+          onClick={() => void handleSignOut()}
           disabled={signingOut}
           className="mt-6 flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-border text-sm font-semibold text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-60"
         >

@@ -71,6 +71,9 @@ async function readSyncState(): Promise<ExternalOrderProviderSyncState> {
     return {
       lastSuccessfulSyncAt: null,
       lastAttemptedSyncAt: null,
+      lastScanAt: null,
+      lastNewOrderImportedAt: null,
+      lastResult: null,
       lastError: null,
       lastSyncSummary: null,
     };
@@ -81,6 +84,12 @@ async function readSyncState(): Promise<ExternalOrderProviderSyncState> {
       typeof data.lastSuccessfulSyncAt === "string" ? data.lastSuccessfulSyncAt : null,
     lastAttemptedSyncAt:
       typeof data.lastAttemptedSyncAt === "string" ? data.lastAttemptedSyncAt : null,
+    lastScanAt: typeof data.lastScanAt === "string" ? data.lastScanAt : null,
+    lastNewOrderImportedAt:
+      typeof data.lastNewOrderImportedAt === "string"
+        ? data.lastNewOrderImportedAt
+        : null,
+    lastResult: typeof data.lastResult === "string" ? data.lastResult : null,
     lastError: typeof data.lastError === "string" ? data.lastError : null,
     lastSyncSummary:
       data.lastSyncSummary && typeof data.lastSyncSummary === "object"
@@ -106,6 +115,9 @@ export function getOrderProviderHealthWithSyncState(): ExternalOrderProviderHeal
     syncState: {
       lastSuccessfulSyncAt: null,
       lastAttemptedSyncAt: null,
+      lastScanAt: null,
+      lastNewOrderImportedAt: null,
+      lastResult: null,
       lastError: null,
       lastSyncSummary: null,
     },

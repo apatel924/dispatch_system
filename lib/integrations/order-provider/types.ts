@@ -189,6 +189,9 @@ export interface ExternalOrderIntakeDetail {
 export interface ExternalOrderProviderSyncState {
   lastSuccessfulSyncAt: string | null;
   lastAttemptedSyncAt?: string | null;
+  lastScanAt?: string | null;
+  lastNewOrderImportedAt?: string | null;
+  lastResult?: string | null;
   lastError: string | null;
   lastSyncSummary: {
     inserted: number;
@@ -199,6 +202,8 @@ export interface ExternalOrderProviderSyncState {
     invalid?: number;
     enrichmentErrors?: number;
     syncErrors?: number;
+    needsReview?: number;
+    readyToDispatch?: number;
   } | null;
 }
 

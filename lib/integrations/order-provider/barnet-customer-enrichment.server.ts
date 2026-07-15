@@ -1,5 +1,6 @@
 import type { BarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-client.server";
 import { fetchBarnetUserById } from "@/lib/integrations/order-provider/barnet-client.server";
+import { evaluateNormalizedOrderReview } from "@/lib/integrations/order-provider/barnet-order-decision";
 import { diagnoseNormalizedExternalOrder } from "@/lib/integrations/order-provider/barnet-order-diagnostics";
 import { normalizeBarnetCustomer } from "@/lib/integrations/order-provider/normalize-barnet-customer";
 import type {
@@ -70,12 +71,19 @@ export function applyCustomerEnrichment(
 ): NormalizedExternalOrder {
   if (!enrichment) {
     const diagnostics = diagnoseNormalizedExternalOrder(order);
+    const review = evaluateNormalizedOrderReview({
+      ...order,
+      dispatchReady: diagnostics.dispatchReady,
+      missingFields: diagnostics.missingFields,
+    });
     return {
       ...order,
       customerMessagingReady: false,
       customerEnrichmentStatus: "skipped",
       customerEnrichmentError: null,
       dispatchReady: diagnostics.dispatchReady,
+      needsReview: review.needsReview,
+      reviewReasons: review.reviewReasons,
       missingFields: diagnostics.missingFields,
       dispatchStatus: diagnostics.dispatchReady ? "ready" : "needs_review",
     };
@@ -83,13 +91,19 @@ export function applyCustomerEnrichment(
 
   if (enrichment.status === "failed") {
     const diagnostics = diagnoseNormalizedExternalOrder(order);
-    return {
+    const withStatus: NormalizedExternalOrder = {
       ...order,
-      customerMessagingReady: false,
       customerEnrichmentStatus: "failed",
       customerEnrichmentError: enrichment.error ?? "Customer lookup failed",
       dispatchReady: diagnostics.dispatchReady,
       missingFields: diagnostics.missingFields,
+    };
+    const review = evaluateNormalizedOrderReview(withStatus);
+    return {
+      ...withStatus,
+      customerMessagingReady: false,
+      needsReview: review.needsReview,
+      reviewReasons: review.reviewReasons,
       dispatchStatus: diagnostics.dispatchReady ? "ready" : "needs_review",
     };
   }
@@ -108,8 +122,7 @@ export function applyCustomerEnrichment(
   };
 
   const diagnostics = diagnoseNormalizedExternalOrder(enriched);
-
-  return {
+  const withDiagnostics: NormalizedExternalOrder = {
     ...enriched,
     customerMessagingReady: diagnostics.customerMessagingReady,
     customerEnrichmentStatus: "success" satisfies CustomerEnrichmentStatus,
@@ -117,6 +130,13 @@ export function applyCustomerEnrichment(
     dispatchReady: diagnostics.dispatchReady,
     missingFields: diagnostics.missingFields,
     dispatchStatus: diagnostics.dispatchReady ? "ready" : "needs_review",
+  };
+  const review = evaluateNormalizedOrderReview(withDiagnostics);
+
+  return {
+    ...withDiagnostics,
+    needsReview: review.needsReview,
+    reviewReasons: review.reviewReasons,
   };
 }
 

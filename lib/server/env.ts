@@ -16,6 +16,16 @@ export function isFirebaseAdminConfigured(): boolean {
   );
 }
 
+/** Storage bucket used by Admin SDK uploads. Does not change env values. */
+export function getFirebaseStorageBucketName(): string | undefined {
+  const bucket = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET?.trim();
+  return bucket || undefined;
+}
+
+export function isFirebaseStorageConfigured(): boolean {
+  return Boolean(getFirebaseStorageBucketName());
+}
+
 export function isFirebaseClientConfigured(): boolean {
   return Boolean(
     process.env.NEXT_PUBLIC_FIREBASE_API_KEY &&

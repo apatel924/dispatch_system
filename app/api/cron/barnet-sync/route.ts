@@ -42,5 +42,6 @@ export async function GET(request: Request) {
     });
   }
 
+  // Successful runs and intentional skips (quiet hours, locked, disabled) → 200
   return NextResponse.json(result, { headers: CRON_NO_STORE_HEADERS });
 }

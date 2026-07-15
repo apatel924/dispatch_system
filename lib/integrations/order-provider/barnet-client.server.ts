@@ -96,6 +96,17 @@ export interface BarnetFetchOrdersParams {
   itemsOnPage?: number;
 }
 
+export interface BarnetFetchRetryOptions {
+  /** Remaining execution budget before starting another attempt. */
+  getRemainingBudgetMs?: () => number;
+  /** Wall time reserved for cleanup after the upstream timeout. */
+  cleanupBufferMs?: number;
+  /** Optional counter mutated with total attempts used for this page fetch. */
+  attemptsUsed?: { count: number };
+}
+
+export const BARNET_FETCH_MAX_ATTEMPTS = 2;
+
 function joinUrl(base: string, prefix: string, path: string): string {
   const normalizedBase = base.replace(/\/+$/, "");
   const normalizedPrefix = prefix.startsWith("/") ? prefix : `/${prefix}`;
@@ -292,11 +303,13 @@ export function isBarnetUpstreamHttpError(
   return error instanceof BarnetUpstreamHttpError;
 }
 
-/** Retry only transient failures: timeout, network reset, 429, 5xx. */
+const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
+
+/** Retry only transient failures: timeout, network reset, 429, 502, 503, 504. */
 export function isRetryableBarnetFetchError(error: unknown): boolean {
   if (isBarnetUpstreamTimeoutError(error)) return true;
   if (isBarnetUpstreamHttpError(error)) {
-    return error.status === 429 || error.status >= 500;
+    return RETRYABLE_HTTP_STATUSES.has(error.status);
   }
   if (error instanceof Error) {
     const name = error.name.toLowerCase();
@@ -313,8 +326,11 @@ export function isRetryableBarnetFetchError(error: unknown): boolean {
   return false;
 }
 
-const BARNET_FETCH_MAX_ATTEMPTS = 3;
-const BARNET_FETCH_BACKOFF_MS = [250, 750] as const;
+function computeRetryDelayMs(attempt: number): number {
+  const base = 1_000 * 2 ** (attempt - 1);
+  const jitter = Math.floor(Math.random() * 500);
+  return base + jitter;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -348,6 +364,8 @@ async function barnetGetOnce(
   }
 
   const timeoutMs = getBarnetUpstreamTimeoutMs();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
 
   try {
@@ -358,7 +376,7 @@ async function barnetGetOnce(
         Accept: "application/json",
       },
       cache: "no-store",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: controller.signal,
     });
   } catch (err) {
     if (
@@ -368,6 +386,8 @@ async function barnetGetOnce(
       throw new BarnetUpstreamTimeoutError(path, timeoutMs);
     }
     throw err;
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!response.ok) {
@@ -384,16 +404,26 @@ async function barnetGetOnce(
 
 /**
  * Page-level Barnet GET with bounded retry for transient failures.
- * Retries: timeout, connection reset, 429, 5xx.
- * Does not retry: 401/403/400/404, malformed config.
- * Enrichment and whole-run retries are handled separately (not here).
+ * At most two attempts (initial + one retry). Retries are sequential per call.
  */
 async function barnetGet(
   path: string,
   searchParams?: Record<string, string | number>,
+  retryOptions?: BarnetFetchRetryOptions,
 ): Promise<unknown> {
+  const timeoutMs = getBarnetUpstreamTimeoutMs();
+  const cleanupBufferMs = retryOptions?.cleanupBufferMs ?? 5_000;
   let lastError: unknown;
+
   for (let attempt = 1; attempt <= BARNET_FETCH_MAX_ATTEMPTS; attempt += 1) {
+    if (retryOptions?.attemptsUsed) {
+      retryOptions.attemptsUsed.count = attempt;
+    }
+    const remaining = retryOptions?.getRemainingBudgetMs?.() ?? Infinity;
+    if (remaining < timeoutMs + cleanupBufferMs) {
+      throw new BarnetUpstreamTimeoutError(path, timeoutMs);
+    }
+
     try {
       return await barnetGetOnce(path, searchParams);
     } catch (err) {
@@ -401,8 +431,14 @@ async function barnetGet(
       if (attempt >= BARNET_FETCH_MAX_ATTEMPTS || !isRetryableBarnetFetchError(err)) {
         throw err;
       }
-      const backoff = BARNET_FETCH_BACKOFF_MS[attempt - 1] ?? 750;
-      await sleep(backoff);
+
+      const delay = computeRetryDelayMs(attempt);
+      const remainingAfterDelay =
+        (retryOptions?.getRemainingBudgetMs?.() ?? Infinity) - delay;
+      if (remainingAfterDelay < timeoutMs + cleanupBufferMs) {
+        throw err;
+      }
+      await sleep(delay);
     }
   }
   throw lastError;
@@ -434,6 +470,7 @@ export async function fetchSafeBarnetLocations(): Promise<{
 /** GET /orders — read-only, paginated. */
 export async function fetchBarnetOrders(
   params: BarnetFetchOrdersParams = {},
+  retryOptions?: BarnetFetchRetryOptions,
 ): Promise<BarnetOrderRaw[]> {
   assertLiveOrdersReadsAllowed();
 
@@ -446,11 +483,15 @@ export async function fetchBarnetOrders(
   const page = params.page ?? 1;
   const itemsOnPage = params.itemsOnPage ?? 10;
 
-  const raw = await barnetGet("/orders", {
-    location_id: locationId,
-    items_on_page: itemsOnPage,
-    p: page,
-  });
+  const raw = await barnetGet(
+    "/orders",
+    {
+      location_id: locationId,
+      items_on_page: itemsOnPage,
+      p: page,
+    },
+    retryOptions,
+  );
 
   return extractOrderList(raw);
 }

@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
-  isBarnetUpstreamTimeoutError,
-} from "@/lib/integrations/order-provider/barnet-client.server";
+  isBarnetSyncFailureError,
+  isTransientBarnetProviderFailure,
+  toSafeMessageForFailureCode,
+  type BarnetSyncFailureCode,
+} from "@/lib/integrations/order-provider/barnet-sync-errors.server";
 import {
   getNextBarnetOperatingWindowStart,
   isBarnetScanningAllowed,
@@ -81,10 +84,11 @@ export type ExecuteBarnetSyncResult =
     }
   | {
       ok: false;
-      error: "upstream_timeout" | "sync_failed";
+      error: BarnetSyncFailureCode | "sync_failed";
       status: "failed";
       durationMs: number;
       safeErrorMessage: string;
+      transientProviderFailure: boolean;
     };
 
 export interface ExecuteBarnetSyncOptions {
@@ -469,9 +473,11 @@ export async function executeBarnetSync(
       logPrefix(options.source),
       "stale-lock-reclaimed",
       JSON.stringify({
-        executionId: runId,
         previousOwnerExecutionId: lock.previousOwnerExecutionId,
-        lockExpiresAt: lock.expiresAt,
+        previousLockAcquiredAt: lock.previousLockAcquiredAt,
+        previousLockExpiresAt: lock.previousLockExpiresAt,
+        newOwnerExecutionId: runId,
+        newLockExpiresAt: lock.expiresAt,
       }),
     );
   }
@@ -524,7 +530,12 @@ export async function executeBarnetSync(
               pagesCompleted: batch.pagesCompleted,
               batchSize: batch.batchSize,
               durationMs: batch.durationMs,
-              failedPages: batch.failedPages,
+              successfulPages: batch.pageBatchDiagnostics.successfulPages,
+              failedPages: batch.pageBatchDiagnostics.failedPages,
+              timedOutPages: batch.pageBatchDiagnostics.timedOutPages,
+              attemptsByPage: batch.pageBatchDiagnostics.attemptsByPage,
+              durationByPageMs: batch.pageBatchDiagnostics.durationByPageMs,
+              batchDurationMs: batch.pageBatchDiagnostics.batchDurationMs,
               lockExtended: extended,
             }),
           );
@@ -666,6 +677,16 @@ export async function executeBarnetSync(
     const completedAt = new Date().toISOString();
     const durationMs = Date.now() - startedAtMs;
     const { errorCode, safeErrorMessage } = toSafeBarnetSyncErrorMessage(err);
+    const transientProviderFailure = isBarnetSyncFailureError(err)
+      ? isTransientBarnetProviderFailure(err.code)
+      : errorCode === "provider_timeout" ||
+        errorCode === "provider_rate_limited" ||
+        errorCode === "provider_http_error" ||
+        errorCode === "provider_network_error" ||
+        errorCode === "execution_budget_exhausted" ||
+        errorCode === "upstream_timeout" ||
+        errorCode === "rate_limited" ||
+        errorCode === "upstream_5xx";
 
     await persistBarnetSyncRunOutcome({
       runId,
@@ -683,6 +704,10 @@ export async function executeBarnetSync(
       scanCompleted: false,
     });
 
+    const pageBatchDiagnostics = isBarnetSyncFailureError(err)
+      ? err.pageBatchDiagnostics
+      : undefined;
+
     logSyncEvent(options.source, "error", {
       executionId: runId,
       runId,
@@ -690,24 +715,36 @@ export async function executeBarnetSync(
       status: "failed",
       durationMs,
       errorCode,
+      ...(pageBatchDiagnostics
+        ? {
+            successfulPages: pageBatchDiagnostics.successfulPages,
+            failedPages: pageBatchDiagnostics.failedPages,
+            timedOutPages: pageBatchDiagnostics.timedOutPages,
+            attemptsByPage: pageBatchDiagnostics.attemptsByPage,
+            durationByPageMs: pageBatchDiagnostics.durationByPageMs,
+            batchDurationMs: pageBatchDiagnostics.batchDurationMs,
+          }
+        : {}),
     });
 
-    if (isBarnetUpstreamTimeoutError(err)) {
+    if (isBarnetSyncFailureError(err)) {
       return {
         ok: false,
-        error: "upstream_timeout",
+        error: err.code,
         status: "failed",
         durationMs,
-        safeErrorMessage,
+        safeErrorMessage: toSafeMessageForFailureCode(err.code),
+        transientProviderFailure: isTransientBarnetProviderFailure(err.code),
       };
     }
 
     return {
       ok: false,
-      error: "sync_failed",
+      error: errorCode === "sync_failed" ? "sync_failed" : (errorCode as BarnetSyncFailureCode),
       status: "failed",
       durationMs,
       safeErrorMessage,
+      transientProviderFailure,
     };
   } finally {
     try {

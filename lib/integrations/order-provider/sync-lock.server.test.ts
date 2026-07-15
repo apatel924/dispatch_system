@@ -155,43 +155,49 @@ describe("barnet sync lock (shared cron/manual)", () => {
     expect(firestoreState.data().lastHeartbeatAt).toBeTruthy();
   });
 
-  it("concurrent acquisition allows one winner", async () => {
-    let shared: DocData = {};
-    const mkTx = () => ({
-      get: vi.fn(async () => ({
-        exists: Object.keys(shared).length > 0,
-        data: () => ({ ...shared }),
-      })),
-      set: vi.fn((_ref: unknown, patch: DocData, options?: { merge?: boolean }) => {
-        shared = options?.merge ? { ...shared, ...patch } : { ...patch };
-      }),
+  it("non-expired lock cannot be reclaimed", async () => {
+    const futureExpiry = new Date(Date.now() + 120_000).toISOString();
+    firestoreState = createFirestoreMock({
+      lockRunId: "active-run",
+      ownerExecutionId: "active-run",
+      lockSource: "cron",
+      acquiredAt: new Date(Date.now() - 30_000).toISOString(),
+      lockStartedAt: new Date(Date.now() - 30_000).toISOString(),
+      lockExpiresAt: futureExpiry,
+      expiresAt: futureExpiry,
     });
 
-    firestoreState = {
-      data: () => shared,
-      history: new Map(),
-      runTransaction: vi.fn(async (callback) => callback(mkTx())),
-      doc: vi.fn(() => ({
-        get: vi.fn(async () => ({
-          exists: Object.keys(shared).length > 0,
-          data: () => ({ ...shared }),
-        })),
-        set: vi.fn(async (patch: DocData, options?: { merge?: boolean }) => {
-          shared = options?.merge ? { ...shared, ...patch } : { ...patch };
-        }),
-      })),
-      collection: vi.fn(() => ({
-        doc: vi.fn(() => ({
-          set: vi.fn(async () => undefined),
-        })),
-      })),
-      tx: mkTx(),
-    } as unknown as ReturnType<typeof createFirestoreMock>;
+    const result = await acquireBarnetSyncLock({
+      runId: "challenger",
+      source: "manual",
+    });
+    expect(result.status).toBe("skipped");
+    expect(result.previousOwnerExecutionId).toBe("active-run");
+    expect(result.previousLockExpiresAt).toBe(futureExpiry);
+    expect(firestoreState.data().lockRunId).toBe("active-run");
+  });
 
-    const first = await acquireBarnetSyncLock({ runId: "winner", source: "cron" });
-    const second = await acquireBarnetSyncLock({ runId: "loser", source: "manual" });
-    expect(first.status).toBe("acquired");
-    expect(second.status).toBe("skipped");
-    expect(shared.lockRunId).toBe("winner");
+  it("reclaimed lock exposes previous and new expiration timestamps", async () => {
+    const previousExpiresAt = new Date(Date.now() - 60_000).toISOString();
+    const previousAcquiredAt = new Date(Date.now() - 120_000).toISOString();
+    firestoreState = createFirestoreMock({
+      lockRunId: "stale-run",
+      ownerExecutionId: "stale-run",
+      acquiredAt: previousAcquiredAt,
+      lockStartedAt: previousAcquiredAt,
+      lockExpiresAt: previousExpiresAt,
+      expiresAt: previousExpiresAt,
+    });
+
+    const result = await acquireBarnetSyncLock({
+      runId: "fresh-run",
+      source: "cron",
+    });
+    expect(result.status).toBe("reclaimed");
+    expect(result.previousOwnerExecutionId).toBe("stale-run");
+    expect(result.previousLockAcquiredAt).toBe(previousAcquiredAt);
+    expect(result.previousLockExpiresAt).toBe(previousExpiresAt);
+    expect(result.expiresAt).not.toBe(previousExpiresAt);
+    expect(Date.parse(result.expiresAt!)).toBeGreaterThan(Date.now() - 5_000);
   });
 });

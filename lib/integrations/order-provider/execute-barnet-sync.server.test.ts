@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { BarnetUpstreamTimeoutError } from "@/lib/integrations/order-provider/barnet-client.server";
+import { BarnetSyncFailureError } from "@/lib/integrations/order-provider/barnet-sync-errors.server";
 import { edmontonWallTimeToUtc } from "@/lib/integrations/order-provider/barnet-operating-hours.server";
 
 const {
@@ -63,6 +63,8 @@ describe("executeBarnetSync", () => {
       status: "acquired",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       previousOwnerExecutionId: null,
+      previousLockAcquiredAt: null,
+      previousLockExpiresAt: null,
     });
     releaseBarnetSyncLock.mockResolvedValue(undefined);
     extendBarnetSyncLock.mockResolvedValue(true);
@@ -152,6 +154,8 @@ describe("executeBarnetSync", () => {
       status: "skipped",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       previousOwnerExecutionId: "other",
+      previousLockAcquiredAt: new Date(Date.now() - 30_000).toISOString(),
+      previousLockExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
     const open = edmontonWallTimeToUtc(2026, 7, 14, 12, 0, 0);
     const result = await executeBarnetSync({
@@ -174,6 +178,8 @@ describe("executeBarnetSync", () => {
       status: "reclaimed",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       previousOwnerExecutionId: "abandoned-run",
+      previousLockAcquiredAt: "2026-07-14T11:00:00.000Z",
+      previousLockExpiresAt: "2026-07-14T11:09:00.000Z",
     });
     readBarnetSyncStateDoc.mockResolvedValue({
       lastSuccessfulSyncAt: "2026-07-14T12:00:00.000Z",
@@ -264,20 +270,22 @@ describe("executeBarnetSync", () => {
     expect(result).toMatchObject({
       ok: false,
       status: "failed",
-      error: "sync_failed",
+      error: "unknown_sync_error",
+      transientProviderFailure: false,
     });
     expect(persistBarnetSyncRunOutcome).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "failed",
         previousSuccessfulSyncAt: "2026-07-14T12:00:00.000Z",
+        scanCompleted: false,
       }),
     );
     expect(releaseBarnetSyncLock).toHaveBeenCalledWith("fail");
   });
 
-  it("maps upstream timeout", async () => {
+  it("maps provider timeout as a transient provider failure", async () => {
     runBarnetOrderSync.mockRejectedValue(
-      new BarnetUpstreamTimeoutError("/orders", 1000),
+      new BarnetSyncFailureError("provider_timeout", "Barnet page fetch failed for page(s): 1"),
     );
     const open = edmontonWallTimeToUtc(2026, 7, 14, 12, 0, 0);
     const result = await executeBarnetSync({
@@ -287,9 +295,16 @@ describe("executeBarnetSync", () => {
     });
     expect(result).toMatchObject({
       ok: false,
-      error: "upstream_timeout",
+      error: "provider_timeout",
       status: "failed",
+      transientProviderFailure: true,
     });
+    expect(persistBarnetSyncRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorCode: "provider_timeout",
+        scanCompleted: false,
+      }),
+    );
     expect(releaseBarnetSyncLock).toHaveBeenCalledWith("timeout");
   });
 });

@@ -68,7 +68,7 @@ describe("persistBarnetSyncRunOutcome metadata", () => {
     expect(stateStore.lastResult).toBe("no_new_orders");
   });
 
-  it("preserves lastSuccessfulSyncAt when a later scan fails", async () => {
+  it("preserves lastSuccessfulSyncAt when a later scan fails after completing pages", async () => {
     stateStore.lastSuccessfulSyncAt = "2026-07-14T17:00:00.000Z";
 
     await persistBarnetSyncRunOutcome({
@@ -78,16 +78,18 @@ describe("persistBarnetSyncRunOutcome metadata", () => {
       startedAt: "2026-07-14T18:00:00.000Z",
       completedAt: "2026-07-14T18:01:00.000Z",
       durationMs: 1000,
-      errorCode: "upstream_error",
+      errorCode: "provider_http_error",
       safeErrorMessage: "Barnet upstream failed",
       providerConfigured: true,
       providerReadEnabled: true,
       previousSuccessfulSyncAt: "2026-07-14T17:00:00.000Z",
+      scanCompleted: true,
     });
 
     expect(stateStore.lastScanAt).toBe("2026-07-14T18:01:00.000Z");
     expect(stateStore.lastSuccessfulSyncAt).toBe("2026-07-14T17:00:00.000Z");
     expect(stateStore.lastResult).toBe("failed");
+    expect(stateStore.lastAttemptResult).toBe("provider_http_error");
   });
 
   it("records quiet-hours skip without implying a successful scan", async () => {
@@ -144,6 +146,8 @@ describe("persistBarnetSyncRunOutcome metadata", () => {
       startedAt: "2026-07-14T18:00:00.000Z",
       completedAt: "2026-07-14T18:01:00.000Z",
       durationMs: 1000,
+      errorCode: "provider_timeout",
+      safeErrorMessage: "Barnet request timed out.",
       providerConfigured: true,
       providerReadEnabled: true,
       previousSuccessfulSyncAt: "2026-07-14T17:00:00.000Z",
@@ -152,6 +156,6 @@ describe("persistBarnetSyncRunOutcome metadata", () => {
 
     expect(stateStore.lastScanAt).toBe("2026-07-14T17:00:00.000Z");
     expect(stateStore.lastSuccessfulSyncAt).toBe("2026-07-14T17:00:00.000Z");
-    expect(stateStore.lastAttemptResult).toBe("failed");
+    expect(stateStore.lastAttemptResult).toBe("provider_timeout");
   });
 });

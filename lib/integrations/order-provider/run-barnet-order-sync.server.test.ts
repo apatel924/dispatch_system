@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-client.server";
+import { BarnetUpstreamTimeoutError } from "@/lib/integrations/order-provider/barnet-client.server";
+import {
+  isBarnetSyncFailureError,
+} from "@/lib/integrations/order-provider/barnet-sync-errors.server";
 
 const { fetchBarnetOrders, enrichBarnetDeliveryOrder, assertLiveSyncAllowed, finalizeBarnetDeliveryImport, docStore } =
   vi.hoisted(() => ({
@@ -36,9 +40,15 @@ const integrationDoc = {
   })),
 };
 
-vi.mock("@/lib/integrations/order-provider/barnet-client.server", () => ({
-  fetchBarnetOrders,
-}));
+vi.mock("@/lib/integrations/order-provider/barnet-client.server", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/lib/integrations/order-provider/barnet-client.server")
+  >();
+  return {
+    ...actual,
+    fetchBarnetOrders,
+  };
+});
 
 vi.mock("@/lib/integrations/order-provider/barnet-customer-enrichment.server", async (importOriginal) => {
   const actual = await importOriginal<
@@ -57,10 +67,16 @@ vi.mock("@/lib/integrations/order-provider/env.server", () => ({
   }),
 }));
 
-vi.mock("@/lib/integrations/order-provider/barnet-sync-config.server", () => ({
-  getBarnetSyncConsecutiveKnownThreshold: () => 5,
-  getBarnetEnrichmentConcurrency: () => 2,
-}));
+vi.mock("@/lib/integrations/order-provider/barnet-sync-config.server", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/lib/integrations/order-provider/barnet-sync-config.server")
+  >();
+  return {
+    ...actual,
+    getBarnetSyncConsecutiveKnownThreshold: () => 5,
+    getBarnetEnrichmentConcurrency: () => 2,
+  };
+});
 
 vi.mock("@/lib/integrations/order-provider/finalize-barnet-import.server", () => ({
   finalizeBarnetDeliveryImport,
@@ -78,6 +94,10 @@ vi.mock("@/lib/integrations/order-provider/sync-pagination.server", () => ({
     itemsPerPage: paginationState.itemsPerPage,
   }),
   getExternalOrderSyncPageConcurrency: () => paginationState.concurrency,
+  getExternalOrderSyncPageConcurrencyConfig: () => ({
+    requestedConcurrency: paginationState.concurrency,
+    effectiveConcurrency: Math.min(paginationState.concurrency, 2),
+  }),
 }));
 
 vi.mock("@/lib/server/firebase-admin", () => ({
@@ -475,9 +495,9 @@ describe("runBarnetOrderSync", () => {
     expect(docStore.has("barnet_501")).toBe(false);
   });
 
-  it("fetches ten pages with bounded concurrency and never exceeds the limit", async () => {
+  it("fetches ten pages with bounded concurrency after the page-1 probe", async () => {
     paginationState.pages = 10;
-    paginationState.concurrency = 3;
+    paginationState.concurrency = 2;
     let inFlight = 0;
     let maxInFlight = 0;
     const started: number[] = [];
@@ -494,9 +514,9 @@ describe("runBarnetOrderSync", () => {
     const result = await runBarnetOrderSync();
 
     expect(result.pagesScanned).toBe(10);
-    expect(started).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-    expect(maxInFlight).toBeLessThanOrEqual(3);
-    expect(maxInFlight).toBeGreaterThan(1);
+    expect(started[0]).toBe(1);
+    expect(started).toEqual(expect.arrayContaining([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+    expect(maxInFlight).toBeLessThanOrEqual(2);
     expect(fetchBarnetOrders).toHaveBeenCalledTimes(10);
   });
 
@@ -521,14 +541,84 @@ describe("runBarnetOrderSync", () => {
     }
   });
 
-  it("fails the run when a page fetch errors so success is not misleading", async () => {
+  it("fails with typed error when a page fetch errors", async () => {
     paginationState.pages = 3;
-    paginationState.concurrency = 3;
+    paginationState.concurrency = 2;
     fetchBarnetOrders.mockImplementation(async ({ page }: { page: number }) => {
       if (page === 2) throw new Error("upstream boom");
       return [pickupOrder(page)];
     });
 
-    await expect(runBarnetOrderSync()).rejects.toThrow(/page\(s\): 2/);
+    await expect(runBarnetOrderSync()).rejects.toSatisfy((error: unknown) => {
+      expect(isBarnetSyncFailureError(error)).toBe(true);
+      if (isBarnetSyncFailureError(error)) {
+        expect(error.code).toBe("unknown_sync_error");
+        expect(error.pageBatchDiagnostics?.failedPages).toContain(2);
+      }
+      return true;
+    });
+  });
+
+  it("stops after page-1 probe timeout and never requests pages 2+", async () => {
+    paginationState.pages = 4;
+    paginationState.concurrency = 2;
+    fetchBarnetOrders.mockImplementation(async ({ page }: { page: number }) => {
+      if (page === 1) {
+        throw new BarnetUpstreamTimeoutError("/orders", 40_000);
+      }
+      return [pickupOrder(page)];
+    });
+
+    await expect(runBarnetOrderSync()).rejects.toSatisfy((error: unknown) => {
+      expect(isBarnetSyncFailureError(error)).toBe(true);
+      if (isBarnetSyncFailureError(error)) {
+        expect(error.code).toBe("provider_timeout");
+        expect(error.pageBatchDiagnostics?.failedPages).toEqual([1]);
+      }
+      return true;
+    });
+    expect(fetchBarnetOrders).toHaveBeenCalledTimes(1);
+    expect(fetchBarnetOrders).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 1 }),
+      expect.any(Object),
+    );
+  });
+
+  it("does not refetch page 1 after a successful probe", async () => {
+    paginationState.pages = 3;
+    paginationState.concurrency = 2;
+    fetchBarnetOrders
+      .mockResolvedValueOnce([pickupOrder(1)])
+      .mockResolvedValueOnce([pickupOrder(2)])
+      .mockResolvedValueOnce([]);
+
+    await runBarnetOrderSync();
+
+    expect(fetchBarnetOrders).toHaveBeenCalledTimes(3);
+    const pages = fetchBarnetOrders.mock.calls.map(
+      (call) => (call[0] as { page: number }).page,
+    );
+    expect(pages.filter((page) => page === 1)).toHaveLength(1);
+  });
+
+  it("reports every failed page in the batch diagnostics", async () => {
+    paginationState.pages = 3;
+    paginationState.concurrency = 2;
+    fetchBarnetOrders.mockImplementation(async ({ page }: { page: number }) => {
+      if (page === 1) return [pickupOrder(1)];
+      throw new BarnetUpstreamTimeoutError("/orders", 40_000);
+    });
+
+    try {
+      await runBarnetOrderSync();
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(isBarnetSyncFailureError(error)).toBe(true);
+      if (isBarnetSyncFailureError(error)) {
+        expect(error.pageBatchDiagnostics?.failedPages.sort()).toEqual([2, 3]);
+        expect(error.pageBatchDiagnostics?.successfulPages).toEqual([1]);
+        expect(error.pageBatchDiagnostics?.timedOutPages.sort()).toEqual([2, 3]);
+      }
+    }
   });
 });

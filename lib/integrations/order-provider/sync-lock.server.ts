@@ -11,6 +11,8 @@ export interface BarnetSyncLockAcquireResult {
   status: BarnetSyncLockAcquireStatus;
   expiresAt: string | null;
   previousOwnerExecutionId: string | null;
+  previousLockAcquiredAt: string | null;
+  previousLockExpiresAt: string | null;
 }
 
 export interface AcquireBarnetSyncLockOptions {
@@ -24,6 +26,26 @@ function parseLockExpiry(value: unknown): number {
   if (typeof value !== "string" || value.length === 0) return 0;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseLockAcquiredAt(data: Record<string, unknown>): string | null {
+  if (typeof data.acquiredAt === "string" && data.acquiredAt.length > 0) {
+    return data.acquiredAt;
+  }
+  if (typeof data.lockStartedAt === "string" && data.lockStartedAt.length > 0) {
+    return data.lockStartedAt;
+  }
+  return null;
+}
+
+function parseLockExpiryIso(data: Record<string, unknown>): string | null {
+  if (typeof data.expiresAt === "string" && data.expiresAt.length > 0) {
+    return data.expiresAt;
+  }
+  if (typeof data.lockExpiresAt === "string" && data.lockExpiresAt.length > 0) {
+    return data.lockExpiresAt;
+  }
+  return null;
 }
 
 function lockOwnerId(data: Record<string, unknown>): string | null {
@@ -74,11 +96,15 @@ export async function acquireBarnetSyncLock(
         status: "skipped" as const,
         expiresAt: new Date(lockExpiresAt).toISOString(),
         previousOwnerExecutionId: activeRunId,
+        previousLockAcquiredAt: parseLockAcquiredAt(data),
+        previousLockExpiresAt: parseLockExpiryIso(data),
       };
     }
 
     const reclaimed = Boolean(activeRunId && lockExpiresAt > 0 && lockExpiresAt <= now);
     const previousOwnerExecutionId = reclaimed ? activeRunId : null;
+    const previousLockAcquiredAt = reclaimed ? parseLockAcquiredAt(data) : null;
+    const previousLockExpiresAt = reclaimed ? parseLockExpiryIso(data) : null;
 
     tx.set(
       ref,
@@ -110,6 +136,8 @@ export async function acquireBarnetSyncLock(
       status: reclaimed ? ("reclaimed" as const) : ("acquired" as const),
       expiresAt,
       previousOwnerExecutionId,
+      previousLockAcquiredAt,
+      previousLockExpiresAt,
     };
   });
 }

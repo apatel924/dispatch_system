@@ -32,9 +32,9 @@ export async function GET(request: Request) {
   );
   const result = await executeBarnetCronSync(runId);
 
-  if (!result.ok && result.error === "upstream_timeout") {
+  if (!result.ok && result.transientProviderFailure) {
     return NextResponse.json(result, {
-      status: 504,
+      status: 503,
       headers: CRON_NO_STORE_HEADERS,
     });
   }

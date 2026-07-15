@@ -12,6 +12,7 @@ import {
   type BarnetSyncRunStatus,
   type BarnetSyncSource,
 } from "@/lib/integrations/order-provider/barnet-sync-health.server";
+import type { BarnetSyncFailureCode } from "@/lib/integrations/order-provider/barnet-sync-errors.server";
 
 /**
  * Identical consecutive skip/disabled outcomes update the current summary only —
@@ -220,7 +221,10 @@ export async function persistBarnetSyncRunOutcome(input: {
                     : "no_new_orders"
                   : input.status;
 
-  const attemptResult = toBarnetSyncAttemptResult(input.status);
+  const attemptResult: BarnetSyncAttemptResult | BarnetSyncFailureCode =
+    input.status === "failed" && input.errorCode
+      ? (input.errorCode as BarnetSyncFailureCode)
+      : toBarnetSyncAttemptResult(input.status);
 
   const statePatch: Record<string, unknown> = {
     provider: "barnet",
@@ -256,12 +260,11 @@ export async function persistBarnetSyncRunOutcome(input: {
 
   if (input.updateAttemptedAt !== false) {
     statePatch.lastAttemptedSyncAt = input.completedAt;
-    // lastScanAt updates only after a completed page scan (success/partial),
-    // or a failed run that still finished scanning pages.
+    // lastScanAt updates only after a completed page scan (success/partial).
     if (
       input.status === "success" ||
       input.status === "partial" ||
-      (input.status === "failed" && input.scanCompleted !== false)
+      (input.status === "failed" && input.scanCompleted === true)
     ) {
       statePatch.lastScanAt = input.completedAt;
     }

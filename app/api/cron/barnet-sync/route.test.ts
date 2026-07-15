@@ -100,13 +100,16 @@ describe("GET /api/cron/barnet-sync", () => {
     });
   });
 
-  it("returns 504 for upstream timeout", async () => {
+  it("returns 503 for transient provider failures", async () => {
     validateCronSecret.mockReturnValue(null);
     ensureFirebaseConfigured.mockReturnValue(null);
     executeBarnetCronSync.mockResolvedValue({
       ok: false,
-      error: "upstream_timeout",
+      error: "provider_timeout",
+      status: "failed",
       durationMs: 1000,
+      safeErrorMessage: "Barnet request timed out.",
+      transientProviderFailure: true,
     });
 
     const response = await GET(
@@ -115,6 +118,27 @@ describe("GET /api/cron/barnet-sync", () => {
       }),
     );
 
-    expect(response.status).toBe(504);
+    expect(response.status).toBe(503);
+  });
+
+  it("returns 500 for internal unexpected failures", async () => {
+    validateCronSecret.mockReturnValue(null);
+    ensureFirebaseConfigured.mockReturnValue(null);
+    executeBarnetCronSync.mockResolvedValue({
+      ok: false,
+      error: "unknown_sync_error",
+      status: "failed",
+      durationMs: 1000,
+      safeErrorMessage: "Synchronization failed.",
+      transientProviderFailure: false,
+    });
+
+    const response = await GET(
+      new Request("http://localhost/api/cron/barnet-sync", {
+        headers: { authorization: "Bearer test-secret" },
+      }),
+    );
+
+    expect(response.status).toBe(500);
   });
 });

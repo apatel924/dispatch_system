@@ -2,6 +2,7 @@ import { getAdminFirestore } from "@/lib/server/firebase-admin";
 import { deepOmitUndefined } from "@/lib/server/firestore/helpers";
 import type { AuthUser } from "@/lib/server/auth";
 import type { ActorContext } from "@/lib/server/services/orders";
+import type { BarnetFetchRetryOptions } from "@/lib/integrations/order-provider/barnet-client.server";
 import type { BarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-client.server";
 import { fetchBarnetOrders } from "@/lib/integrations/order-provider/barnet-client.server";
 import {
@@ -12,7 +13,19 @@ import {
   evaluateBarnetOrderDecision,
   type BarnetOrderExclusionReason,
 } from "@/lib/integrations/order-provider/barnet-order-decision";
+import {
+  assertBarnetExecutionBudgetForAttempt,
+  createBarnetExecutionBudget,
+  getBarnetExecutionRemainingMs,
+} from "@/lib/integrations/order-provider/barnet-execution-budget.server";
 import { getBarnetEnrichmentConcurrency } from "@/lib/integrations/order-provider/barnet-sync-config.server";
+import {
+  buildPageBatchDiagnostics,
+  classifyBarnetFetchError,
+  BarnetSyncFailureError,
+  type PageBatchDiagnostics,
+  type PageFetchOutcomeDiagnostics,
+} from "@/lib/integrations/order-provider/barnet-sync-errors.server";
 import {
   computeBarnetOrderSourceHash,
   readStoredBarnetSourceHash,
@@ -27,10 +40,11 @@ import {
   normalizeBarnetOrder,
 } from "@/lib/integrations/order-provider/normalize-barnet-order";
 import {
-  getExternalOrderSyncPageConcurrency,
+  getExternalOrderSyncPageConcurrencyConfig,
   getExternalOrderSyncPaginationConfig,
 } from "@/lib/integrations/order-provider/sync-pagination.server";
 import type { ExternalOrderSyncResult } from "@/lib/integrations/order-provider/types";
+import { isBarnetUpstreamTimeoutError } from "@/lib/integrations/order-provider/barnet-client.server";
 
 const COLLECTION = "externalOrders";
 
@@ -54,6 +68,7 @@ export interface BarnetOrderSyncRunResult {
   exclusionReasons: Record<string, number>;
   failedPages: number[];
   pageFetchErrors: number;
+  pageBatchDiagnostics?: PageBatchDiagnostics;
 }
 
 export interface RunBarnetOrderSyncOptions {
@@ -65,6 +80,7 @@ export interface RunBarnetOrderSyncOptions {
     batchSize: number;
     durationMs: number;
     failedPages: number[];
+    pageBatchDiagnostics: PageBatchDiagnostics;
   }) => Promise<void> | void;
 }
 
@@ -121,15 +137,86 @@ interface DeliverySyncTask {
 interface PageFetchOutcome {
   page: number;
   orders: BarnetOrderRaw[] | null;
-  error: unknown | null;
+  diagnostics: PageFetchOutcomeDiagnostics;
+}
+
+function buildRetryOptions(
+  budget: ReturnType<typeof createBarnetExecutionBudget>,
+  attemptsUsed: { count: number },
+): BarnetFetchRetryOptions {
+  return {
+    getRemainingBudgetMs: () => getBarnetExecutionRemainingMs(budget),
+    cleanupBufferMs: budget.cleanupBufferMs,
+    attemptsUsed,
+  };
+}
+
+async function fetchPageWithDiagnostics(
+  page: number,
+  itemsPerPage: number,
+  budget: ReturnType<typeof createBarnetExecutionBudget>,
+): Promise<PageFetchOutcome> {
+  const startedAtMs = Date.now();
+  const attemptsUsed = { count: 0 };
+
+  try {
+    assertBarnetExecutionBudgetForAttempt(budget);
+    const orders = await fetchBarnetOrders(
+      { page, itemsOnPage: itemsPerPage },
+      buildRetryOptions(budget, attemptsUsed),
+    );
+    return {
+      page,
+      orders,
+      diagnostics: {
+        page,
+        success: true,
+        timedOut: false,
+        attempts: attemptsUsed.count || 1,
+        durationMs: Date.now() - startedAtMs,
+      },
+    };
+  } catch (error) {
+    const failureCode = classifyBarnetFetchError(error);
+    return {
+      page,
+      orders: null,
+      diagnostics: {
+        page,
+        success: false,
+        timedOut:
+          failureCode === "provider_timeout" ||
+          isBarnetUpstreamTimeoutError(error),
+        attempts: attemptsUsed.count || 1,
+        durationMs: Date.now() - startedAtMs,
+        failureCode,
+      },
+    };
+  }
+}
+
+function throwPageFetchFailure(
+  diagnostics: PageBatchDiagnostics,
+  primaryCode?: PageFetchOutcomeDiagnostics["failureCode"],
+): never {
+  const code =
+    primaryCode ??
+    diagnostics.pageOutcomes.find((outcome) => !outcome.success)?.failureCode ??
+    "unknown_sync_error";
+  throw new BarnetSyncFailureError(
+    code,
+    `Barnet page fetch failed for page(s): ${diagnostics.failedPages.join(", ")}`,
+    { pageBatchDiagnostics: diagnostics },
+  );
 }
 
 /**
  * Incremental Barnet live sync:
+ * - probes page 1 alone before any concurrent batch
  * - classifies pickup vs delivery before enrichment (shared decision helper)
  * - persists reviewable deliveries even when not dispatch-ready
  * - enriches only new or changed delivery orders
- * - scans all configured pages with bounded concurrency
+ * - scans configured pages with bounded concurrency after the probe
  * - promotes newly imported deliveries to unassigned dispatch orders
  */
 export async function runBarnetOrderSync(
@@ -142,9 +229,16 @@ export async function runBarnetOrderSync(
   const config = getExternalOrderProviderConfig();
   const locationId = config.locationId;
   const pagination = getExternalOrderSyncPaginationConfig();
-  const pageConcurrency = getExternalOrderSyncPageConcurrency();
+  const concurrencyConfig = getExternalOrderSyncPageConcurrencyConfig();
+  const pageConcurrency = concurrencyConfig.effectiveConcurrency;
   const enrichmentConcurrency = getBarnetEnrichmentConcurrency();
   const syncStartedAtMs = Date.now();
+  const executionBudget = createBarnetExecutionBudget(syncStartedAtMs);
+  const allPageOutcomes: PageFetchOutcomeDiagnostics[] = [];
+
+  console.info(
+    `[order-provider] sync tuning requestedConcurrency=${concurrencyConfig.requestedConcurrency} effectiveConcurrency=${pageConcurrency}`,
+  );
 
   const db = getAdminFirestore();
   const now = nowIso();
@@ -178,277 +272,340 @@ export async function runBarnetOrderSync(
 
   let stopAfterEmptyPage = false;
 
-  for (
-    let batchStart = 0;
-    batchStart < pageNumbers.length && !stopAfterEmptyPage;
-    batchStart += pageConcurrency
-  ) {
-    const batch = pageNumbers.slice(batchStart, batchStart + pageConcurrency);
-    const batchOutcomes = await mapWithConcurrency(
-      batch,
-      pageConcurrency,
-      async (page): Promise<PageFetchOutcome> => {
-        try {
-          const orders = await fetchBarnetOrders({
-            page,
-            itemsOnPage: pagination.itemsPerPage,
-          });
-          return { page, orders, error: null };
-        } catch (error) {
-          return { page, orders: null, error };
-        }
-      },
-    );
+  async function processPageOutcome(outcome: PageFetchOutcome): Promise<boolean> {
+    if (outcome.diagnostics.success === false || !outcome.orders) {
+      result.pageFetchErrors += 1;
+      result.failedPages.push(outcome.page);
+      result.syncErrors += 1;
+      console.warn(
+        `[order-provider] page fetch failed page=${outcome.page} code=${outcome.diagnostics.failureCode ?? "unknown"} attempts=${outcome.diagnostics.attempts} durationMs=${outcome.diagnostics.durationMs}`,
+      );
+      return false;
+    }
 
-    // Deterministic page order regardless of completion order.
-    batchOutcomes.sort((a, b) => a.page - b.page);
+    const orders = outcome.orders;
+    result.pagesScanned += 1;
 
-    for (const outcome of batchOutcomes) {
-      if (stopAfterEmptyPage) {
-        break;
+    if (orders.length === 0) {
+      console.info(
+        `[order-provider] sync stopping early: page ${outcome.page} returned 0 orders`,
+      );
+      return false;
+    }
+
+    const deliveryTasks: DeliverySyncTask[] = [];
+
+    for (const rawOrder of orders) {
+      result.ordersSeen += 1;
+
+      const decision = evaluateBarnetOrderDecision(rawOrder);
+
+      if (decision.classification === "pickup") {
+        result.pickupOrdersIgnored += 1;
+        bumpExclusion(result, "pickup");
+        continue;
       }
 
-      if (outcome.error || !outcome.orders) {
-        result.pageFetchErrors += 1;
-        result.failedPages.push(outcome.page);
-        result.syncErrors += 1;
-        console.warn(
-          `[order-provider] page fetch failed page=${outcome.page}: ${
-            outcome.error instanceof Error ? outcome.error.message : "unknown"
-          }`,
+      if (decision.classification === "unknown") {
+        result.unknownOrdersIgnored += 1;
+        bumpExclusion(result, decision.exclusionReason ?? "unknown_fulfillment");
+        continue;
+      }
+
+      if (!decision.persistable || !decision.externalOrderId) {
+        result.invalidOrders += 1;
+        bumpExclusion(
+          result,
+          decision.exclusionReason ?? "malformed_payload",
         );
-        // Do not process later pages in this batch after a gap — avoids a misleading
-        // "full window scanned" result when an earlier page is missing.
-        stopAfterEmptyPage = true;
-        break;
+        continue;
       }
 
-      const orders = outcome.orders;
-      result.pagesScanned += 1;
+      result.deliveryCandidates += 1;
+      const externalId = decision.externalOrderId;
 
-      if (orders.length === 0) {
-        console.info(
-          `[order-provider] sync stopping early: page ${outcome.page} returned 0 orders`,
+      const docRef = db.collection(COLLECTION).doc(barnetDocumentId(externalId));
+      const existingSnap = await docRef.get();
+      let sourceHash: string;
+      try {
+        sourceHash = computeBarnetOrderSourceHash(rawOrder, { now });
+      } catch {
+        result.invalidOrders += 1;
+        bumpExclusion(result, "malformed_payload");
+        continue;
+      }
+
+      if (existingSnap.exists) {
+        const existing = hydrateNormalizedExternalOrder(
+          existingSnap.data() as Record<string, unknown>,
         );
-        stopAfterEmptyPage = true;
-        break;
+        const storedHash = readStoredBarnetSourceHash(existing);
+        if (storedHash === sourceHash) {
+          result.unchangedOrders += 1;
+          if (existing.needsReview || !existing.dispatchReady) {
+            result.needsReview += 1;
+          } else {
+            result.readyToDispatch += 1;
+          }
+
+          if (!existing.promoted) {
+            const finalize = await finalizeBarnetDeliveryImport({
+              docId: barnetDocumentId(externalId),
+              externalOrderId: externalId,
+              externalOrderNumber: existing.externalOrderNumber,
+              isNew: false,
+              trigger,
+              actor,
+            });
+            if (finalize.failed) {
+              result.syncErrors += 1;
+            } else if (!finalize.alreadyPromoted && finalize.dispatchOrderId) {
+              result.dispatchOrdersCreated += 1;
+            }
+          }
+          continue;
+        }
+
+        deliveryTasks.push({
+          rawOrder,
+          sourceHash,
+          isNew: false,
+          externalOrderId: externalId,
+        });
+      } else {
+        deliveryTasks.push({
+          rawOrder,
+          sourceHash,
+          isNew: true,
+          externalOrderId: externalId,
+        });
       }
+    }
 
-      const deliveryTasks: DeliverySyncTask[] = [];
+    if (deliveryTasks.length > 0) {
+      await mapWithConcurrency(
+        deliveryTasks,
+        enrichmentConcurrency,
+        async (task) => {
+          try {
+            const docRef = db
+              .collection(COLLECTION)
+              .doc(barnetDocumentId(task.externalOrderId));
+            const existingSnap = await docRef.get();
+            const existingData = existingSnap.exists
+              ? hydrateNormalizedExternalOrder(
+                  existingSnap.data() as Record<string, unknown>,
+                )
+              : null;
+            const preserve = existingData
+              ? {
+                  createdAt: existingData.createdAt ?? now,
+                  updatedAt: now,
+                }
+              : undefined;
 
-      for (const rawOrder of orders) {
-        result.ordersSeen += 1;
+            const base = normalizeBarnetOrder(task.rawOrder, {
+              now,
+              preserveTimestamps: preserve,
+            });
+            const enriched = await enrichBarnetDeliveryOrder(
+              base,
+              task.rawOrder,
+              customerCache,
+            );
+            const toStore = preserveAssignmentFields(
+              {
+                ...enriched,
+                sourceLocationId: enriched.sourceLocationId ?? locationId,
+                syncSourceHash: task.sourceHash,
+                lastSyncedAt: now,
+                updatedAt: now,
+                assignedDriverId: null,
+                assignedDriverName: null,
+                assignedAt: null,
+                assignedBy: null,
+                assignmentStatus: existingData?.assignmentStatus === "assigned"
+                  ? "assigned"
+                  : "unassigned",
+              },
+              existingData,
+            );
 
-        const decision = evaluateBarnetOrderDecision(rawOrder);
+            if (task.isNew) {
+              toStore.assignmentStatus = "unassigned";
+              toStore.assignedDriverId = null;
+              toStore.assignedDriverName = null;
+              toStore.assignedAt = null;
+              toStore.assignedBy = null;
+            }
 
-        if (decision.classification === "pickup") {
-          result.pickupOrdersIgnored += 1;
-          bumpExclusion(result, "pickup");
-          continue;
-        }
+            await docRef.set(
+              deepOmitUndefined(toStore as unknown as Record<string, unknown>),
+            );
 
-        if (decision.classification === "unknown") {
-          result.unknownOrdersIgnored += 1;
-          bumpExclusion(result, decision.exclusionReason ?? "unknown_fulfillment");
-          continue;
-        }
+            if (task.isNew) {
+              result.newDeliveries += 1;
+            } else {
+              result.updatedDeliveries += 1;
+            }
 
-        if (!decision.persistable || !decision.externalOrderId) {
-          result.invalidOrders += 1;
-          bumpExclusion(
-            result,
-            decision.exclusionReason ?? "malformed_payload",
-          );
-          continue;
-        }
-
-        result.deliveryCandidates += 1;
-        const externalId = decision.externalOrderId;
-
-        const docRef = db.collection(COLLECTION).doc(barnetDocumentId(externalId));
-        const existingSnap = await docRef.get();
-        let sourceHash: string;
-        try {
-          sourceHash = computeBarnetOrderSourceHash(rawOrder, { now });
-        } catch {
-          result.invalidOrders += 1;
-          bumpExclusion(result, "malformed_payload");
-          continue;
-        }
-
-        if (existingSnap.exists) {
-          const existing = hydrateNormalizedExternalOrder(
-            existingSnap.data() as Record<string, unknown>,
-          );
-          const storedHash = readStoredBarnetSourceHash(existing);
-          if (storedHash === sourceHash) {
-            result.unchangedOrders += 1;
-            if (existing.needsReview || !existing.dispatchReady) {
+            if (toStore.needsReview || !toStore.dispatchReady) {
               result.needsReview += 1;
             } else {
               result.readyToDispatch += 1;
             }
 
-            // Ensure previously imported-but-unpromoted rows still reach Orders.
-            if (!existing.promoted) {
+            const shouldPromote = task.isNew || !toStore.promoted;
+            if (shouldPromote) {
               const finalize = await finalizeBarnetDeliveryImport({
-                docId: barnetDocumentId(externalId),
-                externalOrderId: externalId,
-                externalOrderNumber: existing.externalOrderNumber,
-                isNew: false,
+                docId: barnetDocumentId(task.externalOrderId),
+                externalOrderId: task.externalOrderId,
+                externalOrderNumber: toStore.externalOrderNumber,
+                isNew: task.isNew,
                 trigger,
                 actor,
               });
               if (finalize.failed) {
                 result.syncErrors += 1;
-              } else if (!finalize.alreadyPromoted && finalize.dispatchOrderId) {
-                result.dispatchOrdersCreated += 1;
-              }
-            }
-            continue;
-          }
-
-          deliveryTasks.push({
-            rawOrder,
-            sourceHash,
-            isNew: false,
-            externalOrderId: externalId,
-          });
-        } else {
-          deliveryTasks.push({
-            rawOrder,
-            sourceHash,
-            isNew: true,
-            externalOrderId: externalId,
-          });
-        }
-      }
-
-      if (deliveryTasks.length > 0) {
-        await mapWithConcurrency(
-          deliveryTasks,
-          enrichmentConcurrency,
-          async (task) => {
-            try {
-              const docRef = db
-                .collection(COLLECTION)
-                .doc(barnetDocumentId(task.externalOrderId));
-              const existingSnap = await docRef.get();
-              const existingData = existingSnap.exists
-                ? hydrateNormalizedExternalOrder(
-                    existingSnap.data() as Record<string, unknown>,
-                  )
-                : null;
-              const preserve = existingData
-                ? {
-                    createdAt: existingData.createdAt ?? now,
-                    updatedAt: now,
-                  }
-                : undefined;
-
-              const base = normalizeBarnetOrder(task.rawOrder, {
-                now,
-                preserveTimestamps: preserve,
-              });
-              const enriched = await enrichBarnetDeliveryOrder(
-                base,
-                task.rawOrder,
-                customerCache,
-              );
-              const toStore = preserveAssignmentFields(
-                {
-                  ...enriched,
-                  sourceLocationId: enriched.sourceLocationId ?? locationId,
-                  syncSourceHash: task.sourceHash,
-                  lastSyncedAt: now,
-                  updatedAt: now,
-                  // Sync never assigns a driver.
-                  assignedDriverId: null,
-                  assignedDriverName: null,
-                  assignedAt: null,
-                  assignedBy: null,
-                  assignmentStatus: existingData?.assignmentStatus === "assigned"
-                    ? "assigned"
-                    : "unassigned",
-                },
-                existingData,
-              );
-
-              // Force unassigned for brand-new imports (do not preserve a preview driver).
-              if (task.isNew) {
-                toStore.assignmentStatus = "unassigned";
-                toStore.assignedDriverId = null;
-                toStore.assignedDriverName = null;
-                toStore.assignedAt = null;
-                toStore.assignedBy = null;
-              }
-
-              await docRef.set(
-                deepOmitUndefined(toStore as unknown as Record<string, unknown>),
-              );
-
-              if (task.isNew) {
-                result.newDeliveries += 1;
               } else {
-                result.updatedDeliveries += 1;
-              }
-
-              if (toStore.needsReview || !toStore.dispatchReady) {
-                result.needsReview += 1;
-              } else {
-                result.readyToDispatch += 1;
-              }
-
-              const shouldPromote =
-                task.isNew || !toStore.promoted;
-              if (shouldPromote) {
-                const finalize = await finalizeBarnetDeliveryImport({
-                  docId: barnetDocumentId(task.externalOrderId),
-                  externalOrderId: task.externalOrderId,
-                  externalOrderNumber: toStore.externalOrderNumber,
-                  isNew: task.isNew,
-                  trigger,
-                  actor,
-                });
-                if (finalize.failed) {
-                  result.syncErrors += 1;
-                } else {
-                  if (!finalize.alreadyPromoted && finalize.dispatchOrderId) {
-                    result.dispatchOrdersCreated += 1;
-                  }
-                  if (finalize.notificationCreated) {
-                    result.adminNotificationsCreated += 1;
-                  }
+                if (!finalize.alreadyPromoted && finalize.dispatchOrderId) {
+                  result.dispatchOrdersCreated += 1;
+                }
+                if (finalize.notificationCreated) {
+                  result.adminNotificationsCreated += 1;
                 }
               }
-            } catch (orderErr) {
-              result.enrichmentErrors += 1;
-              result.syncErrors += 1;
-              console.warn(
-                `[order-provider] order sync failed for externalId=${task.externalOrderId}: ${
-                  orderErr instanceof Error ? orderErr.message : "unknown"
-                }`,
-              );
             }
-          },
-        );
-      }
+          } catch (orderErr) {
+            result.enrichmentErrors += 1;
+            result.syncErrors += 1;
+            console.warn(
+              `[order-provider] order sync failed for externalId=${task.externalOrderId}: ${
+                orderErr instanceof Error ? orderErr.message : "unknown"
+              }`,
+            );
+          }
+        },
+      );
     }
+
+    return true;
+  }
+
+  async function finalizeBatch(
+    batchOutcomes: PageFetchOutcome[],
+    batchStartedAtMs: number,
+  ): Promise<void> {
+    const diagnostics = buildPageBatchDiagnostics(
+      batchOutcomes.map((outcome) => outcome.diagnostics),
+      Date.now() - batchStartedAtMs,
+    );
+    result.pageBatchDiagnostics = diagnostics;
+    allPageOutcomes.push(...diagnostics.pageOutcomes);
 
     if (options?.onPageBatchComplete) {
       await options.onPageBatchComplete({
         pagesCompleted: result.pagesScanned,
-        batchSize: batch.length,
+        batchSize: batchOutcomes.length,
         durationMs: Date.now() - syncStartedAtMs,
         failedPages: [...result.failedPages],
+        pageBatchDiagnostics: diagnostics,
       });
     }
   }
 
-  if (result.failedPages.length > 0) {
-    throw new Error(
-      `Barnet page fetch failed for page(s): ${result.failedPages.join(", ")}`,
+  // Phase 1: page-1 provider-health probe (never concurrent with other pages).
+  const probeBatchStartedAtMs = Date.now();
+  const probeOutcome = await fetchPageWithDiagnostics(
+    1,
+    pagination.itemsPerPage,
+    executionBudget,
+  );
+
+  if (!probeOutcome.diagnostics.success) {
+    const probeDiagnostics = buildPageBatchDiagnostics(
+      [probeOutcome.diagnostics],
+      Date.now() - probeBatchStartedAtMs,
     );
+    result.pageBatchDiagnostics = probeDiagnostics;
+    result.failedPages = [...probeDiagnostics.failedPages];
+    result.pageFetchErrors = probeDiagnostics.failedPages.length;
+    await finalizeBatch([probeOutcome], probeBatchStartedAtMs);
+    throwPageFetchFailure(probeDiagnostics, probeOutcome.diagnostics.failureCode);
+  }
+
+  const probeProcessed = await processPageOutcome(probeOutcome);
+  if (!probeProcessed) {
+    stopAfterEmptyPage = true;
+  }
+  await finalizeBatch([probeOutcome], probeBatchStartedAtMs);
+
+  // Phase 2: remaining pages in bounded concurrent batches (page 1 is not refetched).
+  const remainingPages = pageNumbers.slice(1);
+  for (
+    let batchStart = 0;
+    batchStart < remainingPages.length && !stopAfterEmptyPage;
+    batchStart += pageConcurrency
+  ) {
+    const batch = remainingPages.slice(batchStart, batchStart + pageConcurrency);
+    const batchStartedAtMs = Date.now();
+
+    const batchOutcomes = await mapWithConcurrency(
+      batch,
+      pageConcurrency,
+      async (page) =>
+        fetchPageWithDiagnostics(page, pagination.itemsPerPage, executionBudget),
+    );
+    batchOutcomes.sort((a, b) => a.page - b.page);
+
+    let batchFailed = false;
+    for (const outcome of batchOutcomes) {
+      if (stopAfterEmptyPage || batchFailed) {
+        break;
+      }
+
+      if (!outcome.diagnostics.success) {
+        batchFailed = true;
+        console.warn(
+          `[order-provider] page fetch failed page=${outcome.page} code=${outcome.diagnostics.failureCode ?? "unknown"} attempts=${outcome.diagnostics.attempts} durationMs=${outcome.diagnostics.durationMs}`,
+        );
+        continue;
+      }
+
+      const processed = await processPageOutcome(outcome);
+      if (!processed) {
+        stopAfterEmptyPage = true;
+        break;
+      }
+    }
+
+    if (batchFailed) {
+      for (const outcome of batchOutcomes) {
+        if (!outcome.diagnostics.success) {
+          if (!result.failedPages.includes(outcome.page)) {
+            result.failedPages.push(outcome.page);
+            result.pageFetchErrors += 1;
+            result.syncErrors += 1;
+          }
+        }
+      }
+      result.failedPages.sort((a, b) => a - b);
+    }
+
+    await finalizeBatch(batchOutcomes, batchStartedAtMs);
+
+    if (batchFailed) {
+      const cumulativeDiagnostics = buildPageBatchDiagnostics(
+        allPageOutcomes,
+        Date.now() - syncStartedAtMs,
+      );
+      result.pageBatchDiagnostics = cumulativeDiagnostics;
+      throwPageFetchFailure(
+        cumulativeDiagnostics,
+        batchOutcomes.find((outcome) => !outcome.diagnostics.success)?.diagnostics
+          .failureCode,
+      );
+    }
   }
 
   console.info(

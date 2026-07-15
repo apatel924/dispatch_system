@@ -2,6 +2,11 @@
  * Named constants and pure health derivation for Barnet sync.
  */
 
+import {
+  toSafeMessageForFailureCode,
+  type BarnetSyncFailureCode,
+} from "@/lib/integrations/order-provider/barnet-sync-errors.server";
+
 /** Chosen cron frequency: every 15 minutes (see vercel.json). */
 export const BARNET_SYNC_CRON_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -299,11 +304,27 @@ export function toSafeBarnetSyncErrorMessage(error: unknown): {
   errorCode: string;
   safeErrorMessage: string;
 } {
+  if (
+    error &&
+    typeof error === "object" &&
+    "name" in error &&
+    (error as { name?: string }).name === "BarnetSyncFailureError" &&
+    "code" in error
+  ) {
+    const code = String((error as { code: string }).code);
+    return {
+      errorCode: code,
+      safeErrorMessage: toSafeMessageForFailureCode(
+        code as BarnetSyncFailureCode,
+      ),
+    };
+  }
+
   if (error && typeof error === "object" && "name" in error) {
     const name = String((error as { name?: string }).name ?? "");
     if (name === "BarnetUpstreamTimeoutError") {
       return {
-        errorCode: "upstream_timeout",
+        errorCode: "provider_timeout",
         safeErrorMessage: "Barnet request timed out.",
       };
     }
@@ -326,13 +347,13 @@ export function toSafeBarnetSyncErrorMessage(error: unknown): {
   }
   if (lower.includes("429")) {
     return {
-      errorCode: "rate_limited",
+      errorCode: "provider_rate_limited",
       safeErrorMessage: "Barnet rate-limited the request.",
     };
   }
   if (/\b5\d\d\b/.test(message)) {
     return {
-      errorCode: "upstream_5xx",
+      errorCode: "provider_http_error",
       safeErrorMessage: "Barnet returned a server error.",
     };
   }
@@ -344,7 +365,7 @@ export function toSafeBarnetSyncErrorMessage(error: unknown): {
   }
 
   return {
-    errorCode: "sync_failed",
+    errorCode: "unknown_sync_error",
     safeErrorMessage: "Synchronization failed.",
   };
 }

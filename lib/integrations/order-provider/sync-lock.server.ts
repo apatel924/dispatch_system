@@ -1,9 +1,18 @@
 import { getAdminFirestore } from "@/lib/server/firebase-admin";
 import { getBarnetSyncLockTtlMs } from "@/lib/integrations/order-provider/barnet-sync-config.server";
+import type { BarnetSyncSource } from "@/lib/integrations/order-provider/barnet-sync-health.server";
 
-const SYNC_STATE_DOC = "integrationState/orderProvider";
+export const BARNET_SYNC_STATE_DOC = "integrationState/orderProvider";
+export const BARNET_SYNC_RUNS_COLLECTION = "barnetSyncRuns";
 
 export type BarnetSyncLockAcquireResult = "acquired" | "skipped";
+
+export interface AcquireBarnetSyncLockOptions {
+  runId: string;
+  source: BarnetSyncSource;
+  actorId?: string | null;
+  nowMs?: number;
+}
 
 function parseLockExpiry(value: unknown): number {
   if (typeof value !== "string" || value.length === 0) return 0;
@@ -12,15 +21,24 @@ function parseLockExpiry(value: unknown): number {
 }
 
 /**
- * Acquires a Firestore transaction-based sync lock.
+ * Acquires a Firestore transaction-based sync lock shared by cron and manual sync.
  * Stale locks (expired lockExpiresAt) can be taken over.
  */
 export async function acquireBarnetSyncLock(
-  runId: string,
+  runIdOrOptions: string | AcquireBarnetSyncLockOptions,
+  legacySource?: BarnetSyncSource,
 ): Promise<BarnetSyncLockAcquireResult> {
+  const options: AcquireBarnetSyncLockOptions =
+    typeof runIdOrOptions === "string"
+      ? {
+          runId: runIdOrOptions,
+          source: legacySource ?? "cron",
+        }
+      : runIdOrOptions;
+
   const db = getAdminFirestore();
-  const ref = db.doc(SYNC_STATE_DOC);
-  const now = Date.now();
+  const ref = db.doc(BARNET_SYNC_STATE_DOC);
+  const now = options.nowMs ?? Date.now();
   const expiresAt = now + getBarnetSyncLockTtlMs();
 
   return db.runTransaction(async (tx) => {
@@ -39,7 +57,9 @@ export async function acquireBarnetSyncLock(
     tx.set(
       ref,
       {
-        lockRunId: runId,
+        lockRunId: options.runId,
+        lockSource: options.source,
+        lockActorId: options.actorId ?? null,
         lockStartedAt: new Date(now).toISOString(),
         lockExpiresAt: new Date(expiresAt).toISOString(),
       },
@@ -53,7 +73,7 @@ export async function acquireBarnetSyncLock(
 /** Releases the lock when the current run still owns it. */
 export async function releaseBarnetSyncLock(runId: string): Promise<void> {
   const db = getAdminFirestore();
-  const ref = db.doc(SYNC_STATE_DOC);
+  const ref = db.doc(BARNET_SYNC_STATE_DOC);
 
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
@@ -63,6 +83,8 @@ export async function releaseBarnetSyncLock(runId: string): Promise<void> {
         ref,
         {
           lockRunId: null,
+          lockSource: null,
+          lockActorId: null,
           lockStartedAt: null,
           lockExpiresAt: null,
         },

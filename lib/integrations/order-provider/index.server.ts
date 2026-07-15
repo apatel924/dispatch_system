@@ -28,10 +28,6 @@ import { diagnoseLiveCustomerDetail } from "@/lib/integrations/order-provider/li
 import { diagnoseLiveOrderDetail } from "@/lib/integrations/order-provider/live-order-detail-diagnostics";
 import { scanBarnetOrderPages } from "@/lib/integrations/order-provider/scan-barnet-orders.server";
 import {
-  runBarnetOrderSync,
-  toExternalOrderSyncResult,
-} from "@/lib/integrations/order-provider/run-barnet-order-sync.server";
-import {
   fetchMockProviderOrders,
   getMockProviderName,
 } from "@/lib/integrations/order-provider/mock-client.server";
@@ -74,15 +70,22 @@ async function readSyncState(): Promise<ExternalOrderProviderSyncState> {
   if (!snap.exists) {
     return {
       lastSuccessfulSyncAt: null,
+      lastAttemptedSyncAt: null,
       lastError: null,
       lastSyncSummary: null,
     };
   }
-  const data = snap.data() as ExternalOrderProviderSyncState;
+  const data = snap.data() as Record<string, unknown>;
   return {
-    lastSuccessfulSyncAt: data.lastSuccessfulSyncAt ?? null,
-    lastError: data.lastError ?? null,
-    lastSyncSummary: data.lastSyncSummary ?? null,
+    lastSuccessfulSyncAt:
+      typeof data.lastSuccessfulSyncAt === "string" ? data.lastSuccessfulSyncAt : null,
+    lastAttemptedSyncAt:
+      typeof data.lastAttemptedSyncAt === "string" ? data.lastAttemptedSyncAt : null,
+    lastError: typeof data.lastError === "string" ? data.lastError : null,
+    lastSyncSummary:
+      data.lastSyncSummary && typeof data.lastSyncSummary === "object"
+        ? (data.lastSyncSummary as ExternalOrderProviderSyncState["lastSyncSummary"])
+        : null,
   };
 }
 
@@ -102,6 +105,7 @@ export function getOrderProviderHealthWithSyncState(): ExternalOrderProviderHeal
     ...getOrderProviderHealth(),
     syncState: {
       lastSuccessfulSyncAt: null,
+      lastAttemptedSyncAt: null,
       lastError: null,
       lastSyncSummary: null,
     },
@@ -136,6 +140,8 @@ async function buildEnrichedNormalizedOrder(
   return {
     ...normalized,
     dispatchReady: diagnostics.dispatchReady,
+    needsReview: normalized.needsReview,
+    reviewReasons: normalized.reviewReasons,
     missingFields: diagnostics.missingFields,
     dispatchStatus: diagnostics.dispatchReady ? "ready" : "needs_review",
   };
@@ -368,10 +374,75 @@ export async function scanLiveExternalDeliveryOrders(): Promise<LiveDeliveryScan
 /**
  * Loads live Barnet orders (read-only GET across configured pages), normalizes delivery orders,
  * and upserts into Firestore. Document IDs are stable: barnet_<externalOrderId>.
+ * Uses the shared sync orchestrator (operating hours + lock + run metrics).
  */
-export async function syncLiveExternalOrders(): Promise<ExternalOrderSyncResult> {
-  const run = await runBarnetOrderSync();
-  return toExternalOrderSyncResult(run);
+export async function syncLiveExternalOrders(options?: {
+  actorId?: string | null;
+  overrideQuietHours?: boolean;
+}): Promise<ExternalOrderSyncResult & {
+  skipped?: boolean;
+  reason?: string;
+  status?: string;
+  nextEligibleAt?: string;
+  unchangedOrders?: number;
+  needsReview?: number;
+  readyToDispatch?: number;
+  enrichmentErrors?: number;
+  syncErrors?: number;
+  invalidOrders?: number;
+  exclusionReasons?: Record<string, number>;
+  durationMs?: number;
+}> {
+  const { executeBarnetSync } = await import(
+    "@/lib/integrations/order-provider/execute-barnet-sync.server"
+  );
+  const result = await executeBarnetSync({
+    source: "manual",
+    actorId: options?.actorId,
+    overrideQuietHours: options?.overrideQuietHours,
+  });
+
+  if ("skipped" in result && result.skipped) {
+    return {
+      pagesScanned: 0,
+      totalOrdersSeen: 0,
+      deliveryOrdersFound: 0,
+      pickupOrdersIgnored: 0,
+      unknownOrdersIgnored: 0,
+      inserted: 0,
+      updated: 0,
+      total: 0,
+      skipped: true,
+      reason: result.reason,
+      status: result.status,
+      nextEligibleAt: "nextEligibleAt" in result ? result.nextEligibleAt : undefined,
+      durationMs: result.durationMs,
+    };
+  }
+
+  if (!result.ok) {
+    throw new Error(result.safeErrorMessage);
+  }
+
+  return {
+    pagesScanned: result.pagesScanned,
+    totalOrdersSeen: result.ordersSeen,
+    deliveryOrdersFound: result.deliveryCandidates,
+    pickupOrdersIgnored: result.pickupOrdersIgnored,
+    unknownOrdersIgnored: result.unknownOrdersIgnored,
+    inserted: result.newDeliveries,
+    updated: result.updatedDeliveries,
+    total: result.newDeliveries + result.updatedDeliveries,
+    status: result.status,
+    unchangedOrders: result.unchangedOrders,
+    needsReview: result.needsReview,
+    readyToDispatch: result.readyToDispatch,
+    enrichmentErrors: result.enrichmentErrors,
+    syncErrors: result.syncErrors,
+    invalidOrders: result.invalid,
+    exclusionReasons: result.exclusionReasons,
+    durationMs: result.durationMs,
+  };
 }
 
 export async function listSyncedExternalOrders(

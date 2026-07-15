@@ -81,7 +81,12 @@ describe("delivery-metrics", () => {
     ];
 
     const todayKey = localDayKey("2026-07-13T12:00:00.000Z", EDMONTON);
-    const metrics = aggregateDriverMetricsFromOrders(orders, ["DRV-1"], EDMONTON);
+    const metrics = aggregateDriverMetricsFromOrders(
+      orders,
+      ["DRV-1"],
+      EDMONTON,
+      todayKey,
+    );
     const row = metrics.get("DRV-1")!;
 
     expect(row.activeDeliveries).toBe(1);

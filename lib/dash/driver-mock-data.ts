@@ -1,4 +1,8 @@
 import type { OrderStatus, PaymentStatus, DriverStatus } from "./mock-data";
+import {
+  NON_PROOF_DELIVERY_STEPS,
+  REQUIRED_PROOF_UPLOADS,
+} from "@/lib/delivery-workflow";
 
 export interface DriverOrder {
   id: string;
@@ -50,7 +54,7 @@ export const driverOrders: DriverOrder[] = [
     unit: "Suite 200 / Buzz 42",
     pickupName: "Northside Pharmacy",
     pickupAddress: "4567 Medical Dr, Dallas, TX 75231",
-    status: "En Route",
+    status: "Out for Delivery",
     payment: "Paid",
     total: "$18.50",
     eta: "12:15 PM",
@@ -134,7 +138,7 @@ export function getDriverOrder(id: string): DriverOrder | undefined {
 }
 
 export function getActiveOrder(): DriverOrder {
-  return driverOrders.find((o) => o.status === "En Route" || o.status === "Out for Delivery") ?? driverOrders[0];
+  return driverOrders.find((o) => o.status === "Out for Delivery") ?? driverOrders[0];
 }
 
 export type DeliveryStepKey =
@@ -153,14 +157,19 @@ export interface DeliveryStep {
   proofType?: "signature" | "photo";
 }
 
+/** Built from authoritative proof config + non-proof tap steps (no parallel hardcoded proof list). */
 export const DELIVERY_STEPS: DeliveryStep[] = [
-  { key: "arrivedPickup", label: "Arrived at pickup", type: "tap" },
-  { key: "pickedUp", label: "Picked up", type: "tap" },
-  { key: "outForDelivery", label: "Out for delivery", type: "tap" },
-  { key: "arrivedDestination", label: "Arrived at destination", type: "tap" },
-  { key: "verifyId", label: "Verify ID", type: "tap" },
-  { key: "signature", label: "Capture signature", type: "proof", proofType: "signature" },
-  { key: "exteriorPhoto", label: "Upload exterior photo", type: "proof", proofType: "photo" },
+  ...NON_PROOF_DELIVERY_STEPS.map((s) => ({
+    key: s.key,
+    label: s.label,
+    type: "tap" as const,
+  })),
+  ...REQUIRED_PROOF_UPLOADS.map((p) => ({
+    key: p.stepKey,
+    label: p.label,
+    type: "proof" as const,
+    proofType: p.captureMode,
+  })),
 ];
 
 export const DEFAULT_COMPLETED_STEPS: DeliveryStepKey[] = [];

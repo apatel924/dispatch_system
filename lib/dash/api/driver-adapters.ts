@@ -15,9 +15,7 @@ import type { ProofType } from "@/lib/dash/driver-store";
 const ACTIVE_STATUSES = new Set([
   "Assigned",
   "Picked Up",
-  "En Route",
   "Out for Delivery",
-  "Scheduled",
 ]);
 
 export function orderToDriverOrder(order: Order): DriverOrder {
@@ -83,7 +81,7 @@ export function getMockDriverOrder(id: string): DriverOrder | undefined {
 export function pickActiveOrder(orders: DriverOrder[]): DriverOrder | null {
   if (orders.length === 0) return null;
   return (
-    orders.find((o) => o.status === "En Route" || o.status === "Out for Delivery") ??
+    orders.find((o) => o.status === "Out for Delivery") ??
     orders.find((o) => ACTIVE_STATUSES.has(o.status)) ??
     orders[0]
   );
@@ -101,7 +99,7 @@ export function splitDriverOrders(orders: DriverOrder[]): {
 }
 
 export function sortRouteStops(orders: DriverOrder[]): DriverOrder[] {
-  const order = ["En Route", "Out for Delivery", "Assigned", "Scheduled", "Picked Up"];
+  const order = ["Out for Delivery", "Assigned", "Picked Up", "Scheduled"];
   return [...orders].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
 }
 

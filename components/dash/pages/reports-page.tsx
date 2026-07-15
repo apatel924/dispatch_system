@@ -1,7 +1,7 @@
 'use client'
 
 import Link from "next/link";
-import { Truck, CheckCircle2, XCircle, RotateCcw, Clock } from "lucide-react";
+import { Truck, CheckCircle2, XCircle, RotateCcw } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { StatCard } from "@/components/dash/ui/stat-card";
 import { SectionCard } from "@/components/dash/ui/section-card";
@@ -35,9 +35,19 @@ function comparisonProps(
 
 export function ReportsPage() {
   const { reports, loading, error } = useAdminReports();
-  const { totals, statusBreakdown, drivers: reportDrivers, trendDays, compareTrendDays, period, comparePeriod, comparisons, dataCoverage } = reports;
-  const statusTotal = statusBreakdown.completed + statusBreakdown.failed + statusBreakdown.returned;
-  const completionRate = statusTotal > 0
+  const totals = reports?.totals;
+  const statusBreakdown = reports?.statusBreakdown;
+  const reportDrivers = reports?.drivers ?? [];
+  const trendDays = reports?.trendDays ?? [];
+  const compareTrendDays = reports?.compareTrendDays;
+  const period = reports?.period ?? { from: "", to: "" };
+  const comparePeriod = reports?.comparePeriod;
+  const comparisons = reports?.comparisons;
+  const dataCoverage = reports?.dataCoverage;
+  const statusTotal = statusBreakdown
+    ? statusBreakdown.completed + statusBreakdown.failed + statusBreakdown.returned
+    : 0;
+  const completionRate = statusTotal > 0 && statusBreakdown
     ? ((statusBreakdown.completed / statusTotal) * 100).toFixed(1)
     : "0";
 
@@ -50,12 +60,6 @@ export function ReportsPage() {
       {error && (
         <div className="mb-4">
           <DashErrorState message={error} />
-        </div>
-      )}
-
-      {loading && !error && (
-        <div className="mb-4">
-          <DashLoadingState message="Loading reports…" />
         </div>
       )}
 
@@ -77,50 +81,49 @@ export function ReportsPage() {
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
         <StatCard
           label="Total Deliveries"
-          value={totals.deliveries}
+          value={totals?.deliveries ?? null}
           icon={Truck}
           tone="info"
+          loading={loading}
           {...comparisonProps(comparisons?.deliveries, compareLabel)}
         />
         <StatCard
-          label="Completed Deliveries"
-          value={totals.completed}
+          label="Completed"
+          value={totals?.completed ?? null}
           icon={CheckCircle2}
           tone="success"
+          loading={loading}
           {...comparisonProps(comparisons?.completed, compareLabel)}
         />
         <StatCard
-          label="Failed Deliveries"
-          value={totals.failed}
+          label="Failed"
+          value={totals?.failed ?? null}
           icon={XCircle}
           tone="primary"
+          loading={loading}
           {...comparisonProps(comparisons?.failed, compareLabel)}
         />
         <StatCard
-          label="Returned Deliveries"
-          value={totals.returned}
+          label="Returned"
+          value={totals?.returned ?? null}
           icon={RotateCcw}
-          tone="purple"
-          {...comparisonProps(comparisons?.returned, compareLabel)}
-        />
-        <StatCard
-          label="Average Delivery Time"
-          value={totals.avgDeliveryTime}
-          icon={Clock}
           tone="warning"
-          {...comparisonProps(comparisons?.avgDeliveryTimeMs, compareLabel)}
+          loading={loading}
+          {...comparisonProps(comparisons?.returned, compareLabel)}
         />
       </div>
 
       <div className="mt-6 grid min-w-0 gap-6 lg:grid-cols-2 xl:grid-cols-3">
         <SectionCard title="Deliveries Over Time">
-          {trendDays.length === 0 ? (
+          {loading && trendDays.length === 0 ? (
+            <div className="h-40 animate-pulse rounded-lg bg-secondary/60" aria-busy="true" />
+          ) : trendDays.length === 0 ? (
             <DashEmptyState message="No deliveries in this period" className="py-8" />
           ) : (
             <>
-              <TrendChart days={trendDays} compareDays={compareTrendDays} />
+              <TrendChart days={trendDays} compareDays={compareTrendDays ?? null} />
               <div className="mt-2 flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">Total Deliveries: {totals.deliveries}</span>
+                <span className="text-muted-foreground">Total Deliveries: {totals?.deliveries ?? "—"}</span>
                 <span className="text-muted-foreground">
                   {comparisons?.deliveries != null
                     ? `${formatPercentChange(comparisons.deliveries)} ${compareLabel}`
@@ -132,7 +135,9 @@ export function ReportsPage() {
         </SectionCard>
 
         <SectionCard title="Delivery Status Breakdown">
-          {statusTotal === 0 ? (
+          {loading && !statusBreakdown ? (
+            <div className="h-32 animate-pulse rounded-lg bg-secondary/60" aria-busy="true" />
+          ) : !statusBreakdown || statusTotal === 0 ? (
             <DashEmptyState message="No terminal deliveries in this period" className="py-8" />
           ) : (
             <>
@@ -190,7 +195,6 @@ export function ReportsPage() {
                     <th className="px-2 py-2 font-medium">Completed</th>
                     <th className="px-2 py-2 font-medium">Failed</th>
                     <th className="px-4 py-2 font-medium">Success Rate</th>
-                    <th className="px-4 py-2 font-medium">Avg Time</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/60">
@@ -206,7 +210,6 @@ export function ReportsPage() {
                       <td className="px-2 py-2">{d.completed}</td>
                       <td className="px-2 py-2">{d.failed}</td>
                       <td className="px-4 py-2 text-success">{d.successRate != null ? `${d.successRate}%` : "—"}</td>
-                      <td className="px-4 py-2 text-muted-foreground">{d.avgDeliveryTime}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -218,7 +221,7 @@ export function ReportsPage() {
       </div>
 
       <div className="mt-6 text-xs text-muted-foreground">
-        Reports are based on orders created within the selected period. Average delivery time uses assigned-to-delivered duration when both timestamps exist.
+        Reports are based on orders created within the selected period.
       </div>
     </DashboardLayout>
   );

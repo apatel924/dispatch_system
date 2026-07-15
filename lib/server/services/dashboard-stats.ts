@@ -1,9 +1,9 @@
 import { getAppTimeZone, todayLocalDayKey } from "@/lib/app-timezone";
 import {
-  ACTIVE_DELIVERY_ORDER_STATUSES,
+  ACTIVE_DELIVERY_QUERY_STATUSES,
   AWAITING_ASSIGNMENT_ORDER_STATUSES,
   NEW_ORDER_STATUSES,
-} from "@/lib/order-status-groups";
+} from "@/lib/order-status";
 import { isDriverAvailable, isDriverBusy } from "@/lib/delivery-metrics";
 import { isOnActiveRoster } from "@/lib/driver-status";
 import { COLLECTIONS } from "@/lib/server/firestore/collections";
@@ -59,7 +59,7 @@ async function countAwaitingAssignment(): Promise<number> {
 }
 
 async function countActiveDeliveries(): Promise<number> {
-  return countOrdersByStatusIn(ACTIVE_DELIVERY_ORDER_STATUSES);
+  return countOrdersByStatusIn(ACTIVE_DELIVERY_QUERY_STATUSES);
 }
 
 async function countDriverAvailability(): Promise<{
@@ -72,7 +72,7 @@ async function countDriverAvailability(): Promise<{
     db.collection(COLLECTIONS.drivers).get(),
     db
       .collection(COLLECTIONS.orders)
-      .where("status", "in", [...ACTIVE_DELIVERY_ORDER_STATUSES])
+      .where("status", "in", [...ACTIVE_DELIVERY_QUERY_STATUSES])
       .get(),
   ]);
 

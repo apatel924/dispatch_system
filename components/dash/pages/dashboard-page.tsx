@@ -18,7 +18,8 @@ import {
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { StatCard } from "@/components/dash/ui/stat-card";
 import { SectionCard } from "@/components/dash/ui/section-card";
-import { DashEmptyState, DashErrorState, DashLoadingState } from "@/components/dash/ui/query-state";
+import { DashEmptyState, DashErrorState } from "@/components/dash/ui/query-state";
+import { OrdersTableSkeletonRows, DriverRowSkeleton } from "@/components/dash/ui/skeletons";
 import { OrderStatusBadge } from "@/components/dash/status-badge";
 import { OrderActionsMenu } from "@/components/dash/order-actions-menu";
 import { TableScroll } from "@/components/dash/ui/table-scroll";
@@ -26,51 +27,62 @@ import { useAdminOrders } from "@/lib/dash/hooks/use-admin-orders";
 import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
 import { useAdminDashboardStats } from "@/lib/dash/hooks/use-admin-dashboard-stats";
 import { isApiEnabled } from "@/lib/dash/api/config";
+import { useQueryClient } from "@tanstack/react-query";
+import { invalidateAfterOrderLifecycle } from "@/lib/dash/query/query-keys";
 
 export function DashboardPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const apiEnabled = isApiEnabled();
   const { orders, loading: ordersLoading, error: ordersError, refresh: refreshOrders } = useAdminOrders({ limit: 50 });
   const { drivers, loading: driversLoading, error: driversError } = useAdminDrivers({ limit: 20 });
   const { stats: dashboardStats, loading: statsLoading, error: statsError } = useAdminDashboardStats();
 
+  const onOrderStatusChanged = () => {
+    void invalidateAfterOrderLifecycle(queryClient);
+    void refreshOrders();
+  };
+
   const stats = useMemo(() => {
-    const failedReturnedLabel = apiEnabled && dashboardStats.partialData
+    const failedReturnedLabel = apiEnabled && dashboardStats?.partialData
       ? "Failed / Returned Today (partial)"
       : "Failed / Returned Today";
-
-    const showPlaceholder = statsLoading && apiEnabled;
 
     return [
       {
         label: "New Orders",
-        value: showPlaceholder ? "—" : dashboardStats.newOrders,
+        value: dashboardStats?.newOrders ?? null,
         icon: FileText,
         tone: "info" as const,
+        loading: statsLoading,
       },
       {
         label: "Awaiting Assignment",
-        value: showPlaceholder ? "—" : dashboardStats.awaitingAssignment,
+        value: dashboardStats?.awaitingAssignment ?? null,
         icon: UserPlus,
         tone: "purple" as const,
+        loading: statsLoading,
       },
       {
         label: "Active Deliveries",
-        value: showPlaceholder ? "—" : dashboardStats.activeDeliveries,
+        value: dashboardStats?.activeDeliveries ?? null,
         icon: Truck,
         tone: "orange" as const,
+        loading: statsLoading,
       },
       {
         label: "Completed Today",
-        value: showPlaceholder ? "—" : dashboardStats.completedToday,
+        value: dashboardStats?.completedToday ?? null,
         icon: CheckCircle2,
         tone: "success" as const,
+        loading: statsLoading,
       },
       {
         label: failedReturnedLabel,
-        value: showPlaceholder ? "—" : dashboardStats.failedReturnedToday,
+        value: dashboardStats?.failedReturnedToday ?? null,
         icon: XCircle,
         tone: "primary" as const,
+        loading: statsLoading,
       },
     ];
   }, [apiEnabled, dashboardStats, statsLoading]);
@@ -83,7 +95,7 @@ export function DashboardPage() {
         if (o.status === "Delivered") {
           return { icon: "check" as const, tone: "success", title: `Order ${o.id} delivered successfully`, by: o.driver ?? "System", time: o.updated };
         }
-        if (o.status === "Out for Delivery" || o.status === "En Route") {
+        if (o.status === "Out for Delivery") {
           return { icon: "truck" as const, tone: "orange", title: `Order ${o.id} is ${o.status.toLowerCase()}`, by: o.driver ?? "System", time: o.updated };
         }
         if (o.status === "Failed") {
@@ -98,9 +110,9 @@ export function DashboardPage() {
 
   const activeDrivers = drivers.slice(0, 5);
   const tableOrders = orders.slice(0, 12);
-  const availableCount = apiEnabled ? dashboardStats.availableDrivers : 0;
-  const busyCount = apiEnabled ? dashboardStats.busyDrivers : 0;
-  const completedToday = apiEnabled ? dashboardStats.completedToday : 0;
+  const availableCount = dashboardStats?.availableDrivers ?? null;
+  const busyCount = dashboardStats?.busyDrivers ?? null;
+  const completedToday = dashboardStats?.completedToday ?? null;
   const driverStatsLoading = statsLoading && apiEnabled;
 
   return (
@@ -113,7 +125,7 @@ export function DashboardPage() {
         </div>
       )}
 
-      {apiEnabled && dashboardStats.partialData && dashboardStats.partialDataMessage && (
+      {apiEnabled && dashboardStats?.partialData && dashboardStats.partialDataMessage && (
         <div className="mb-4 rounded-lg border border-warning/40 bg-warning-soft/40 px-4 py-3 text-sm text-warning-foreground">
           {dashboardStats.partialDataMessage}
         </div>
@@ -147,9 +159,18 @@ export function DashboardPage() {
                   <th className="px-5 py-3 font-medium">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border/60">
+              <tbody
+                className="divide-y divide-border/60"
+                aria-busy={ordersLoading && tableOrders.length === 0 ? true : undefined}
+                aria-label={ordersLoading && tableOrders.length === 0 ? "Loading orders" : undefined}
+              >
                 {ordersLoading && tableOrders.length === 0 ? (
-                  <tr><td colSpan={7} className="px-5 py-8 text-center text-muted-foreground"><DashLoadingState message="Loading orders…" /></td></tr>
+                  <>
+                    <tr className="sr-only">
+                      <td colSpan={7}>Loading orders</td>
+                    </tr>
+                    <OrdersTableSkeletonRows rows={6} columns={7} />
+                  </>
                 ) : tableOrders.length === 0 ? (
                   <tr><td colSpan={7}><DashEmptyState message="No orders found" /></td></tr>
                 ) : (
@@ -168,7 +189,7 @@ export function DashboardPage() {
                       <td className="px-5 py-3 text-right">
                         <OrderActionsMenu
                           order={o}
-                          onStatusChanged={() => void refreshOrders({ silent: true })}
+                          onStatusChanged={onOrderStatusChanged}
                         />
                       </td>
                     </tr>
@@ -191,13 +212,23 @@ export function DashboardPage() {
               {[["Available", availableCount, "text-success"], ["Busy", busyCount, "text-warning-foreground"], ["Completed Today", completedToday, "text-success"]].map(([l, v, tone]) => (
                 <div key={l as string} className="rounded-lg border border-border/60 bg-secondary/30 p-3 text-center">
                   <div className="text-[11px] text-muted-foreground">{l}</div>
-                  <div className={`mt-1 text-lg font-bold ${tone}`}>{driverStatsLoading ? "—" : v}</div>
+                  <div className={`mt-1 min-h-[1.75rem] text-lg font-bold tabular-nums ${tone}`}>
+                    {driverStatsLoading || v === null ? (
+                      <span className="inline-block h-5 w-8 animate-pulse rounded bg-secondary" aria-hidden />
+                    ) : (
+                      v
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
             <div className="divide-y divide-border/60">
               {driversLoading && activeDrivers.length === 0 ? (
-                <DashLoadingState message="Loading drivers…" className="py-4 text-center" />
+                <div className="space-y-2 py-2">
+                  <DriverRowSkeleton />
+                  <DriverRowSkeleton />
+                  <DriverRowSkeleton />
+                </div>
               ) : activeDrivers.length === 0 ? (
                 <DashEmptyState message="No drivers found" className="py-4" />
               ) : (

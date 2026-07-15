@@ -591,6 +591,9 @@ export async function runLiveOrderProviderSync(options?: {
 export interface ExternalOrderProviderSyncState {
   lastSuccessfulSyncAt: string | null;
   lastAttemptedSyncAt?: string | null;
+  lastScanAt?: string | null;
+  lastNewOrderImportedAt?: string | null;
+  lastResult?: string | null;
   lastError: string | null;
   lastSyncSummary: {
     inserted: number;
@@ -601,6 +604,8 @@ export interface ExternalOrderProviderSyncState {
     invalid?: number;
     enrichmentErrors?: number;
     syncErrors?: number;
+    needsReview?: number;
+    readyToDispatch?: number;
   } | null;
 }
 
@@ -622,6 +627,9 @@ export interface BarnetSyncHealthView {
   isLocked: boolean;
   lastAttemptedSyncAt: string | null;
   lastSuccessfulSyncAt: string | null;
+  lastScanAt?: string | null;
+  lastNewOrderImportedAt?: string | null;
+  lastResult?: string | null;
   lastDurationMs: number | null;
   lastSafeErrorMessage: string | null;
   lastErrorCode: string | null;
@@ -637,6 +645,8 @@ export interface BarnetSyncHealthView {
     invalid?: number;
     enrichmentErrors?: number;
     syncErrors?: number;
+    needsReview?: number;
+    readyToDispatch?: number;
   } | null;
   nextExpectedEligibleScanAt: string | null;
 }
@@ -800,5 +810,53 @@ export async function promoteExternalOrderApi(
   return adminFetch(`/api/external-orders/${encodeURIComponent(id)}/promote`, {
     method: "POST",
     body: JSON.stringify(body ?? {}),
+  });
+}
+
+export async function fetchAdminNotifications(params?: {
+  limit?: number;
+  unreadOnly?: boolean;
+}): Promise<{
+  notifications: Array<{
+    id: string;
+    type: string;
+    title: string;
+    message: string;
+    read: boolean;
+    source: string;
+    externalOrderId?: string | null;
+    dispatchOrderId?: string | null;
+    link?: string | null;
+    createdAt: string;
+  }>;
+  unreadCount: number;
+}> {
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set("limit", String(params.limit));
+  if (params?.unreadOnly) qs.set("unreadOnly", "true");
+  const query = qs.toString();
+  return adminFetch(`/api/admin/notifications${query ? `?${query}` : ""}`);
+}
+
+export async function markAdminNotificationReadApi(id: string): Promise<{
+  ok: boolean;
+  notification?: {
+    id: string;
+    read: boolean;
+    link?: string | null;
+  };
+}> {
+  return adminFetch(`/api/admin/notifications/${encodeURIComponent(id)}/read`, {
+    method: "POST",
+  });
+}
+
+export async function markAllAdminNotificationsReadApi(): Promise<{
+  ok: boolean;
+  updated: number;
+}> {
+  return adminFetch("/api/admin/notifications", {
+    method: "POST",
+    body: JSON.stringify({ markAllRead: true }),
   });
 }

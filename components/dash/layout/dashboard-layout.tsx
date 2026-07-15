@@ -17,11 +17,11 @@ import {
   LogOut,
   Menu,
   Search,
-  Bell,
   ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/dash/brand/logo";
+import { AdminNotificationBell } from "@/components/dash/admin-notification-bell";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/dash/ui/tooltip";
 
 const nav = [
@@ -149,10 +149,7 @@ export function DashboardLayout({ title, children, actions }: { title: string; c
                 />
                 <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-card px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">⌘K</span>
               </div>
-              <button className="relative rounded-full p-2 text-muted-foreground hover:bg-secondary hover:text-foreground" aria-label="Notifications">
-                <Bell className="h-5 w-5" />
-                <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">8</span>
-              </button>
+              <AdminNotificationBell />
               <div className="flex items-center gap-2 rounded-full pl-1 pr-2 hover:bg-secondary">
                 <div className="grid h-9 w-9 place-items-center rounded-full bg-secondary text-sm font-semibold">AU</div>
                 <div className="hidden text-right leading-tight sm:block">

@@ -67,16 +67,19 @@ export interface DriverAccountAccess {
   activeOrderCount?: number;
 }
 
+/**
+ * Canonical order statuses. Legacy "En Route" normalizes to "Out for Delivery"
+ * via lib/order-status.ts — it is not a writable canonical value.
+ */
 export type OrderStatus =
   | "New"
+  | "Scheduled"
   | "Assigned"
   | "Picked Up"
-  | "En Route"
   | "Out for Delivery"
   | "Delivered"
   | "Failed"
-  | "Returned"
-  | "Scheduled";
+  | "Returned";
 
 export type PaymentStatus = "Paid" | "Pending" | "Unpaid";
 
@@ -111,6 +114,12 @@ export interface Order {
   assignedDriverId: string | null;
   assignedDriverName: string | null;
   status: OrderStatus;
+  /**
+   * Present when Firestore status was not a recognized lifecycle value.
+   * Order is quarantined — do not assign or transition until repaired.
+   * Not a persisted lifecycle status.
+   */
+  unrecognizedStatusRaw?: string | null;
   paymentStatus: PaymentStatus;
   paymentMethod?: string;
   subtotalCents?: number;
@@ -149,6 +158,15 @@ export interface OrderStatusEvent {
   id: string;
   orderId: string;
   status: OrderStatus;
+  /** Previous canonical status when this event recorded a transition or reassignment. */
+  previousStatus?: OrderStatus;
+  /** Distinguishes assignment/reassignment from lifecycle transitions. */
+  actionType?:
+    | "status_transition"
+    | "assignment"
+    | "reassignment"
+    | "unassign"
+    | "retry";
   stepKey?: DeliveryStepKey;
   note?: string;
   actorId: string;

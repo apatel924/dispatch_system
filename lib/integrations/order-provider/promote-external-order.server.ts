@@ -8,6 +8,7 @@ import {
   findOrderByExternalOrderRef,
   findOrderByExternalReference,
   getOrderById,
+  type ActorContext,
 } from "@/lib/server/services/orders";
 import type { CreateOrderInput } from "@/lib/server/validation/orders";
 import {
@@ -19,6 +20,10 @@ import type {
   ExternalProviderOrderItem,
   NormalizedExternalOrder,
 } from "@/lib/integrations/order-provider/types";
+
+const MISSING_CUSTOMER_NAME = "Unknown customer";
+const MISSING_CUSTOMER_PHONE = "unknown";
+const MISSING_DELIVERY_ADDRESS = "Address missing — needs review";
 
 const COLLECTION = "externalOrders";
 
@@ -85,20 +90,26 @@ function externalOrderToCreateInput(
   docId: string,
   promotedAt: string,
 ): CreateOrderInput {
-  const customerName = order.customer?.name ?? order.customerName ?? "";
-  const customerPhone = order.customer?.phone ?? order.customerPhone ?? "";
+  const rawName = (order.customer?.name ?? order.customerName ?? "").trim();
+  const rawPhone = (order.customer?.phone ?? order.customerPhone ?? "").trim();
   const customerEmail = order.customer?.email ?? order.customerEmail ?? undefined;
-  const deliveryAddress =
-    order.delivery?.formattedAddress ?? order.deliveryAddress ?? "";
+  const rawAddress = (
+    order.delivery?.formattedAddress ??
+    order.deliveryAddress ??
+    ""
+  ).trim();
   const totalCents = Math.max(0, Math.round(order.totals?.total ?? order.total ?? 0));
 
   return {
-    customerName,
-    customerPhone,
+    // Placeholders keep incomplete Barnet deliveries importable as Needs Review.
+    customerName: rawName || MISSING_CUSTOMER_NAME,
+    customerPhone: rawPhone || MISSING_CUSTOMER_PHONE,
     customerEmail,
     pickupName: resolvePickupName(order),
     pickupAddress: resolvePickupAddress(order),
-    deliveryAddress,
+    deliveryAddress: rawAddress || MISSING_DELIVERY_ADDRESS,
+    // Explicitly unassigned — sync/promote must never auto-assign a driver.
+    assignedDriverId: null,
     deliveryUnit: order.delivery?.address2 ?? undefined,
     deliveryArea: order.delivery?.city ?? undefined,
     deliveryInstructions:
@@ -162,7 +173,7 @@ async function markExternalOrderPromoted(
 
 export async function promoteExternalOrderToDispatch(
   docId: string,
-  actor: AuthUser,
+  actor: AuthUser | ActorContext,
   options?: { overrideMissingFields?: boolean },
 ): Promise<PromoteExternalOrderResult> {
   const db = getAdminFirestore();
@@ -193,6 +204,9 @@ export async function promoteExternalOrderToDispatch(
 
   const promotedAt = nowIso();
   const createInput = externalOrderToCreateInput(order, docId, promotedAt);
+  if (createInput.assignedDriverId) {
+    createInput.assignedDriverId = null;
+  }
   const dispatchOrder = await createOrder(createInput, actor);
 
   await markExternalOrderPromoted(docId, dispatchOrder.id, promotedAt);

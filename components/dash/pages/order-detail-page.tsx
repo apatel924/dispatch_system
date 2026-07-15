@@ -8,6 +8,7 @@ import { SectionCard } from "@/components/dash/ui/section-card";
 import { ConsumerDeliveryInstructions } from "@/components/dash/consumer-delivery-instructions";
 import { OrderActionsMenu } from "@/components/dash/order-actions-menu";
 import { OrderStatusBadge, DriverStatusBadge, ProofReviewBadge } from "@/components/dash/status-badge";
+import { OrderDetailSkeleton } from "@/components/dash/ui/skeletons";
 import { reviewProofApi, acknowledgeConsumerNoteApi, rotateOrderTrackingLinkApi } from "@/lib/dash/api/client";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import { useAdminOrderDetail } from "@/lib/dash/hooks/use-admin-order-detail";
@@ -18,7 +19,6 @@ const TIMELINE_ICONS: Record<string, typeof FileText> = {
   New: FileText,
   Assigned: Users,
   "Picked Up": Package,
-  "En Route": Truck,
   "Out for Delivery": Truck,
   Delivered: CheckCircle2,
 };
@@ -27,7 +27,6 @@ const TIMELINE_TONES: Record<string, string> = {
   New: "purple",
   Assigned: "info",
   "Picked Up": "orange",
-  "En Route": "orange",
   "Out for Delivery": "orange",
   Delivered: "success",
 };
@@ -127,7 +126,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
   if (loading && !detail) {
     return (
       <DashboardLayout title="Orders">
-        <p className="text-muted-foreground">Loading order…</p>
+        <OrderDetailSkeleton />
       </DashboardLayout>
     );
   }
@@ -151,7 +150,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
       <div className="rounded-xl border border-border bg-card p-5 shadow-[0_1px_2px_0_rgb(0_0_0/0.03)]">
         <div className="flex flex-wrap items-center gap-3">
           <h2 className="text-2xl font-bold tracking-tight">{d.id}</h2>
-          <OrderStatusBadge status={d.status} />
+          <OrderStatusBadge status={d.status} unrecognizedStatusRaw={d.unrecognizedStatusRaw} />
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <button className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary"><Users className="h-4 w-4" /> Assign Driver</button>
             <button
@@ -168,6 +167,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                 id: d.id,
                 status: d.status,
                 driver: d.driver?.name ?? null,
+                unrecognizedStatusRaw: d.unrecognizedStatusRaw,
               }}
               onStatusChanged={() => void refresh()}
               triggerClassName="rounded-lg border border-input bg-card p-2 hover:bg-secondary"

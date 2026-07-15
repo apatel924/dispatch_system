@@ -17,14 +17,21 @@ import {
   isAuthConfigured,
   type AuthPortal,
 } from "@/lib/auth/firebase-client";
+import {
+  ACCOUNT_DISABLED_CODE,
+  ACCOUNT_DISABLED_MESSAGE,
+} from "@/lib/auth/account-status";
+import { handleAccountDisabledResponse } from "@/lib/dash/api/account-disabled";
 
 export class AdminApiError extends Error {
   readonly status: number;
+  readonly code?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = "AdminApiError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -64,7 +71,16 @@ export async function portalFetch<T>(
     const body = await res.json().catch(() => ({}));
     const message =
       typeof body.error === "string" ? body.error : res.statusText || "Request failed";
-    throw new AdminApiError(message, res.status);
+    const code = typeof body.code === "string" ? body.code : undefined;
+
+    if (code === ACCOUNT_DISABLED_CODE) {
+      await handleAccountDisabledResponse(
+        portal,
+        typeof body.error === "string" ? body.error : ACCOUNT_DISABLED_MESSAGE,
+      );
+    }
+
+    throw new AdminApiError(message, res.status, code);
   }
   return res.json() as Promise<T>;
 }
@@ -118,7 +134,11 @@ export async function acknowledgeConsumerNoteApi(
 
 export async function updateOrderStatusApi(
   orderId: string,
-  body: { status: OrderStatus; note?: string },
+  body: {
+    status: OrderStatus;
+    note?: string;
+    stepKey?: import("@/lib/types/backend").DeliveryStepKey;
+  },
 ): Promise<{ order: Order; event: OrderStatusEvent }> {
   return adminFetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
     method: "POST",
@@ -384,6 +404,19 @@ export interface OrderProviderSyncResponse {
   inserted: number;
   updated: number;
   total: number;
+  skipped?: boolean;
+  reason?: string;
+  status?: string;
+  message?: string;
+  nextEligibleAt?: string;
+  durationMs?: number;
+  unchangedOrders?: number;
+  needsReview?: number;
+  readyToDispatch?: number;
+  enrichmentErrors?: number;
+  syncErrors?: number;
+  invalidOrders?: number;
+  exclusionReasons?: Record<string, number>;
 }
 
 export interface ExternalOrderDiagnostics {
@@ -544,19 +577,68 @@ export async function fetchLiveLocations(): Promise<LiveLocationsResponse> {
   return adminFetch("/api/integrations/order-provider/live-locations");
 }
 
-export async function runLiveOrderProviderSync(): Promise<OrderProviderSyncResponse> {
-  return adminFetch("/api/integrations/order-provider/live-sync", { method: "POST" });
+export async function runLiveOrderProviderSync(options?: {
+  overrideQuietHours?: boolean;
+}): Promise<OrderProviderSyncResponse> {
+  return adminFetch("/api/integrations/order-provider/live-sync", {
+    method: "POST",
+    body: JSON.stringify({
+      overrideQuietHours: options?.overrideQuietHours === true,
+    }),
+  });
 }
 
 export interface ExternalOrderProviderSyncState {
   lastSuccessfulSyncAt: string | null;
+  lastAttemptedSyncAt?: string | null;
   lastError: string | null;
   lastSyncSummary: {
     inserted: number;
     updated: number;
     deliveryOrdersFound: number;
     pagesScanned: number;
+    unchanged?: number;
+    invalid?: number;
+    enrichmentErrors?: number;
+    syncErrors?: number;
   } | null;
+}
+
+export interface BarnetSyncHealthView {
+  state:
+    | "healthy"
+    | "running"
+    | "outside_hours"
+    | "stale"
+    | "degraded"
+    | "failed"
+    | "locked"
+    | "disabled"
+    | "not_configured"
+    | "never_run";
+  message: string;
+  outsideOperatingHours: boolean;
+  isRunning: boolean;
+  isLocked: boolean;
+  lastAttemptedSyncAt: string | null;
+  lastSuccessfulSyncAt: string | null;
+  lastDurationMs: number | null;
+  lastSafeErrorMessage: string | null;
+  lastErrorCode: string | null;
+  lastRunStatus: string | null;
+  counts: {
+    pagesScanned?: number;
+    ordersExamined?: number;
+    deliveryOrdersFound?: number;
+    inserted?: number;
+    updated?: number;
+    unchanged?: number;
+    skipped?: number;
+    invalid?: number;
+    enrichmentErrors?: number;
+    syncErrors?: number;
+  } | null;
+  nextExpectedEligibleScanAt: string | null;
 }
 
 export interface ExternalOrderIntakeRow {
@@ -571,6 +653,8 @@ export interface ExternalOrderIntakeRow {
   total: number;
   sourceStatus: string;
   dispatchReady: boolean;
+  needsReview: boolean;
+  reviewReasons: string[];
   customerMessagingReady: boolean;
   missingFields: string[];
   assignmentStatus: "unassigned" | "assigned";
@@ -639,6 +723,8 @@ export interface ExternalOrderIntakeDetail {
     total: number;
   };
   dispatchReady: boolean;
+  needsReview: boolean;
+  reviewReasons: string[];
   customerMessagingReady: boolean;
   customerEnrichmentStatus: "success" | "failed" | "skipped" | null;
   missingFields: string[];
@@ -663,6 +749,7 @@ export interface ExternalOrderIntakeDetail {
 
 export interface OrderProviderHealthWithSync extends OrderProviderHealthResponse {
   syncState?: ExternalOrderProviderSyncState;
+  syncHealth?: BarnetSyncHealthView;
 }
 
 export async function fetchOrderProviderHealthWithSync(): Promise<OrderProviderHealthWithSync> {

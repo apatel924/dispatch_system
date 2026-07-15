@@ -1,7 +1,16 @@
 /** Server-only proof upload limits. Never expose via NEXT_PUBLIC_. */
 
+import type { ProofType } from "@/lib/types/backend";
+
 /** Default decoded binary ceiling (~2.5 MB). Fits under Vercel ~4.5 MB JSON body with base64 overhead. */
 export const DEFAULT_PROOF_MAX_UPLOAD_BYTES = 2_621_440;
+
+/** Per-type decoded ceilings (must remain ≤ DEFAULT_PROOF_MAX_UPLOAD_BYTES / env override). */
+export const DEFAULT_PROOF_MAX_BYTES_BY_TYPE: Record<ProofType, number> = {
+  signature: 1_048_576,
+  exteriorPhoto: DEFAULT_PROOF_MAX_UPLOAD_BYTES,
+  idVerification: DEFAULT_PROOF_MAX_UPLOAD_BYTES,
+};
 
 /** Default encoded data URL ceiling (~3.5 MB chars). ~33% base64 overhead + `data:...;base64,` header. */
 export const DEFAULT_PROOF_MAX_DATA_URL_CHARS = 3_500_000;
@@ -28,6 +37,12 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
 
 export function proofMaxUploadBytes(): number {
   return parsePositiveInt(process.env.PROOF_MAX_UPLOAD_BYTES, DEFAULT_PROOF_MAX_UPLOAD_BYTES);
+}
+
+export function proofMaxUploadBytesForType(proofType: ProofType): number {
+  const globalMax = proofMaxUploadBytes();
+  const typeDefault = DEFAULT_PROOF_MAX_BYTES_BY_TYPE[proofType] ?? globalMax;
+  return Math.min(typeDefault, globalMax);
 }
 
 export function proofMaxDataUrlChars(): number {

@@ -2,7 +2,7 @@ import type { ProofType } from "@/lib/types/backend";
 import { ServiceError } from "@/lib/server/errors";
 import {
   proofMaxDataUrlChars,
-  proofMaxUploadBytes,
+  proofMaxUploadBytesForType,
 } from "@/lib/server/proof-limits";
 
 const DATA_URL_RE = /^data:([^;]+);base64,([\s\S]+)$/;
@@ -24,7 +24,21 @@ function payloadTooLargeError(message: string): ServiceError {
   return new ServiceError(message, "PAYLOAD_TOO_LARGE", 413);
 }
 
-function invalidProofError(message: string): ServiceError {
+function invalidProofError(message: string, proofType?: ProofType): ServiceError {
+  if (proofType === "signature") {
+    return new ServiceError(
+      "The signature file was invalid. Please clear it and sign again.",
+      "INVALID_PROOF",
+      400,
+    );
+  }
+  if (proofType === "exteriorPhoto" || proofType === "idVerification") {
+    return new ServiceError(
+      "The photo file was invalid. Please retake and try again.",
+      "INVALID_PROOF",
+      400,
+    );
+  }
   return new ServiceError(message, "INVALID_PROOF", 400);
 }
 
@@ -84,59 +98,60 @@ export function validateAndDecodeProofDataUrl(
   proofType: ProofType,
 ): ValidatedProofPayload {
   if (!dataUrl || dataUrl.length < 22) {
-    throw invalidProofError("Proof payload is empty");
+    throw invalidProofError("Proof payload is empty", proofType);
   }
 
   const maxChars = proofMaxDataUrlChars();
   if (dataUrl.length > maxChars) {
     throw payloadTooLargeError(
-      `Encoded proof exceeds maximum length of ${maxChars} characters`,
+      "This proof is too large to upload. Please retake a smaller photo or resign.",
     );
   }
 
   const match = DATA_URL_RE.exec(dataUrl);
   if (!match) {
-    throw invalidProofError("dataUrl must be a base64 data URL");
+    throw invalidProofError("dataUrl must be a base64 data URL", proofType);
   }
 
   const declaredMime = match[1].toLowerCase().trim();
   const base64 = match[2].replace(/\s/g, "");
 
   if (!base64) {
-    throw invalidProofError("Proof base64 payload is empty");
+    throw invalidProofError("Proof base64 payload is empty", proofType);
   }
 
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(base64)) {
-    throw invalidProofError("Proof base64 payload is malformed");
+    throw invalidProofError("Proof base64 payload is malformed", proofType);
   }
 
   let buffer: Buffer;
   try {
     buffer = Buffer.from(base64, "base64");
   } catch {
-    throw invalidProofError("Proof base64 payload could not be decoded");
+    throw invalidProofError("Proof base64 payload could not be decoded", proofType);
   }
 
   if (buffer.length === 0) {
-    throw invalidProofError("Decoded proof is empty");
+    throw invalidProofError("Decoded proof is empty", proofType);
   }
 
-  const maxBytes = proofMaxUploadBytes();
+  const maxBytes = proofMaxUploadBytesForType(proofType);
   if (buffer.length > maxBytes) {
     throw payloadTooLargeError(
-      `Decoded proof exceeds maximum size of ${maxBytes} bytes`,
+      "This proof is too large to upload. Please retake a smaller photo or resign.",
     );
   }
 
   const detectedMime = detectImageMimeFromBuffer(buffer);
   if (!detectedMime) {
-    throw invalidProofError("Proof file is not a recognized image format");
+    throw invalidProofError("Proof file is not a recognized image format", proofType);
   }
 
   const allowed = ALLOWED_PROOF_MIMES[proofType];
   if (!allowed.includes(detectedMime)) {
     throw invalidProofError(
       `Proof type "${proofType}" requires ${allowed.join(" or ")}, got ${detectedMime}`,
+      proofType,
     );
   }
 
@@ -145,6 +160,7 @@ export function validateAndDecodeProofDataUrl(
   if (normalizedDeclared && normalizedDeclared !== detectedMime) {
     throw invalidProofError(
       `Declared MIME "${normalizedDeclared}" does not match file content (${detectedMime})`,
+      proofType,
     );
   }
 

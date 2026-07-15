@@ -1,16 +1,25 @@
 import { z } from "zod";
+import {
+  CANONICAL_ORDER_STATUSES,
+  tryNormalizeOrderStatus,
+} from "@/lib/order-status";
 
-export const OrderStatusSchema = z.enum([
-  "New",
-  "Assigned",
-  "Picked Up",
-  "En Route",
-  "Out for Delivery",
-  "Delivered",
-  "Failed",
-  "Returned",
-  "Scheduled",
-]);
+/** Accepts canonical statuses and legacy aliases; outputs canonical. */
+export const OrderStatusSchema = z.string().transform((raw, ctx) => {
+  const normalized = tryNormalizeOrderStatus(raw);
+  if (!normalized) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Invalid order status: ${raw}`,
+    });
+    return z.NEVER;
+  }
+  return normalized;
+});
+
+export const CanonicalOrderStatusSchema = z.enum(
+  CANONICAL_ORDER_STATUSES as unknown as [string, ...string[]],
+);
 
 export const PaymentStatusSchema = z.enum(["Paid", "Pending", "Unpaid"]);
 

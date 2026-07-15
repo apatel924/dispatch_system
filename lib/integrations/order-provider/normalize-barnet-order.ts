@@ -1,4 +1,5 @@
 import type { BarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-client.server";
+import { evaluateBarnetOrderDecision } from "@/lib/integrations/order-provider/barnet-order-decision";
 import { diagnoseBarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-order-diagnostics";
 import {
   classifyBarnetOrder,
@@ -140,6 +141,7 @@ export function normalizeBarnetOrder(
   const delivery = buildDeliveryFields(order);
   const status = resolveStatus(order);
   const diagnostics = diagnoseBarnetOrderRaw(order);
+  const decision = evaluateBarnetOrderDecision(order);
 
   return {
     provider: BARNET_PROVIDER,
@@ -173,6 +175,8 @@ export function normalizeBarnetOrder(
     customerEnrichmentStatus: null,
     customerEnrichmentError: null,
     dispatchReady: diagnostics.dispatchReady,
+    needsReview: decision.needsReview,
+    reviewReasons: decision.reviewReasons,
     missingFields: diagnostics.missingFields,
     assignmentStatus: "unassigned",
     dispatchStatus: diagnostics.dispatchReady ? "ready" : "needs_review",

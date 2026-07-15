@@ -1,4 +1,5 @@
 import { diagnoseNormalizedExternalOrder } from "@/lib/integrations/order-provider/barnet-order-diagnostics";
+import { evaluateNormalizedOrderReview } from "@/lib/integrations/order-provider/barnet-order-decision";
 import type {
   ExternalProviderOrder,
   NormalizedExternalOrder,
@@ -65,6 +66,8 @@ export function normalizeExternalOrder(
     customerEnrichmentStatus: "skipped",
     customerEnrichmentError: null,
     dispatchReady: false,
+    needsReview: false,
+    reviewReasons: [],
     missingFields: [],
     assignmentStatus: "unassigned",
     dispatchStatus: "pending",
@@ -82,13 +85,19 @@ export function normalizeExternalOrder(
   };
 
   const diagnostics = diagnoseNormalizedExternalOrder(draft);
-
-  return {
+  const withDiagnostics = {
     ...draft,
     dispatchReady: diagnostics.dispatchReady,
     customerMessagingReady: diagnostics.customerMessagingReady,
     missingFields: diagnostics.missingFields,
-    dispatchStatus: diagnostics.dispatchReady ? "ready" : "needs_review",
+    dispatchStatus: diagnostics.dispatchReady ? ("ready" as const) : ("needs_review" as const),
+  };
+  const review = evaluateNormalizedOrderReview(withDiagnostics);
+
+  return {
+    ...withDiagnostics,
+    needsReview: review.needsReview,
+    reviewReasons: review.reviewReasons,
   };
 }
 

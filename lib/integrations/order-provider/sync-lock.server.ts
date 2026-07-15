@@ -5,7 +5,13 @@ import type { BarnetSyncSource } from "@/lib/integrations/order-provider/barnet-
 export const BARNET_SYNC_STATE_DOC = "integrationState/orderProvider";
 export const BARNET_SYNC_RUNS_COLLECTION = "barnetSyncRuns";
 
-export type BarnetSyncLockAcquireResult = "acquired" | "skipped";
+export type BarnetSyncLockAcquireStatus = "acquired" | "reclaimed" | "skipped";
+
+export interface BarnetSyncLockAcquireResult {
+  status: BarnetSyncLockAcquireStatus;
+  expiresAt: string | null;
+  previousOwnerExecutionId: string | null;
+}
 
 export interface AcquireBarnetSyncLockOptions {
   runId: string;
@@ -20,9 +26,20 @@ function parseLockExpiry(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function lockOwnerId(data: Record<string, unknown>): string | null {
+  if (typeof data.ownerExecutionId === "string" && data.ownerExecutionId.length > 0) {
+    return data.ownerExecutionId;
+  }
+  if (typeof data.lockRunId === "string" && data.lockRunId.length > 0) {
+    return data.lockRunId;
+  }
+  return null;
+}
+
 /**
  * Acquires a Firestore transaction-based sync lock shared by cron and manual sync.
- * Stale locks (expired lockExpiresAt) can be taken over.
+ * Stale locks (expired expiresAt / lockExpiresAt) can be reclaimed.
+ * Never treats a bare syncRunning boolean as proof that a sync is alive.
  */
 export async function acquireBarnetSyncLock(
   runIdOrOptions: string | AcquireBarnetSyncLockOptions,
@@ -39,34 +56,92 @@ export async function acquireBarnetSyncLock(
   const db = getAdminFirestore();
   const ref = db.doc(BARNET_SYNC_STATE_DOC);
   const now = options.nowMs ?? Date.now();
-  const expiresAt = now + getBarnetSyncLockTtlMs();
+  const expiresAtMs = now + getBarnetSyncLockTtlMs();
+  const acquiredAt = new Date(now).toISOString();
+  const expiresAt = new Date(expiresAtMs).toISOString();
 
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    const data = snap.data() ?? {};
-    const activeRunId =
-      typeof data.lockRunId === "string" && data.lockRunId.length > 0
-        ? data.lockRunId
-        : null;
-    const lockExpiresAt = parseLockExpiry(data.lockExpiresAt);
+    const data = (snap.data() ?? {}) as Record<string, unknown>;
+    const activeRunId = lockOwnerId(data);
+    const lockExpiresAt = Math.max(
+      parseLockExpiry(data.expiresAt),
+      parseLockExpiry(data.lockExpiresAt),
+    );
 
     if (activeRunId && lockExpiresAt > now) {
-      return "skipped";
+      return {
+        status: "skipped" as const,
+        expiresAt: new Date(lockExpiresAt).toISOString(),
+        previousOwnerExecutionId: activeRunId,
+      };
+    }
+
+    const reclaimed = Boolean(activeRunId && lockExpiresAt > 0 && lockExpiresAt <= now);
+    const previousOwnerExecutionId = reclaimed ? activeRunId : null;
+
+    tx.set(
+      ref,
+      {
+        // Canonical lease fields
+        ownerExecutionId: options.runId,
+        acquiredAt,
+        expiresAt,
+        trigger: options.source,
+        lastHeartbeatAt: acquiredAt,
+        // Compatibility aliases used by existing health/UI readers
+        lockRunId: options.runId,
+        lockSource: options.source,
+        lockActorId: options.actorId ?? null,
+        lockStartedAt: acquiredAt,
+        lockExpiresAt: expiresAt,
+        ...(reclaimed
+          ? {
+              lastAbandonedRunId: previousOwnerExecutionId,
+              lastAbandonedAt: acquiredAt,
+              lastAbandonedResult: "timed_out_or_expired",
+            }
+          : {}),
+      },
+      { merge: true },
+    );
+
+    return {
+      status: reclaimed ? ("reclaimed" as const) : ("acquired" as const),
+      expiresAt,
+      previousOwnerExecutionId,
+    };
+  });
+}
+
+/**
+ * Extends the lease while the current execution still owns the lock.
+ * Updates lastHeartbeatAt and expiresAt only for the matching owner.
+ */
+export async function extendBarnetSyncLock(runId: string): Promise<boolean> {
+  const db = getAdminFirestore();
+  const ref = db.doc(BARNET_SYNC_STATE_DOC);
+  const now = Date.now();
+  const expiresAt = new Date(now + getBarnetSyncLockTtlMs()).toISOString();
+  const heartbeatAt = new Date(now).toISOString();
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const data = snap.data() as Record<string, unknown> | undefined;
+    if (!data || lockOwnerId(data) !== runId) {
+      return false;
     }
 
     tx.set(
       ref,
       {
-        lockRunId: options.runId,
-        lockSource: options.source,
-        lockActorId: options.actorId ?? null,
-        lockStartedAt: new Date(now).toISOString(),
-        lockExpiresAt: new Date(expiresAt).toISOString(),
+        lastHeartbeatAt: heartbeatAt,
+        expiresAt,
+        lockExpiresAt: expiresAt,
       },
       { merge: true },
     );
-
-    return "acquired";
+    return true;
   });
 }
 
@@ -77,11 +152,15 @@ export async function releaseBarnetSyncLock(runId: string): Promise<void> {
 
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    const data = snap.data();
-    if (data?.lockRunId === runId) {
+    const data = snap.data() as Record<string, unknown> | undefined;
+    if (lockOwnerId(data ?? {}) === runId) {
       tx.set(
         ref,
         {
+          ownerExecutionId: null,
+          acquiredAt: null,
+          expiresAt: null,
+          lastHeartbeatAt: null,
           lockRunId: null,
           lockSource: null,
           lockActorId: null,

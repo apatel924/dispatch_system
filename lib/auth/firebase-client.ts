@@ -23,6 +23,7 @@ import {
   getFirebaseClientConfig,
   isFirebaseClientConfigured,
 } from "@/lib/auth/config";
+import { isAccountActive } from "@/lib/auth/account-status";
 import { isUserRole } from "@/lib/server/roles";
 import type { UserRole } from "@/lib/types/backend";
 
@@ -273,10 +274,6 @@ function homePathForRole(role: UserRole): string {
   return role === "driver" ? "/driver-dashboard" : "/dashboard";
 }
 
-function isAccountActive(claims: AuthClaims): boolean {
-  return claims.active !== false;
-}
-
 /**
  * Resolve whether the signed-in portal user may access a route.
  * Call only after the portal's authReady / first observer callback.
@@ -308,13 +305,13 @@ export async function requireClientAuthRedirect(
     };
   }
 
-  if (!isAccountActive(claims)) {
+  if (!isAccountActive(claims.active)) {
     authDebug("Guard redirect: inactive account", { portal, uid: user.uid, role: claims.role });
     await signOutPortal(portal);
     return {
       allowed: false,
       redirectTo: loginPath,
-      error: "This account has been deactivated.",
+      error: "This account has been disabled. Contact an administrator.",
     };
   }
 
@@ -351,9 +348,9 @@ export async function resolvePostLoginRedirect(
     return { error: "This account has no assigned role. Contact your administrator." };
   }
 
-  if (!isAccountActive(claims)) {
+  if (!isAccountActive(claims.active)) {
     await signOutPortal(context);
-    return { error: "This account has been deactivated." };
+    return { error: "This account has been disabled. Contact an administrator." };
   }
 
   if (context === "admin") {

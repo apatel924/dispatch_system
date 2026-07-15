@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Mail, Lock, Eye, EyeOff, Shield, MessageSquare, LogIn, MapPin, Bell, FileCheck, Users, Loader2 } from "lucide-react";
 import { Logo } from "@/components/dash/brand/logo";
 import { DualPortalHint } from "@/components/dash/auth/dev-dual-login-hint";
@@ -13,6 +13,11 @@ import {
   resolvePostLoginRedirect,
   signInWithEmail,
 } from "@/lib/auth/firebase-client";
+import {
+  ACCOUNT_DISABLED_CODE,
+  ACCOUNT_DISABLED_MESSAGE,
+} from "@/lib/auth/account-status";
+import { clearAccountDisabledSession } from "@/lib/dash/api/account-disabled";
 
 
 export function LoginPage() {
@@ -23,6 +28,25 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const authConfigured = isAuthConfigured();
+
+  useEffect(() => {
+    clearAccountDisabledSession();
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("reason") === ACCOUNT_DISABLED_CODE) {
+      setError(ACCOUNT_DISABLED_MESSAGE);
+      return;
+    }
+    try {
+      const stored = sessionStorage.getItem("qre-auth-disabled-message");
+      if (stored) {
+        setError(stored);
+        sessionStorage.removeItem("qre-auth-disabled-message");
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

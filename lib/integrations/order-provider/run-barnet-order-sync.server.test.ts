@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-client.server";
 
-const { fetchBarnetOrders, enrichBarnetDeliveryOrder, assertLiveSyncAllowed, docStore } =
+const { fetchBarnetOrders, enrichBarnetDeliveryOrder, assertLiveSyncAllowed, finalizeBarnetDeliveryImport, docStore } =
   vi.hoisted(() => ({
     fetchBarnetOrders: vi.fn(),
     enrichBarnetDeliveryOrder: vi.fn(),
     assertLiveSyncAllowed: vi.fn(),
+    finalizeBarnetDeliveryImport: vi.fn(),
     docStore: new Map<string, Record<string, unknown>>(),
   }));
 
@@ -59,6 +60,10 @@ vi.mock("@/lib/integrations/order-provider/env.server", () => ({
 vi.mock("@/lib/integrations/order-provider/barnet-sync-config.server", () => ({
   getBarnetSyncConsecutiveKnownThreshold: () => 5,
   getBarnetEnrichmentConcurrency: () => 2,
+}));
+
+vi.mock("@/lib/integrations/order-provider/finalize-barnet-import.server", () => ({
+  finalizeBarnetDeliveryImport,
 }));
 
 vi.mock("@/lib/integrations/order-provider/sync-pagination.server", () => ({
@@ -127,6 +132,12 @@ describe("runBarnetOrderSync", () => {
       missingFields: [],
       dispatchStatus: "ready",
     }));
+    finalizeBarnetDeliveryImport.mockResolvedValue({
+      dispatchOrderId: "ORD-1",
+      alreadyPromoted: false,
+      notificationCreated: true,
+      failed: false,
+    });
   });
 
   it("ignores pickup orders and does not enrich them", async () => {
@@ -242,7 +253,7 @@ describe("runBarnetOrderSync", () => {
     expect(fetchBarnetOrders).toHaveBeenCalledTimes(3);
   });
 
-  it("persists missing-address delivery as needs-review (not promoted)", async () => {
+  it("persists missing-address delivery as needs-review and finalizes import", async () => {
     const raw = deliveryOrder(701, {
       address: undefined,
       city: undefined,
@@ -281,7 +292,14 @@ describe("runBarnetOrderSync", () => {
     expect(stored?.dispatchReady).toBe(false);
     expect(stored?.needsReview).toBe(true);
     expect(stored?.reviewReasons).toContain("missing_address");
-    expect(stored?.promoted).toBe(false);
+    expect(stored?.assignedDriverId ?? null).toBeNull();
+    expect(finalizeBarnetDeliveryImport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        docId: "barnet_701",
+        externalOrderId: "701",
+        isNew: true,
+      }),
+    );
   });
 
   it("counts unchanged needs-review orders without losing them", async () => {
@@ -378,7 +396,7 @@ describe("runBarnetOrderSync", () => {
     expect(docStore.get("barnet_703")?.needsReview).toBe(false);
   });
 
-  it("stops early after consecutive unchanged delivery orders", async () => {
+  it("continues scanning all configured pages even when many deliveries are already known", async () => {
     const known = [deliveryOrder(801), deliveryOrder(802), deliveryOrder(803), deliveryOrder(804), deliveryOrder(805)];
     for (const raw of known) {
       const hash = computeBarnetOrderSourceHash(raw);
@@ -397,19 +415,23 @@ describe("runBarnetOrderSync", () => {
         createdAt: "2026-07-12T09:00:00Z",
         updatedAt: "2026-07-12T09:00:00Z",
         assignmentStatus: "unassigned",
-        promoted: false,
+        promoted: true,
+        promotedOrderId: "ORD-EXISTING",
       });
     }
 
     fetchBarnetOrders
       .mockResolvedValueOnce(known)
-      .mockResolvedValueOnce([deliveryOrder(806)]);
+      .mockResolvedValueOnce([deliveryOrder(806)])
+      .mockResolvedValueOnce([]);
 
     const result = await runBarnetOrderSync();
 
-    expect(result.pagesScanned).toBe(1);
+    expect(result.pagesScanned).toBe(3);
     expect(result.unchangedOrders).toBe(5);
-    expect(fetchBarnetOrders).toHaveBeenCalledTimes(1);
+    expect(result.newDeliveries).toBe(1);
+    expect(fetchBarnetOrders).toHaveBeenCalledTimes(3);
+    expect(docStore.has("barnet_806")).toBe(true);
   });
 
   it("continues when one enrichment fails and counts the error", async () => {

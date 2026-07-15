@@ -1,5 +1,7 @@
 import { getAdminFirestore } from "@/lib/server/firebase-admin";
 import { deepOmitUndefined } from "@/lib/server/firestore/helpers";
+import type { AuthUser } from "@/lib/server/auth";
+import type { ActorContext } from "@/lib/server/services/orders";
 import type { BarnetOrderRaw } from "@/lib/integrations/order-provider/barnet-client.server";
 import { fetchBarnetOrders } from "@/lib/integrations/order-provider/barnet-client.server";
 import {
@@ -10,16 +12,14 @@ import {
   evaluateBarnetOrderDecision,
   type BarnetOrderExclusionReason,
 } from "@/lib/integrations/order-provider/barnet-order-decision";
-import {
-  getBarnetEnrichmentConcurrency,
-  getBarnetSyncConsecutiveKnownThreshold,
-} from "@/lib/integrations/order-provider/barnet-sync-config.server";
+import { getBarnetEnrichmentConcurrency } from "@/lib/integrations/order-provider/barnet-sync-config.server";
 import {
   computeBarnetOrderSourceHash,
   readStoredBarnetSourceHash,
 } from "@/lib/integrations/order-provider/barnet-sync-hash.server";
 import { assertLiveSyncAllowed } from "@/lib/integrations/order-provider/env.server";
 import { getExternalOrderProviderConfig } from "@/lib/integrations/order-provider/env.server";
+import { finalizeBarnetDeliveryImport } from "@/lib/integrations/order-provider/finalize-barnet-import.server";
 import { hydrateNormalizedExternalOrder } from "@/lib/integrations/order-provider/external-order-intake";
 import { mapWithConcurrency } from "@/lib/integrations/order-provider/map-with-concurrency.server";
 import {
@@ -45,7 +45,15 @@ export interface BarnetOrderSyncRunResult {
   invalidOrders: number;
   enrichmentErrors: number;
   syncErrors: number;
+  /** Newly created (or reconciled) unassigned dispatch orders. */
+  dispatchOrdersCreated: number;
+  adminNotificationsCreated: number;
   exclusionReasons: Record<string, number>;
+}
+
+export interface RunBarnetOrderSyncOptions {
+  trigger?: "cron" | "manual";
+  actor?: AuthUser | ActorContext | null;
 }
 
 function nowIso(): string {
@@ -103,15 +111,19 @@ interface DeliverySyncTask {
  * - classifies pickup vs delivery before enrichment (shared decision helper)
  * - persists reviewable deliveries even when not dispatch-ready
  * - enriches only new or changed delivery orders
- * - stops after consecutive *unchanged delivery* orders (pickups do not count)
+ * - scans all configured pages (same window as Live Intake preview)
+ * - promotes newly imported deliveries to unassigned dispatch orders
  */
-export async function runBarnetOrderSync(): Promise<BarnetOrderSyncRunResult> {
+export async function runBarnetOrderSync(
+  options?: RunBarnetOrderSyncOptions,
+): Promise<BarnetOrderSyncRunResult> {
   assertLiveSyncAllowed();
 
+  const trigger = options?.trigger ?? "manual";
+  const actor = options?.actor ?? null;
   const config = getExternalOrderProviderConfig();
   const locationId = config.locationId;
   const pagination = getExternalOrderSyncPaginationConfig();
-  const consecutiveKnownThreshold = getBarnetSyncConsecutiveKnownThreshold();
   const enrichmentConcurrency = getBarnetEnrichmentConcurrency();
 
   const db = getAdminFirestore();
@@ -132,189 +144,226 @@ export async function runBarnetOrderSync(): Promise<BarnetOrderSyncRunResult> {
     invalidOrders: 0,
     enrichmentErrors: 0,
     syncErrors: 0,
+    dispatchOrdersCreated: 0,
+    adminNotificationsCreated: 0,
     exclusionReasons: {},
   };
 
-  let consecutiveKnown = 0;
-  let stopScanning = false;
+  for (let page = 1; page <= pagination.pages; page += 1) {
+    const orders = await fetchBarnetOrders({
+      page,
+      itemsOnPage: pagination.itemsPerPage,
+    });
+    result.pagesScanned += 1;
 
-  for (let page = 1; page <= pagination.pages && !stopScanning; page += 1) {
-      const orders = await fetchBarnetOrders({
-        page,
-        itemsOnPage: pagination.itemsPerPage,
-      });
-      result.pagesScanned += 1;
+    if (orders.length === 0) {
+      console.info(`[order-provider] sync stopping early: page ${page} returned 0 orders`);
+      break;
+    }
 
-      if (orders.length === 0) {
-        console.info(`[order-provider] sync stopping early: page ${page} returned 0 orders`);
-        break;
+    const deliveryTasks: DeliverySyncTask[] = [];
+
+    for (const rawOrder of orders) {
+      result.ordersSeen += 1;
+
+      const decision = evaluateBarnetOrderDecision(rawOrder);
+
+      if (decision.classification === "pickup") {
+        result.pickupOrdersIgnored += 1;
+        bumpExclusion(result, "pickup");
+        continue;
       }
 
-      const deliveryTasks: DeliverySyncTask[] = [];
+      if (decision.classification === "unknown") {
+        result.unknownOrdersIgnored += 1;
+        bumpExclusion(result, decision.exclusionReason ?? "unknown_fulfillment");
+        continue;
+      }
 
-      for (const rawOrder of orders) {
-        result.ordersSeen += 1;
+      if (!decision.persistable || !decision.externalOrderId) {
+        result.invalidOrders += 1;
+        bumpExclusion(
+          result,
+          decision.exclusionReason ?? "malformed_payload",
+        );
+        continue;
+      }
 
-        const decision = evaluateBarnetOrderDecision(rawOrder);
+      result.deliveryCandidates += 1;
+      const externalId = decision.externalOrderId;
 
-        if (decision.classification === "pickup") {
-          result.pickupOrdersIgnored += 1;
-          bumpExclusion(result, "pickup");
-          // Pickups are never stored — do not count toward consecutive-known
-          // early stop, or rare deliveries on later pages are skipped.
+      const docRef = db.collection(COLLECTION).doc(barnetDocumentId(externalId));
+      const existingSnap = await docRef.get();
+      let sourceHash: string;
+      try {
+        sourceHash = computeBarnetOrderSourceHash(rawOrder, { now });
+      } catch {
+        result.invalidOrders += 1;
+        bumpExclusion(result, "malformed_payload");
+        continue;
+      }
+
+      if (existingSnap.exists) {
+        const existing = hydrateNormalizedExternalOrder(
+          existingSnap.data() as Record<string, unknown>,
+        );
+        const storedHash = readStoredBarnetSourceHash(existing);
+        if (storedHash === sourceHash) {
+          result.unchangedOrders += 1;
+          if (existing.needsReview || !existing.dispatchReady) {
+            result.needsReview += 1;
+          } else {
+            result.readyToDispatch += 1;
+          }
+
+          // Ensure previously imported-but-unpromoted rows still reach Orders.
+          if (!existing.promoted) {
+            const finalize = await finalizeBarnetDeliveryImport({
+              docId: barnetDocumentId(externalId),
+              externalOrderId: externalId,
+              externalOrderNumber: existing.externalOrderNumber,
+              isNew: false,
+              trigger,
+              actor,
+            });
+            if (finalize.failed) {
+              result.syncErrors += 1;
+            } else if (!finalize.alreadyPromoted && finalize.dispatchOrderId) {
+              result.dispatchOrdersCreated += 1;
+            }
+          }
           continue;
         }
 
-        if (decision.classification === "unknown") {
-          result.unknownOrdersIgnored += 1;
-          bumpExclusion(result, decision.exclusionReason ?? "unknown_fulfillment");
-          consecutiveKnown = 0;
-          continue;
-        }
+        deliveryTasks.push({
+          rawOrder,
+          sourceHash,
+          isNew: false,
+          externalOrderId: externalId,
+        });
+      } else {
+        deliveryTasks.push({
+          rawOrder,
+          sourceHash,
+          isNew: true,
+          externalOrderId: externalId,
+        });
+      }
+    }
 
-        if (!decision.persistable || !decision.externalOrderId) {
-          result.invalidOrders += 1;
-          bumpExclusion(
-            result,
-            decision.exclusionReason ?? "malformed_payload",
-          );
-          consecutiveKnown = 0;
-          continue;
-        }
+    if (deliveryTasks.length > 0) {
+      await mapWithConcurrency(
+        deliveryTasks,
+        enrichmentConcurrency,
+        async (task) => {
+          try {
+            const docRef = db
+              .collection(COLLECTION)
+              .doc(barnetDocumentId(task.externalOrderId));
+            const existingSnap = await docRef.get();
+            const existingData = existingSnap.exists
+              ? hydrateNormalizedExternalOrder(
+                  existingSnap.data() as Record<string, unknown>,
+                )
+              : null;
+            const preserve = existingData
+              ? {
+                  createdAt: existingData.createdAt ?? now,
+                  updatedAt: now,
+                }
+              : undefined;
 
-        result.deliveryCandidates += 1;
-        const externalId = decision.externalOrderId;
+            const base = normalizeBarnetOrder(task.rawOrder, {
+              now,
+              preserveTimestamps: preserve,
+            });
+            const enriched = await enrichBarnetDeliveryOrder(
+              base,
+              task.rawOrder,
+              customerCache,
+            );
+            const toStore = preserveAssignmentFields(
+              {
+                ...enriched,
+                sourceLocationId: enriched.sourceLocationId ?? locationId,
+                syncSourceHash: task.sourceHash,
+                lastSyncedAt: now,
+                updatedAt: now,
+                // Sync never assigns a driver.
+                assignedDriverId: null,
+                assignedDriverName: null,
+                assignedAt: null,
+                assignedBy: null,
+                assignmentStatus: existingData?.assignmentStatus === "assigned"
+                  ? "assigned"
+                  : "unassigned",
+              },
+              existingData,
+            );
 
-        const docRef = db.collection(COLLECTION).doc(barnetDocumentId(externalId));
-        const existingSnap = await docRef.get();
-        let sourceHash: string;
-        try {
-          sourceHash = computeBarnetOrderSourceHash(rawOrder, { now });
-        } catch {
-          result.invalidOrders += 1;
-          bumpExclusion(result, "malformed_payload");
-          consecutiveKnown = 0;
-          continue;
-        }
+            // Force unassigned for brand-new imports (do not preserve a preview driver).
+            if (task.isNew) {
+              toStore.assignmentStatus = "unassigned";
+              toStore.assignedDriverId = null;
+              toStore.assignedDriverName = null;
+              toStore.assignedAt = null;
+              toStore.assignedBy = null;
+            }
 
-        if (existingSnap.exists) {
-          const existing = hydrateNormalizedExternalOrder(
-            existingSnap.data() as Record<string, unknown>,
-          );
-          const storedHash = readStoredBarnetSourceHash(existing);
-          if (storedHash === sourceHash) {
-            result.unchangedOrders += 1;
-            if (existing.needsReview || !existing.dispatchReady) {
+            await docRef.set(
+              deepOmitUndefined(toStore as unknown as Record<string, unknown>),
+            );
+
+            if (task.isNew) {
+              result.newDeliveries += 1;
+            } else {
+              result.updatedDeliveries += 1;
+            }
+
+            if (toStore.needsReview || !toStore.dispatchReady) {
               result.needsReview += 1;
             } else {
               result.readyToDispatch += 1;
             }
-            consecutiveKnown += 1;
-            if (consecutiveKnown >= consecutiveKnownThreshold) {
-              stopScanning = true;
-              break;
-            }
-            continue;
-          }
 
-          deliveryTasks.push({
-            rawOrder,
-            sourceHash,
-            isNew: false,
-            externalOrderId: externalId,
-          });
-        } else {
-          deliveryTasks.push({
-            rawOrder,
-            sourceHash,
-            isNew: true,
-            externalOrderId: externalId,
-          });
-        }
-
-        consecutiveKnown = 0;
-      }
-
-      if (deliveryTasks.length > 0) {
-        await mapWithConcurrency(
-          deliveryTasks,
-          enrichmentConcurrency,
-          async (task) => {
-            try {
-              const docRef = db
-                .collection(COLLECTION)
-                .doc(barnetDocumentId(task.externalOrderId));
-              const existingSnap = await docRef.get();
-              const existingData = existingSnap.exists
-                ? hydrateNormalizedExternalOrder(
-                    existingSnap.data() as Record<string, unknown>,
-                  )
-                : null;
-              const preserve = existingData
-                ? {
-                    createdAt: existingData.createdAt ?? now,
-                    updatedAt: now,
-                  }
-                : undefined;
-
-              const base = normalizeBarnetOrder(task.rawOrder, {
-                now,
-                preserveTimestamps: preserve,
+            const shouldPromote =
+              task.isNew || !toStore.promoted;
+            if (shouldPromote) {
+              const finalize = await finalizeBarnetDeliveryImport({
+                docId: barnetDocumentId(task.externalOrderId),
+                externalOrderId: task.externalOrderId,
+                externalOrderNumber: toStore.externalOrderNumber,
+                isNew: task.isNew,
+                trigger,
+                actor,
               });
-              const enriched = await enrichBarnetDeliveryOrder(
-                base,
-                task.rawOrder,
-                customerCache,
-              );
-              const toStore = preserveAssignmentFields(
-                {
-                  ...enriched,
-                  sourceLocationId: enriched.sourceLocationId ?? locationId,
-                  syncSourceHash: task.sourceHash,
-                  lastSyncedAt: now,
-                  updatedAt: now,
-                },
-                existingData,
-              );
-
-              await docRef.set(
-                deepOmitUndefined(toStore as unknown as Record<string, unknown>),
-              );
-
-              if (task.isNew) {
-                result.newDeliveries += 1;
+              if (finalize.failed) {
+                result.syncErrors += 1;
               } else {
-                result.updatedDeliveries += 1;
+                if (!finalize.alreadyPromoted && finalize.dispatchOrderId) {
+                  result.dispatchOrdersCreated += 1;
+                }
+                if (finalize.notificationCreated) {
+                  result.adminNotificationsCreated += 1;
+                }
               }
-
-              if (toStore.needsReview || !toStore.dispatchReady) {
-                result.needsReview += 1;
-              } else {
-                result.readyToDispatch += 1;
-              }
-            } catch (orderErr) {
-              result.enrichmentErrors += 1;
-              result.syncErrors += 1;
-              console.warn(
-                `[order-provider] order sync failed for externalId=${task.externalOrderId}: ${
-                  orderErr instanceof Error ? orderErr.message : "unknown"
-                }`,
-              );
             }
-          },
-        );
-      }
-
-      if (consecutiveKnown >= consecutiveKnownThreshold) {
-        console.info(
-          `[order-provider] sync stopping early: consecutive known threshold ${consecutiveKnownThreshold} reached`,
-        );
-        break;
-      }
+          } catch (orderErr) {
+            result.enrichmentErrors += 1;
+            result.syncErrors += 1;
+            console.warn(
+              `[order-provider] order sync failed for externalId=${task.externalOrderId}: ${
+                orderErr instanceof Error ? orderErr.message : "unknown"
+              }`,
+            );
+          }
+        },
+      );
     }
+  }
 
   console.info(
-    `[order-provider] live sync complete: pages=${result.pagesScanned} seen=${result.ordersSeen} delivery=${result.deliveryCandidates} new=${result.newDeliveries} updated=${result.updatedDeliveries} unchanged=${result.unchangedOrders} needsReview=${result.needsReview} ready=${result.readyToDispatch} enrichmentErrors=${result.enrichmentErrors}`,
+    `[order-provider] live sync complete: pages=${result.pagesScanned} seen=${result.ordersSeen} delivery=${result.deliveryCandidates} new=${result.newDeliveries} updated=${result.updatedDeliveries} unchanged=${result.unchangedOrders} needsReview=${result.needsReview} ready=${result.readyToDispatch} dispatchCreated=${result.dispatchOrdersCreated} enrichmentErrors=${result.enrichmentErrors}`,
   );
 
   return result;

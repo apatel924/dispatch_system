@@ -7,6 +7,7 @@ import {
 } from "@/lib/integrations/order-provider/sync-lock.server";
 import {
   BARNET_SYNC_RUN_HISTORY_LIMIT,
+  type BarnetSyncAttemptResult,
   type BarnetSyncRunCounts,
   type BarnetSyncRunStatus,
   type BarnetSyncSource,
@@ -26,6 +27,7 @@ export function shouldRecordBarnetSyncHistoryDoc(input: {
     "skipped_locked",
     "disabled",
     "not_configured",
+    "timed_out_or_expired",
   ]);
   if (
     collapsible.has(input.status) &&
@@ -34,6 +36,32 @@ export function shouldRecordBarnetSyncHistoryDoc(input: {
     return false;
   }
   return true;
+}
+
+export function toBarnetSyncAttemptResult(
+  status: BarnetSyncRunStatus,
+): BarnetSyncAttemptResult {
+  switch (status) {
+    case "running":
+      return "running";
+    case "success":
+    case "partial":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "timed_out_or_expired":
+      return "timed_out_or_expired";
+    case "skipped_locked":
+      return "skipped_lock_active";
+    case "skipped_outside_hours":
+      return "skipped_quiet_hours";
+    case "disabled":
+      return "skipped_disabled";
+    case "not_configured":
+      return "skipped_not_configured";
+    default:
+      return "failed";
+  }
 }
 
 export interface BarnetSyncRunRecord {
@@ -97,6 +125,9 @@ export async function markBarnetSyncRunStarted(input: {
       provider: "barnet",
       lastStartedAt: input.startedAt,
       lastAttemptedSyncAt: input.startedAt,
+      lastAttemptAt: input.startedAt,
+      lastAttemptExecutionId: input.runId,
+      lastAttemptResult: "running" satisfies BarnetSyncAttemptResult,
       lastRunId: input.runId,
       lastRunStatus: "running" satisfies BarnetSyncRunStatus,
       lastRunSource: input.source,
@@ -155,6 +186,8 @@ export async function persistBarnetSyncRunOutcome(input: {
   recordHistory?: boolean;
   /** Count of newly imported delivery orders this run (for lastNewOrderImportedAt). */
   newOrdersImported?: number;
+  /** False when the run died before finishing the Barnet page scan. */
+  scanCompleted?: boolean;
 }): Promise<void> {
   const db = getAdminFirestore();
   const counts = { ...emptyCounts(), ...input.counts };
@@ -172,18 +205,22 @@ export async function persistBarnetSyncRunOutcome(input: {
     input.status === "skipped_outside_hours"
       ? "skipped_quiet_hours"
       : input.status === "skipped_locked"
-        ? "skipped_locked"
+        ? "skipped_lock_active"
         : input.status === "disabled"
           ? "skipped_disabled"
           : input.status === "not_configured"
             ? "skipped_not_configured"
-            : input.status === "failed"
-              ? "failed"
-              : input.status === "success" || input.status === "partial"
-                ? (input.newOrdersImported ?? counts.inserted) > 0
-                  ? "imported_new"
-                  : "no_new_orders"
-                : input.status;
+            : input.status === "timed_out_or_expired"
+              ? "timed_out_or_expired"
+              : input.status === "failed"
+                ? "failed"
+                : input.status === "success" || input.status === "partial"
+                  ? (input.newOrdersImported ?? counts.inserted) > 0
+                    ? "imported_new"
+                    : "no_new_orders"
+                  : input.status;
+
+  const attemptResult = toBarnetSyncAttemptResult(input.status);
 
   const statePatch: Record<string, unknown> = {
     provider: "barnet",
@@ -195,6 +232,9 @@ export async function persistBarnetSyncRunOutcome(input: {
     lastSafeErrorMessage: input.safeErrorMessage ?? null,
     lastErrorCode: input.errorCode ?? null,
     lastResult,
+    lastAttemptAt: input.completedAt,
+    lastAttemptExecutionId: input.runId,
+    lastAttemptResult: attemptResult,
     lastCounts: counts,
     lastSyncSummary: {
       inserted: counts.inserted,
@@ -216,11 +256,12 @@ export async function persistBarnetSyncRunOutcome(input: {
 
   if (input.updateAttemptedAt !== false) {
     statePatch.lastAttemptedSyncAt = input.completedAt;
-    // lastScanAt updates after every completed scan attempt (including zero new).
+    // lastScanAt updates only after a completed page scan (success/partial),
+    // or a failed run that still finished scanning pages.
     if (
       input.status === "success" ||
       input.status === "partial" ||
-      input.status === "failed"
+      (input.status === "failed" && input.scanCompleted !== false)
     ) {
       statePatch.lastScanAt = input.completedAt;
     }
@@ -233,12 +274,14 @@ export async function persistBarnetSyncRunOutcome(input: {
     if ((input.newOrdersImported ?? counts.inserted) > 0) {
       statePatch.lastNewOrderImportedAt = input.completedAt;
     }
-  } else if (input.status === "failed") {
+  } else if (input.status === "failed" || input.status === "timed_out_or_expired") {
     if (previousSuccess) {
       statePatch.lastSuccessfulSyncAt = previousSuccess;
     }
     statePatch.lastCompletedAt = input.completedAt;
-    statePatch.consecutiveFailures = FieldValue.increment(1);
+    if (input.status === "failed") {
+      statePatch.consecutiveFailures = FieldValue.increment(1);
+    }
   } else {
     // Skips: record completed timestamp but do not imply a successful scan.
     statePatch.lastCompletedAt = input.completedAt;

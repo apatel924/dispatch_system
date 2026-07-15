@@ -17,6 +17,8 @@ function snapshot(
     mode: "live",
     lastAttemptedSyncAt: null,
     lastSuccessfulSyncAt: null,
+    lastStartedAt: null,
+    lastRunId: null,
     lastRunStatus: null,
     lastRunSource: null,
     lastDurationMs: null,
@@ -52,10 +54,12 @@ describe("deriveBarnetSyncHealth", () => {
     expect(health.state).toBe("healthy");
   });
 
-  it("returns running", () => {
+  it("returns running only while the lease is active and owned", async () => {
     const health = deriveBarnetSyncHealth(
       snapshot({
         lastRunStatus: "running",
+        lastStartedAt: new Date(now.getTime() - 10_000).toISOString(),
+        lastRunId: "run-1",
         lockRunId: "run-1",
         lockExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
       }),
@@ -63,6 +67,23 @@ describe("deriveBarnetSyncHealth", () => {
     );
     expect(health.state).toBe("running");
     expect(health.isRunning).toBe(true);
+  });
+
+  it("does not treat an expired running lease as currently running", () => {
+    const health = deriveBarnetSyncHealth(
+      snapshot({
+        lastRunStatus: "running",
+        lastStartedAt: new Date(now.getTime() - 20 * 60_000).toISOString(),
+        lastRunId: "stale-run",
+        lockRunId: "stale-run",
+        lockExpiresAt: new Date(now.getTime() - 60_000).toISOString(),
+        lastSuccessfulSyncAt: new Date(now.getTime() - 30 * 60_000).toISOString(),
+        lastAttemptedSyncAt: new Date(now.getTime() - 20 * 60_000).toISOString(),
+      }),
+      { now },
+    );
+    expect(health.isRunning).toBe(false);
+    expect(health.message).toMatch(/did not complete/i);
   });
 
   it("returns outside_hours as informational during quiet window", () => {

@@ -105,7 +105,53 @@ describe("persistBarnetSyncRunOutcome metadata", () => {
     });
 
     expect(stateStore.lastResult).toBe("skipped_quiet_hours");
+    expect(stateStore.lastAttemptResult).toBe("skipped_quiet_hours");
+    expect(stateStore.lastAttemptAt).toBe("2026-07-14T08:00:01.000Z");
     expect(stateStore.lastScanAt).toBeUndefined();
     expect(stateStore.lastSuccessfulSyncAt).toBeUndefined();
+  });
+
+  it("updates lastAttemptAt for skipped lock without updating lastScanAt", async () => {
+    stateStore.lastScanAt = "2026-07-14T17:00:00.000Z";
+    stateStore.lastSuccessfulSyncAt = "2026-07-14T17:00:00.000Z";
+
+    await persistBarnetSyncRunOutcome({
+      runId: "skip-lock",
+      source: "cron",
+      status: "skipped_locked",
+      startedAt: "2026-07-14T18:00:00.000Z",
+      completedAt: "2026-07-14T18:00:01.000Z",
+      durationMs: 1,
+      providerConfigured: true,
+      providerReadEnabled: true,
+      previousSuccessfulSyncAt: "2026-07-14T17:00:00.000Z",
+    });
+
+    expect(stateStore.lastAttemptAt).toBe("2026-07-14T18:00:01.000Z");
+    expect(stateStore.lastAttemptResult).toBe("skipped_lock_active");
+    expect(stateStore.lastScanAt).toBe("2026-07-14T17:00:00.000Z");
+    expect(stateStore.lastSuccessfulSyncAt).toBe("2026-07-14T17:00:00.000Z");
+  });
+
+  it("does not update lastScanAt when a mid-scan failure marks scanCompleted false", async () => {
+    stateStore.lastScanAt = "2026-07-14T17:00:00.000Z";
+    stateStore.lastSuccessfulSyncAt = "2026-07-14T17:00:00.000Z";
+
+    await persistBarnetSyncRunOutcome({
+      runId: "mid-fail",
+      source: "cron",
+      status: "failed",
+      startedAt: "2026-07-14T18:00:00.000Z",
+      completedAt: "2026-07-14T18:01:00.000Z",
+      durationMs: 1000,
+      providerConfigured: true,
+      providerReadEnabled: true,
+      previousSuccessfulSyncAt: "2026-07-14T17:00:00.000Z",
+      scanCompleted: false,
+    });
+
+    expect(stateStore.lastScanAt).toBe("2026-07-14T17:00:00.000Z");
+    expect(stateStore.lastSuccessfulSyncAt).toBe("2026-07-14T17:00:00.000Z");
+    expect(stateStore.lastAttemptResult).toBe("failed");
   });
 });

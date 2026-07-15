@@ -24,10 +24,22 @@ export type BarnetSyncRunStatus =
   | "success"
   | "partial"
   | "failed"
+  | "timed_out_or_expired"
   | "skipped_outside_hours"
   | "skipped_locked"
   | "disabled"
   | "not_configured";
+
+/** Per-invocation attempt result recorded on every cron/manual call. */
+export type BarnetSyncAttemptResult =
+  | "running"
+  | "completed"
+  | "failed"
+  | "timed_out_or_expired"
+  | "skipped_lock_active"
+  | "skipped_quiet_hours"
+  | "skipped_disabled"
+  | "skipped_not_configured";
 
 export type BarnetSyncHealthState =
   | "healthy"
@@ -63,6 +75,8 @@ export interface BarnetSyncHealthSnapshot {
   mode: "live" | "mock" | string;
   lastAttemptedSyncAt: string | null;
   lastSuccessfulSyncAt: string | null;
+  lastStartedAt: string | null;
+  lastRunId: string | null;
   lastRunStatus: BarnetSyncRunStatus | null;
   lastRunSource: BarnetSyncSource | null;
   lastDurationMs: number | null;
@@ -106,6 +120,25 @@ function isLockActive(snapshot: BarnetSyncHealthSnapshot, nowMs: number): boolea
 }
 
 /**
+ * A sync is "currently running" only when status says running, a start time exists,
+ * the lease has not expired, and the lock owner matches the current run metadata.
+ */
+export function isBarnetSyncActivelyRunning(
+  snapshot: Pick<
+    BarnetSyncHealthSnapshot,
+    "lastRunStatus" | "lastStartedAt" | "lastRunId" | "lockRunId" | "lockExpiresAt"
+  >,
+  nowMs: number = Date.now(),
+): boolean {
+  if (snapshot.lastRunStatus !== "running") return false;
+  if (!snapshot.lastStartedAt) return false;
+  const expires = parseMs(snapshot.lockExpiresAt);
+  if (expires === null || expires <= nowMs) return false;
+  if (!snapshot.lockRunId || !snapshot.lastRunId) return false;
+  return snapshot.lockRunId === snapshot.lastRunId;
+}
+
+/**
  * Derive operator-facing sync health from stored metrics + current time.
  * `outsideOperatingHours` must be computed with America/Edmonton by the caller.
  */
@@ -120,12 +153,14 @@ export function deriveBarnetSyncHealth(
   const nowMs = now.getTime();
   const outside = snapshot.outsideOperatingHours;
   const locked = isLockActive(snapshot, nowMs);
-  const running = snapshot.lastRunStatus === "running";
+  const running = isBarnetSyncActivelyRunning(snapshot, nowMs);
+  const abandonedRunning =
+    snapshot.lastRunStatus === "running" && !running;
 
   const base = {
     outsideOperatingHours: outside,
     isRunning: running,
-    isLocked: locked,
+    isLocked: locked && !running,
     lastAttemptedSyncAt: snapshot.lastAttemptedSyncAt,
     lastSuccessfulSyncAt: snapshot.lastSuccessfulSyncAt,
     lastDurationMs: snapshot.lastDurationMs,
@@ -161,6 +196,16 @@ export function deriveBarnetSyncHealth(
       state: "running",
       isRunning: true,
       message: "A synchronization run is in progress.",
+    };
+  }
+
+  if (abandonedRunning || snapshot.lastRunStatus === "timed_out_or_expired") {
+    return {
+      ...base,
+      state: "failed",
+      isRunning: false,
+      message:
+        "Previous sync did not complete — awaiting the next scheduled run",
     };
   }
 

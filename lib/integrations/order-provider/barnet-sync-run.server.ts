@@ -1,0 +1,261 @@
+import { FieldValue } from "firebase-admin/firestore";
+import { getAdminFirestore } from "@/lib/server/firebase-admin";
+import { omitUndefined } from "@/lib/server/firestore/helpers";
+import {
+  BARNET_SYNC_RUNS_COLLECTION,
+  BARNET_SYNC_STATE_DOC,
+} from "@/lib/integrations/order-provider/sync-lock.server";
+import {
+  BARNET_SYNC_RUN_HISTORY_LIMIT,
+  type BarnetSyncRunCounts,
+  type BarnetSyncRunStatus,
+  type BarnetSyncSource,
+} from "@/lib/integrations/order-provider/barnet-sync-health.server";
+
+/**
+ * Identical consecutive skip/disabled outcomes update the current summary only —
+ * they do not append another history document (prevents overnight quiet-hours
+ * from ejecting daytime success/failure history under the 25-entry cap).
+ */
+export function shouldRecordBarnetSyncHistoryDoc(input: {
+  status: BarnetSyncRunStatus;
+  priorLastRunStatus?: string | null;
+}): boolean {
+  const collapsible: ReadonlySet<string> = new Set([
+    "skipped_outside_hours",
+    "skipped_locked",
+    "disabled",
+    "not_configured",
+  ]);
+  if (
+    collapsible.has(input.status) &&
+    input.priorLastRunStatus === input.status
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export interface BarnetSyncRunRecord {
+  runId: string;
+  source: BarnetSyncSource;
+  status: BarnetSyncRunStatus;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  lastAttemptedSyncAt: string;
+  lastSuccessfulSyncAt: string | null;
+  pagesScanned: number;
+  ordersExamined: number;
+  deliveryOrdersFound: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  invalid: number;
+  enrichmentErrors: number;
+  syncErrors: number;
+  errorCode: string | null;
+  safeErrorMessage: string | null;
+  lockRunId: string | null;
+  outsideOperatingHours: boolean;
+  providerConfigured: boolean;
+  providerReadEnabled: boolean;
+  actorId?: string | null;
+}
+
+function emptyCounts(): BarnetSyncRunCounts {
+  return {
+    pagesScanned: 0,
+    ordersExamined: 0,
+    deliveryOrdersFound: 0,
+    inserted: 0,
+    updated: 0,
+    unchanged: 0,
+    skipped: 0,
+    invalid: 0,
+    enrichmentErrors: 0,
+    syncErrors: 0,
+  };
+}
+
+export async function markBarnetSyncRunStarted(input: {
+  runId: string;
+  source: BarnetSyncSource;
+  startedAt: string;
+  providerConfigured: boolean;
+  providerReadEnabled: boolean;
+  actorId?: string | null;
+}): Promise<void> {
+  const db = getAdminFirestore();
+  const counts = emptyCounts();
+
+  await db.doc(BARNET_SYNC_STATE_DOC).set(
+    omitUndefined({
+      lastAttemptedSyncAt: input.startedAt,
+      lastRunId: input.runId,
+      lastRunStatus: "running" satisfies BarnetSyncRunStatus,
+      lastRunSource: input.source,
+      lastDurationMs: null,
+      lastSafeErrorMessage: null,
+      lastErrorCode: null,
+      lastCounts: counts,
+      providerConfigured: input.providerConfigured,
+      providerReadEnabled: input.providerReadEnabled,
+    }),
+    { merge: true },
+  );
+
+  await db.collection(BARNET_SYNC_RUNS_COLLECTION).doc(input.runId).set(
+    omitUndefined({
+      runId: input.runId,
+      source: input.source,
+      status: "running" satisfies BarnetSyncRunStatus,
+      startedAt: input.startedAt,
+      completedAt: null,
+      durationMs: null,
+      lastAttemptedSyncAt: input.startedAt,
+      lastSuccessfulSyncAt: null,
+      ...counts,
+      errorCode: null,
+      safeErrorMessage: null,
+      lockRunId: input.runId,
+      outsideOperatingHours: false,
+      providerConfigured: input.providerConfigured,
+      providerReadEnabled: input.providerReadEnabled,
+      actorId: input.actorId ?? null,
+      createdAt: input.startedAt,
+    }),
+  );
+}
+
+export async function persistBarnetSyncRunOutcome(input: {
+  runId: string;
+  source: BarnetSyncSource;
+  status: BarnetSyncRunStatus;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  counts?: Partial<BarnetSyncRunCounts>;
+  errorCode?: string | null;
+  safeErrorMessage?: string | null;
+  outsideOperatingHours?: boolean;
+  providerConfigured: boolean;
+  providerReadEnabled: boolean;
+  previousSuccessfulSyncAt?: string | null;
+  actorId?: string | null;
+  updateAttemptedAt?: boolean;
+  /** When false, update summary state only (no history doc / prune). */
+  recordHistory?: boolean;
+}): Promise<void> {
+  const db = getAdminFirestore();
+  const counts = { ...emptyCounts(), ...input.counts };
+  const isSuccessLike =
+    input.status === "success" || input.status === "partial";
+  const previousSuccess =
+    typeof input.previousSuccessfulSyncAt === "string"
+      ? input.previousSuccessfulSyncAt
+      : null;
+  const lastSuccessfulSyncAt = isSuccessLike
+    ? input.completedAt
+    : previousSuccess;
+
+  const statePatch: Record<string, unknown> = {
+    lastRunId: input.runId,
+    lastRunStatus: input.status,
+    lastRunSource: input.source,
+    lastDurationMs: input.durationMs,
+    lastSafeErrorMessage: input.safeErrorMessage ?? null,
+    lastErrorCode: input.errorCode ?? null,
+    lastCounts: counts,
+    lastSyncSummary: {
+      inserted: counts.inserted,
+      updated: counts.updated,
+      deliveryOrdersFound: counts.deliveryOrdersFound,
+      pagesScanned: counts.pagesScanned,
+      unchanged: counts.unchanged,
+      invalid: counts.invalid,
+      enrichmentErrors: counts.enrichmentErrors,
+      syncErrors: counts.syncErrors,
+    },
+    lastError: input.safeErrorMessage ?? null,
+    providerConfigured: input.providerConfigured,
+    providerReadEnabled: input.providerReadEnabled,
+    outsideOperatingHours: Boolean(input.outsideOperatingHours),
+  };
+
+  if (input.updateAttemptedAt !== false) {
+    statePatch.lastAttemptedSyncAt = input.completedAt;
+  }
+
+  if (isSuccessLike) {
+    statePatch.lastSuccessfulSyncAt = lastSuccessfulSyncAt;
+    statePatch.consecutiveFailures = 0;
+  } else if (input.status === "failed") {
+    if (previousSuccess) {
+      statePatch.lastSuccessfulSyncAt = previousSuccess;
+    }
+    statePatch.consecutiveFailures = FieldValue.increment(1);
+  }
+  // skipped / disabled / not_configured: do not touch lastSuccessfulSyncAt
+
+  await db.doc(BARNET_SYNC_STATE_DOC).set(omitUndefined(statePatch), { merge: true });
+
+  if (input.recordHistory === false) {
+    return;
+  }
+
+  await db.collection(BARNET_SYNC_RUNS_COLLECTION).doc(input.runId).set(
+    omitUndefined({
+      runId: input.runId,
+      source: input.source,
+      status: input.status,
+      startedAt: input.startedAt,
+      completedAt: input.completedAt,
+      durationMs: input.durationMs,
+      lastAttemptedSyncAt: input.completedAt,
+      lastSuccessfulSyncAt,
+      ...counts,
+      errorCode: input.errorCode ?? null,
+      safeErrorMessage: input.safeErrorMessage ?? null,
+      lockRunId: input.runId,
+      outsideOperatingHours: Boolean(input.outsideOperatingHours),
+      providerConfigured: input.providerConfigured,
+      providerReadEnabled: input.providerReadEnabled,
+      actorId: input.actorId ?? null,
+      updatedAt: input.completedAt,
+    }),
+    { merge: true },
+  );
+
+  await pruneBarnetSyncRunHistory(db);
+}
+
+async function pruneBarnetSyncRunHistory(
+  db: ReturnType<typeof getAdminFirestore>,
+): Promise<void> {
+  try {
+    const snap = await db
+      .collection(BARNET_SYNC_RUNS_COLLECTION)
+      .orderBy("startedAt", "desc")
+      .offset(BARNET_SYNC_RUN_HISTORY_LIMIT)
+      .limit(40)
+      .get();
+
+    if (snap.empty) return;
+
+    const batch = db.batch();
+    for (const doc of snap.docs) {
+      batch.delete(doc.ref);
+    }
+    await batch.commit();
+  } catch {
+    // History prune is best-effort — never fail the sync run.
+  }
+}
+
+export async function readBarnetSyncStateDoc(): Promise<Record<string, unknown>> {
+  const db = getAdminFirestore();
+  const snap = await db.doc(BARNET_SYNC_STATE_DOC).get();
+  return snap.exists ? (snap.data() as Record<string, unknown>) : {};
+}

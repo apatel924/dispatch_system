@@ -1,9 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useCallback } from "react";
 import type { DataSource } from "@/lib/dash/api/config";
-import { isApiEnabled, isDevMockEnabled } from "@/lib/dash/api/config";
-import { ORDER_SYNC_POLL_MS } from "@/lib/delivery-workflow";
+import { isApiEnabled, shouldUseMockData } from "@/lib/dash/api/config";
+import {
+  CACHE_ORDER_DETAIL_MS,
+  ORDER_SYNC_POLL_MS,
+} from "@/lib/dash/query/cache-policy";
 import {
   mockOrderToAdminDetail,
   orderToAdminDetail,
@@ -12,51 +20,44 @@ import {
   type AdminProofItem,
 } from "@/lib/dash/api/adapters";
 import {
-  acknowledgeConsumerNoteApi,
   fetchDriverDetail,
   fetchOrderDetail,
   fetchOrderProofs,
 } from "@/lib/dash/api/client";
-import { usePolling } from "@/lib/dash/hooks/use-polling";
 import type { ConsumerNote } from "@/lib/types/backend";
+import { orderKeys } from "@/lib/dash/query/query-keys";
+
+type AdminOrderDetailBundle = {
+  detail: AdminOrderDetail;
+  proofs: AdminProofItem[];
+  consumerNotes: ConsumerNote[];
+  source: DataSource;
+};
 
 export function useAdminOrderDetail(orderId: string) {
-  const [detail, setDetail] = useState<AdminOrderDetail | null>(null);
-  const [proofs, setProofs] = useState<AdminProofItem[]>([]);
-  const [consumerNotes, setConsumerNotes] = useState<ConsumerNote[]>([]);
-  const [source, setSource] = useState<DataSource>("api");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const apiEnabled = isApiEnabled();
+  const mockMode = shouldUseMockData();
 
-  const load = useCallback(async (options?: { silent?: boolean }) => {
-    if (isDevMockEnabled()) {
-      setDetail(mockOrderToAdminDetail(orderId));
-      setProofs([]);
-      setConsumerNotes([]);
-      setSource("mock");
-      setError(null);
-      setLoading(false);
-      return;
-    }
+  const query = useQuery({
+    queryKey: orderKeys.detail(orderId),
+    queryFn: async (): Promise<AdminOrderDetailBundle> => {
+      if (shouldUseMockData()) {
+        const detail = mockOrderToAdminDetail(orderId);
+        if (!detail) throw new Error("Order not found");
+        return { detail, proofs: [], consumerNotes: [], source: "mock" };
+      }
+      if (!apiEnabled) {
+        throw new Error(
+          "API is not enabled. Set NEXT_PUBLIC_USE_API=true to load order details.",
+        );
+      }
 
-    if (!apiEnabled) {
-      setDetail(null);
-      setProofs([]);
-      setConsumerNotes([]);
-      setSource("api");
-      setError("API is not enabled. Set NEXT_PUBLIC_USE_API=true to load order details.");
-      setLoading(false);
-      return;
-    }
-
-    if (!options?.silent) setLoading(true);
-    setError(null);
-    try {
-      const [{ order, statusEvents, consumerNotes: notes }, proofsRes] = await Promise.all([
-        fetchOrderDetail(orderId),
-        fetchOrderProofs(orderId).catch(() => ({ proofs: [] })),
-      ]);
+      const [{ order, statusEvents, consumerNotes: notes }, proofsRes] =
+        await Promise.all([
+          fetchOrderDetail(orderId),
+          fetchOrderProofs(orderId).catch(() => ({ proofs: [] })),
+        ]);
 
       let assignedDriver = null;
       if (order.assignedDriverId) {
@@ -68,30 +69,38 @@ export function useAdminOrderDetail(orderId: string) {
         }
       }
 
-      setDetail(orderToAdminDetail(order, statusEvents, assignedDriver));
-      setProofs(proofsRes.proofs.map(proofToAdminItem));
-      setConsumerNotes(notes ?? []);
-      setSource("api");
-    } catch (err) {
-      if (!options?.silent) {
-        setDetail(null);
-        setProofs([]);
-      }
-      setError(err instanceof Error ? err.message : "Failed to load order");
-    } finally {
-      if (!options?.silent) setLoading(false);
-    }
-  }, [apiEnabled, orderId]);
+      return {
+        detail: orderToAdminDetail(order, statusEvents, assignedDriver),
+        proofs: proofsRes.proofs.map(proofToAdminItem),
+        consumerNotes: notes ?? [],
+        source: "api",
+      };
+    },
+    enabled: Boolean(orderId) && (mockMode || apiEnabled),
+    staleTime: CACHE_ORDER_DETAIL_MS,
+    placeholderData: keepPreviousData,
+    refetchInterval: () => {
+      if (!apiEnabled) return false;
+      if (typeof document !== "undefined" && document.hidden) return false;
+      return ORDER_SYNC_POLL_MS;
+    },
+  });
 
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  usePolling(
-    () => load({ silent: true }),
-    ORDER_SYNC_POLL_MS,
-    apiEnabled,
+  const refresh = useCallback(
+    async (_options?: { silent?: boolean }) => {
+      await queryClient.invalidateQueries({ queryKey: orderKeys.detail(orderId) });
+    },
+    [queryClient, orderId],
   );
 
-  return { detail, proofs, consumerNotes, source, loading, error, refresh: load };
+  return {
+    detail: query.data?.detail ?? null,
+    proofs: query.data?.proofs ?? [],
+    consumerNotes: query.data?.consumerNotes ?? [],
+    source: query.data?.source ?? (mockMode ? "mock" : "api"),
+    loading: mockMode ? false : query.isPending && !query.data,
+    refreshing: query.isFetching && !!query.data,
+    error: query.error instanceof Error ? query.error.message : null,
+    refresh,
+  };
 }

@@ -3,34 +3,18 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import type { DataSource } from "@/lib/dash/api/config";
-import { isApiEnabled, isDevMockEnabled } from "@/lib/dash/api/config";
+import { isApiEnabled, shouldUseMockData } from "@/lib/dash/api/config";
 import {
   getMockAdminReports,
   reportsOverviewToAdminView,
   type AdminReportsView,
 } from "@/lib/dash/api/adapters";
 import { fetchReportsOverview } from "@/lib/dash/api/client";
-import { adminQueryKeys } from "@/lib/dash/query/admin-query-keys";
-
-const EMPTY_REPORTS: AdminReportsView = {
-  period: { from: "", to: "" },
-  comparePeriod: null,
-  totals: {
-    deliveries: 0,
-    completed: 0,
-    failed: 0,
-    returned: 0,
-    avgDeliveryTime: "—",
-  },
-  comparisons: null,
-  statusBreakdown: { completed: 0, failed: 0, returned: 0 },
-  drivers: [],
-  trendDays: [],
-  compareTrendDays: null,
-};
+import { CACHE_REPORTS_MS } from "@/lib/dash/query/cache-policy";
+import { reportKeys } from "@/lib/dash/query/query-keys";
 
 async function fetchAdminReports(): Promise<{ reports: AdminReportsView; source: DataSource }> {
-  if (isDevMockEnabled()) {
+  if (shouldUseMockData()) {
     return { reports: getMockAdminReports(), source: "mock" };
   }
 
@@ -44,11 +28,12 @@ async function fetchAdminReports(): Promise<{ reports: AdminReportsView; source:
 
 export function useAdminReports() {
   const queryClient = useQueryClient();
-  const listKey = adminQueryKeys.reports.overview();
+  const listKey = reportKeys.overview();
 
   const query = useQuery({
     queryKey: listKey,
     queryFn: fetchAdminReports,
+    staleTime: CACHE_REPORTS_MS,
   });
 
   const refresh = useCallback(async () => {
@@ -56,8 +41,9 @@ export function useAdminReports() {
   }, [queryClient, listKey]);
 
   return {
-    reports: query.data?.reports ?? EMPTY_REPORTS,
-    source: query.data?.source ?? (isDevMockEnabled() ? "mock" : "api"),
+    /** Null until first success — pages must skeleton rather than showing fake zeros. */
+    reports: query.data?.reports ?? null,
+    source: query.data?.source ?? (shouldUseMockData() ? "mock" : "api"),
     loading: query.isPending && !query.data,
     error: query.error instanceof Error ? query.error.message : null,
     refresh,

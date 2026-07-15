@@ -8,8 +8,11 @@ import {
 import { usePathname } from "next/navigation";
 import { useCallback, useMemo } from "react";
 import type { DataSource } from "@/lib/dash/api/config";
-import { isApiEnabled, isDevMockEnabled } from "@/lib/dash/api/config";
-import { LIST_SYNC_POLL_MS } from "@/lib/delivery-workflow";
+import { isApiEnabled, shouldUseMockData } from "@/lib/dash/api/config";
+import {
+  CACHE_DRIVERS_LIST_MS,
+  LIST_SYNC_POLL_MS,
+} from "@/lib/dash/query/cache-policy";
 import {
   driverToAdminRow,
   getMockAdminDrivers,
@@ -19,10 +22,10 @@ import {
 import { fetchDriverDetail, fetchDriversList } from "@/lib/dash/api/client";
 import { drivers as mockDrivers } from "@/lib/dash/mock-data";
 import {
-  adminQueryKeys,
+  driverKeys,
   DRIVERS_POLL_ROUTES,
   shouldPollQuery,
-} from "@/lib/dash/query/admin-query-keys";
+} from "@/lib/dash/query/query-keys";
 
 const DRIVERS_FETCH_LIMIT = 50;
 
@@ -35,7 +38,7 @@ async function fetchAdminDriversList(): Promise<{
   rows: AdminDriverRow[];
   source: DataSource;
 }> {
-  if (isDevMockEnabled()) {
+  if (shouldUseMockData()) {
     return { rows: mockDriversFor(), source: "mock" };
   }
 
@@ -54,12 +57,13 @@ export function useAdminDrivers(options?: { limit?: number }) {
   const pathname = usePathname();
   const queryClient = useQueryClient();
   const apiEnabled = isApiEnabled();
-  const listKey = adminQueryKeys.drivers.list();
+  const listKey = driverKeys.list();
   const displayLimit = options?.limit ?? DRIVERS_FETCH_LIMIT;
 
   const query = useQuery({
     queryKey: listKey,
     queryFn: fetchAdminDriversList,
+    staleTime: CACHE_DRIVERS_LIST_MS,
     placeholderData: keepPreviousData,
     refetchInterval: apiEnabled
       ? () =>
@@ -80,7 +84,7 @@ export function useAdminDrivers(options?: { limit?: number }) {
 
   return {
     drivers,
-    source: query.data?.source ?? (isDevMockEnabled() ? "mock" : "api"),
+    source: query.data?.source ?? (shouldUseMockData() ? "mock" : "api"),
     loading: query.isPending && !query.data,
     refreshing: query.isFetching && !!query.data,
     error: query.error instanceof Error ? query.error.message : null,
@@ -91,7 +95,7 @@ export function useAdminDrivers(options?: { limit?: number }) {
 export function useAdminDriver(driverId: string) {
   const queryClient = useQueryClient();
   const apiEnabled = isApiEnabled();
-  const detailKey = adminQueryKeys.drivers.detail(driverId);
+  const detailKey = driverKeys.detail(driverId);
 
   const mockFallback = () => {
     const d = mockDrivers.find((x) => x.id === driverId);
@@ -101,7 +105,7 @@ export function useAdminDriver(driverId: string) {
   const query = useQuery({
     queryKey: detailKey,
     queryFn: async (): Promise<{ driver: AdminDriverRow | null; source: DataSource }> => {
-      if (isDevMockEnabled()) {
+      if (shouldUseMockData()) {
         return { driver: mockFallback(), source: "mock" };
       }
 
@@ -112,20 +116,21 @@ export function useAdminDriver(driverId: string) {
       const { driver: apiDriver } = await fetchDriverDetail(driverId);
       return { driver: driverToAdminRow(apiDriver), source: "api" };
     },
+    staleTime: CACHE_DRIVERS_LIST_MS,
     placeholderData: keepPreviousData,
   });
 
   const refresh = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: detailKey });
-    await queryClient.invalidateQueries({ queryKey: adminQueryKeys.drivers.list() });
-    await queryClient.invalidateQueries({ queryKey: adminQueryKeys.orders.all });
+    await queryClient.invalidateQueries({ queryKey: driverKeys.list() });
+    await queryClient.invalidateQueries({ queryKey: ["admin", "orders"] });
   }, [queryClient, detailKey]);
 
   const applyDriverUpdate = useCallback(
     (row: AdminDriverRow) => {
       queryClient.setQueryData(detailKey, { driver: row, source: "api" as const });
       queryClient.setQueryData(
-        adminQueryKeys.drivers.list(),
+        driverKeys.list(),
         (current: { rows: AdminDriverRow[]; source: DataSource } | undefined) => {
           if (!current) return current;
           return {
@@ -140,7 +145,7 @@ export function useAdminDriver(driverId: string) {
 
   return {
     driver: query.data?.driver ?? null,
-    source: query.data?.source ?? (isDevMockEnabled() ? "mock" : "api"),
+    source: query.data?.source ?? (shouldUseMockData() ? "mock" : "api"),
     loading: query.isPending && !query.data,
     refreshing: query.isFetching && !!query.data,
     error: query.error instanceof Error ? query.error.message : null,

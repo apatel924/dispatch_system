@@ -8,8 +8,11 @@ import {
 import { usePathname } from "next/navigation";
 import { useCallback, useMemo } from "react";
 import type { DataSource } from "@/lib/dash/api/config";
-import { isApiEnabled, isDevMockEnabled } from "@/lib/dash/api/config";
-import { LIST_SYNC_POLL_MS } from "@/lib/delivery-workflow";
+import { isApiEnabled, shouldUseMockData } from "@/lib/dash/api/config";
+import {
+  CACHE_ORDERS_LIST_MS,
+  LIST_SYNC_POLL_MS,
+} from "@/lib/dash/query/cache-policy";
 import {
   getMockAdminOrders,
   orderToAdminRow,
@@ -18,10 +21,10 @@ import {
 import { fetchOrdersList } from "@/lib/dash/api/client";
 import { drivers as mockDrivers } from "@/lib/dash/mock-data";
 import {
-  adminQueryKeys,
+  orderKeys,
   ORDERS_POLL_ROUTES,
   shouldPollQuery,
-} from "@/lib/dash/query/admin-query-keys";
+} from "@/lib/dash/query/query-keys";
 
 const ORDERS_FETCH_LIMIT = 50;
 
@@ -43,7 +46,7 @@ async function fetchAdminOrdersList(options?: {
   status?: string;
   search?: string;
 }): Promise<{ rows: AdminOrderRow[]; source: DataSource }> {
-  if (isDevMockEnabled()) {
+  if (shouldUseMockData()) {
     return { rows: mockOrdersFor(options), source: "mock" };
   }
 
@@ -72,7 +75,7 @@ export function useAdminOrders(options?: {
   const pathname = usePathname();
   const queryClient = useQueryClient();
   const apiEnabled = isApiEnabled();
-  const listKey = adminQueryKeys.orders.list({
+  const listKey = orderKeys.list({
     driverId: options?.driverId,
     status: options?.status,
     search: options?.search,
@@ -86,6 +89,7 @@ export function useAdminOrders(options?: {
       status: options?.status,
       search: options?.search,
     }),
+    staleTime: CACHE_ORDERS_LIST_MS,
     placeholderData: keepPreviousData,
     refetchInterval: apiEnabled
       ? () =>
@@ -109,7 +113,7 @@ export function useAdminOrders(options?: {
 
   return {
     orders,
-    source: query.data?.source ?? (isDevMockEnabled() ? "mock" : "api"),
+    source: query.data?.source ?? (shouldUseMockData() ? "mock" : "api"),
     loading: query.isPending && !query.data,
     refreshing: query.isFetching && !!query.data,
     error: query.error instanceof Error ? query.error.message : null,

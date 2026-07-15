@@ -3,7 +3,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import { fetchDashboardStats } from "@/lib/dash/api/client";
-import { adminQueryKeys } from "@/lib/dash/query/admin-query-keys";
+import { CACHE_DASHBOARD_STATS_MS } from "@/lib/dash/query/cache-policy";
+import { dashboardKeys } from "@/lib/dash/query/query-keys";
 
 export interface DashboardStatsView {
   newOrders: number;
@@ -20,25 +21,11 @@ export interface DashboardStatsView {
   partialDataMessage?: string;
 }
 
-const EMPTY_STATS: DashboardStatsView = {
-  newOrders: 0,
-  awaitingAssignment: 0,
-  activeDeliveries: 0,
-  completedToday: 0,
-  failedToday: 0,
-  returnedToday: 0,
-  failedReturnedToday: 0,
-  availableDrivers: 0,
-  busyDrivers: 0,
-  totalActiveDrivers: 0,
-  partialData: false,
-};
-
 export function useAdminDashboardStats() {
   const apiEnabled = isApiEnabled();
 
   const query = useQuery({
-    queryKey: adminQueryKeys.dashboard.stats(),
+    queryKey: dashboardKeys.stats(),
     queryFn: async (): Promise<DashboardStatsView> => {
       const { stats } = await fetchDashboardStats();
       return {
@@ -57,11 +44,15 @@ export function useAdminDashboardStats() {
       };
     },
     enabled: apiEnabled,
+    staleTime: CACHE_DASHBOARD_STATS_MS,
   });
 
   return {
-    stats: query.data ?? EMPTY_STATS,
+    /** Null until the first successful fetch — do not treat as genuine zeros. */
+    stats: query.data ?? null,
     loading: apiEnabled && query.isPending && !query.data,
+    refreshing: query.isFetching && !!query.data,
     error: query.error instanceof Error ? query.error.message : null,
+    hasData: Boolean(query.data),
   };
 }

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { DataSource } from "@/lib/dash/api/config";
-import { isApiEnabled } from "@/lib/dash/api/config";
+import { isApiEnabled, shouldUseMockData } from "@/lib/dash/api/config";
 import {
   getMockAdminImportLogs,
   importLogToAdminRow,
@@ -13,16 +13,26 @@ import type { MockImportSource } from "@/lib/import/mock-fixtures";
 import { MOCK_IMPORT_FIXTURES } from "@/lib/import/mock-fixtures";
 
 export function useAdminImportLogs() {
-  const [logs, setLogs] = useState<AdminImportLogRow[]>(getMockAdminImportLogs);
-  const [source, setSource] = useState<DataSource>("mock");
+  const [logs, setLogs] = useState<AdminImportLogRow[]>(() =>
+    shouldUseMockData() ? getMockAdminImportLogs() : [],
+  );
+  const [source, setSource] = useState<DataSource>(() =>
+    shouldUseMockData() ? "mock" : "api",
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!isApiEnabled()) {
-      setLogs(getMockAdminImportLogs());
-      setSource("mock");
-      setError(null);
+      if (shouldUseMockData()) {
+        setLogs(getMockAdminImportLogs());
+        setSource("mock");
+        setError(null);
+        return;
+      }
+      setLogs([]);
+      setSource("api");
+      setError("API is disabled. Enable NEXT_PUBLIC_USE_API=true for import logs.");
       return;
     }
 
@@ -33,8 +43,9 @@ export function useAdminImportLogs() {
       setLogs(apiLogs.map(importLogToAdminRow));
       setSource("api");
     } catch (err) {
-      setLogs(getMockAdminImportLogs());
-      setSource("mock");
+      // Never silently replace live data with mock catalogs on failure.
+      setLogs([]);
+      setSource("api");
       setError(err instanceof Error ? err.message : "Failed to load import logs");
     } finally {
       setLoading(false);

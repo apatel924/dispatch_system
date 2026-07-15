@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Phone, Mail, Car, Calendar, Edit3, MessageSquare, CheckCircle2, XCircle, Clock, Truck, ArrowLeft, Activity, StickyNote } from "lucide-react";
+import { Phone, Mail, Car, Edit3, MessageSquare, CheckCircle2, XCircle, Truck, ArrowLeft, Activity, StickyNote } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { StatCard } from "@/components/dash/ui/stat-card";
 import { SectionCard } from "@/components/dash/ui/section-card";
@@ -120,7 +120,7 @@ export function DriverProfilePage({ driverId }: { driverId: string }) {
           </div>
         ) : null}
 
-        <div className="grid grid-cols-2 divide-x divide-y divide-border/60 bg-secondary/20 md:grid-cols-3 md:divide-y-0">
+        <div className="grid grid-cols-2 divide-x divide-border/60 bg-secondary/20 md:grid-cols-2">
           <SummaryStat
             label="Total Deliveries"
             value={
@@ -128,11 +128,6 @@ export function DriverProfilePage({ driverId }: { driverId: string }) {
                 ? String(d.deliveries)
                 : "No activity recorded"
             }
-          />
-          <SummaryStat
-            label="Member Since"
-            value={d.joinedDate ?? "Not provided"}
-            icon={d.joinedDate ? Calendar : undefined}
           />
           <SummaryStat
             label="Success Rate"
@@ -143,10 +138,9 @@ export function DriverProfilePage({ driverId }: { driverId: string }) {
         </div>
       </div>
 
-      <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+      <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-3">
         <StatCard label="Completed Today" value={d.completedToday} icon={CheckCircle2} tone="success" />
         <StatCard label="Failed Today" value={d.failedToday} icon={XCircle} tone="primary" />
-        <StatCard label="Average Delivery Time" value={d.averageTime} icon={Clock} tone="purple" />
         <StatCard label="Active Orders" value={d.activeDeliveries} icon={Truck} tone="warning" />
       </div>
 

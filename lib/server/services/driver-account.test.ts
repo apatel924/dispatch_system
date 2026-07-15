@@ -248,6 +248,29 @@ describe("updateDriverAccount", () => {
     ).rejects.toMatchObject({ code: "ACTIVE_ORDERS" });
   });
 
+  it("disables login, sets active:false claim, and revokes refresh tokens", async () => {
+    seedDriver("DRV-1", { authUid: "driver-auth-1", userId: "driver-auth-1" });
+    state.authUsers.set("driver-auth-1", {
+      email: "driver@example.com",
+      disabled: false,
+      customClaims: { role: "driver", driverId: "DRV-1", active: true },
+    });
+
+    await updateDriverAccount("DRV-1", { disabled: true }, adminActor);
+
+    expect(updateUser).toHaveBeenCalledWith("driver-auth-1", { disabled: true });
+    expect(revokeRefreshTokens).toHaveBeenCalledWith("driver-auth-1");
+    expect(setCustomUserClaims).toHaveBeenCalledWith(
+      "driver-auth-1",
+      expect.objectContaining({
+        role: "driver",
+        driverId: "DRV-1",
+        active: false,
+      }),
+    );
+    expect(state.drivers.get("DRV-1")?.accountDisabled).toBe(true);
+  });
+
   it("maps duplicate email errors without logging the email in thrown message", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     seedDriver("DRV-1", { authUid: "driver-auth-1", userId: "driver-auth-1" });

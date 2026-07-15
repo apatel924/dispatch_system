@@ -289,8 +289,18 @@ export async function updateDriverAccount(
     throw mapFirebaseAuthError(err);
   }
 
-  if (emailChanged || passwordChanged) {
+  if (emailChanged || passwordChanged || disabledChanged) {
     await auth.revokeRefreshTokens(authUid);
+  }
+
+  if (disabledChanged && input.disabled !== undefined) {
+    const existingClaims = currentUser.customClaims ?? {};
+    await auth.setCustomUserClaims(authUid, {
+      ...existingClaims,
+      role: existingClaims.role ?? "driver",
+      driverId: existingClaims.driverId ?? driverId,
+      active: input.disabled !== true,
+    });
   }
 
   const now = nowIso();

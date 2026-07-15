@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, Phone, MapPin, Package, PenTool, Camera, IdCard,
   CheckCircle2, Circle, Truck, ChevronRight, Inbox, ClipboardList,
@@ -14,31 +14,62 @@ import {
   DELIVERY_STEPS, DEFAULT_COMPLETED_STEPS, type DeliveryStepKey,
 } from "@/lib/dash/driver-mock-data";
 import {
-  apiProofsToLocalProofs,
   mergeCompletedSteps,
 } from "@/lib/dash/api/driver-adapters";
-import { useDriverOrder } from "@/lib/dash/hooks/use-driver-order";
+import {
+  completedStepsIdentityKey,
+  serverProofIdentityKey,
+  useDriverOrder,
+} from "@/lib/dash/hooks/use-driver-order";
+import { useDriverSession } from "@/lib/dash/hooks/use-driver-session";
+import { OrderDetailSkeleton } from "@/components/dash/ui/skeletons";
 import { acknowledgeConsumerNoteApi } from "@/lib/dash/api/client";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import {
-  getOrderProofs, markStepCompleteAsync, saveProofAsync, saveOrderProofs, clearOrderProofs,
+  REQUIRED_PROOF_UPLOADS,
+  proofTypeForStepKey,
+  requiredProofStepKeysForDelivery,
+  requiredProofTypesForDelivery,
+  stepKeyForProofType,
+} from "@/lib/delivery-workflow";
+import {
+  getOrderProofs,
+  markStepCompleteAsync,
+  saveProofAsync,
+  saveOrderProofs,
+  clearOrderProofs,
   completeDeliveryAsync,
-  orderMapsUrl, deliveryMapsUrl, pickupMapsUrl, getDeliveryLocation, type ProofType,
+  reconcileLocalProofsWithServer,
+  orderMapsUrl,
+  deliveryMapsUrl,
+  pickupMapsUrl,
+  getDeliveryLocation,
+  areRequiredProofsSynced,
+  isAnyProofUploadInFlight,
+  completedStepsEqual,
+  stepTimestampsEqual,
+  proofRecordEqual,
+  proofSyncRecordEqual,
+  proofUploadErrorsEqual,
+  type ProofType,
+  type ProofSyncMeta,
+  type ProofSyncStatus,
 } from "@/lib/dash/driver-store";
 
 type CaptureMode = "photo" | "signature";
-
-const PROOF_LABELS: Record<ProofType, string> = {
-  signature: "Signature",
-  exteriorPhoto: "Address Photo",
-};
 
 function formatStepTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+function isDriverProofType(type: string): type is ProofType {
+  return type === "signature" || type === "exteriorPhoto";
+}
+
 export function DriverOrderDetail({ orderId }: { orderId: string }) {
   const router = useRouter();
+  const { driver } = useDriverSession();
+  const driverId = driver?.id ?? "";
   const {
     order,
     completedSteps: apiCompletedSteps,
@@ -52,35 +83,111 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
   const [completedSteps, setCompletedSteps] = useState<DeliveryStepKey[]>(DEFAULT_COMPLETED_STEPS);
   const [stepTimestamps, setStepTimestamps] = useState<Partial<Record<DeliveryStepKey, string>>>({});
   const [proofs, setProofs] = useState<Partial<Record<ProofType, string>>>({});
+  const [proofSync, setProofSync] = useState<Partial<Record<ProofType, ProofSyncMeta>>>({});
   const [capture, setCapture] = useState<{ mode: CaptureMode; proofType: ProofType } | null>(null);
   const [delivered, setDelivered] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const [completeError, setCompleteError] = useState<string | null>(null);
   const [uploadingProof, setUploadingProof] = useState<ProofType | null>(null);
   const [proofUploadErrors, setProofUploadErrors] = useState<Partial<Record<ProofType, string>>>({});
   const [acknowledgingId, setAcknowledgingId] = useState<string | null>(null);
 
-  const loadProofs = useCallback(() => {
-    const stored = getOrderProofs(orderId);
-    const apiProofUrls = source === "api" ? apiProofsToLocalProofs(apiProofs) : {};
-    const mergedProofs = { ...apiProofUrls, ...stored.proofs };
+  const serverProofKey = useMemo(
+    () => serverProofIdentityKey(apiProofs),
+    [apiProofs],
+  );
+  const apiStepsKey = useMemo(
+    () => completedStepsIdentityKey(apiCompletedSteps),
+    [apiCompletedSteps],
+  );
 
-    let steps = stored.completedSteps;
-    if (source === "api" && apiCompletedSteps.length > 0) {
-      steps = mergeCompletedSteps(apiCompletedSteps, stored.completedSteps);
+  const apiProofsRef = useRef(apiProofs);
+  const apiCompletedStepsRef = useRef(apiCompletedSteps);
+  apiProofsRef.current = apiProofs;
+  apiCompletedStepsRef.current = apiCompletedSteps;
+
+  // Hydrate / reconcile from stable server identity — not poll signed-URL churn.
+  useEffect(() => {
+    if (!driverId) return;
+
+    const serverProofs = apiProofsRef.current;
+    const serverSteps = apiCompletedStepsRef.current;
+
+    const reconciled =
+      source === "api"
+        ? reconcileLocalProofsWithServer(driverId, orderId, serverProofs)
+        : getOrderProofs(driverId, orderId);
+
+    const previewUrls: Partial<Record<ProofType, string>> = { ...reconciled.proofs };
+    for (const proof of serverProofs) {
+      if (!isDriverProofType(proof.type)) continue;
+      if (reconciled.proofSync[proof.type]?.syncStatus === "synced" && proof.downloadUrl) {
+        previewUrls[proof.type] = proof.downloadUrl;
+      } else if (!previewUrls[proof.type] && proof.downloadUrl) {
+        previewUrls[proof.type] = proof.downloadUrl;
+      }
+    }
+
+    let steps = reconciled.completedSteps.filter((step) => {
+      const proofType = stepKeyForProofTypeLookup(step);
+      if (!proofType) return true;
+      return reconciled.proofSync[proofType]?.syncStatus === "synced";
+    });
+
+    if (source === "api" && serverSteps.length > 0) {
+      const apiOnly = serverSteps.filter((step) => {
+        const proofType = stepKeyForProofTypeLookup(step);
+        if (!proofType) return true;
+        return reconciled.proofSync[proofType]?.syncStatus === "synced";
+      });
+      steps = mergeCompletedSteps(apiOnly, steps);
     }
     if (steps.length === 0) steps = DEFAULT_COMPLETED_STEPS;
 
-    setCompletedSteps(steps);
-    setStepTimestamps(stored.stepTimestamps);
-    setProofs(mergedProofs);
-  }, [orderId, source, apiCompletedSteps, apiProofs]);
+    const nextErrors: Partial<Record<ProofType, string>> = {};
+    for (const type of requiredProofTypesForDelivery()) {
+      if (!isDriverProofType(type)) continue;
+      const meta = reconciled.proofSync[type];
+      if (meta?.syncStatus === "synced") continue;
+      if (meta?.error) nextErrors[type] = meta.error;
+    }
 
-  useEffect(() => { loadProofs(); }, [loadProofs]);
+    setCompletedSteps((prev) => (completedStepsEqual(prev, steps) ? prev : steps));
+    setStepTimestamps((prev) =>
+      stepTimestampsEqual(prev, reconciled.stepTimestamps) ? prev : reconciled.stepTimestamps,
+    );
+    setProofs((prev) => (proofRecordEqual(prev, previewUrls) ? prev : previewUrls));
+    setProofSync((prev) =>
+      proofSyncRecordEqual(prev, reconciled.proofSync) ? prev : reconciled.proofSync,
+    );
+    setProofUploadErrors((prev) =>
+      proofUploadErrorsEqual(prev, nextErrors) ? prev : nextErrors,
+    );
+  }, [driverId, orderId, source, serverProofKey, apiStepsKey]);
+
+  // Refresh signed preview URLs for already-synced proofs without re-reconciling.
+  useEffect(() => {
+    setProofs((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const proof of apiProofs) {
+        if (!isDriverProofType(proof.type)) continue;
+        if (proofSync[proof.type]?.syncStatus !== "synced") continue;
+        if (!proof.downloadUrl) continue;
+        if (next[proof.type] === proof.downloadUrl) continue;
+        if (next[proof.type]?.startsWith("data:")) continue;
+        next[proof.type] = proof.downloadUrl;
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [apiProofs, proofSync]);
 
   if (loading && !order) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-4">
-        <p className="text-muted-foreground">Loading order…</p>
+      <div className="mx-auto min-h-screen max-w-md p-4">
+        <OrderDetailSkeleton />
       </div>
     );
   }
@@ -94,7 +201,19 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
     );
   }
 
-  const canComplete = DELIVERY_STEPS.every((s) => completedSteps.includes(s.key));
+  const proofsSynced =
+    !isApiEnabled() ||
+    (areRequiredProofsSynced(driverId, orderId) &&
+      requiredProofStepKeysForDelivery().every((step) => completedSteps.includes(step)));
+  const proofUploading = uploadingProof !== null || isAnyProofUploadInFlight(driverId, orderId);
+  const tapAndProofStepsDone = DELIVERY_STEPS.every((s) => {
+    if (s.type === "proof") {
+      const type = s.key === "signature" ? "signature" : "exteriorPhoto";
+      return proofSync[type]?.syncStatus === "synced" || (!isApiEnabled() && completedSteps.includes(s.key));
+    }
+    return completedSteps.includes(s.key);
+  });
+  const canComplete = tapAndProofStepsDone && proofsSynced && !proofUploading && !completing;
 
   const handleAcknowledge = async (noteId: string) => {
     if (!isApiEnabled()) return;
@@ -108,10 +227,10 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
   };
 
   const handleTapStep = async (key: DeliveryStepKey) => {
-    if (completedSteps.includes(key) || !order) return;
+    if (completedSteps.includes(key) || !order || proofUploading || completing) return;
     setSyncing(true);
     try {
-      const updated = await markStepCompleteAsync(orderId, key, order.status);
+      const updated = await markStepCompleteAsync(driverId, orderId, key, order.status);
       setCompletedSteps(updated.completedSteps);
       setStepTimestamps(updated.stepTimestamps);
       await refresh({ silent: true });
@@ -121,6 +240,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
   };
 
   const openCapture = (proofType: ProofType, mode: CaptureMode) => {
+    if (proofUploading || completing) return;
     setCapture({ mode, proofType });
   };
 
@@ -129,6 +249,7 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
     const { proofType } = capture;
     setCapture(null);
     setUploadingProof(proofType);
+    setCompleteError(null);
     setProofUploadErrors((prev) => {
       const next = { ...prev };
       delete next[proofType];
@@ -136,8 +257,9 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
     });
     setSyncing(true);
     try {
-      const result = await saveProofAsync(orderId, proofType, dataUrl);
+      const result = await saveProofAsync(driverId, orderId, proofType, dataUrl);
       setProofs(result.proofs.proofs);
+      setProofSync(result.proofs.proofSync);
       setCompletedSteps(result.proofs.completedSteps);
       setStepTimestamps(result.proofs.stepTimestamps);
       if (!result.synced && result.error) {
@@ -152,9 +274,10 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
   };
 
   const handleRetryProofUpload = async (type: ProofType) => {
-    const dataUrl = proofs[type] ?? getOrderProofs(orderId).proofs[type];
-    if (!dataUrl) return;
+    const dataUrl = proofs[type] ?? getOrderProofs(driverId, orderId).proofs[type];
+    if (!dataUrl || proofUploading || completing) return;
     setUploadingProof(type);
+    setCompleteError(null);
     setProofUploadErrors((prev) => {
       const next = { ...prev };
       delete next[type];
@@ -162,7 +285,11 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
     });
     setSyncing(true);
     try {
-      const result = await saveProofAsync(orderId, type, dataUrl);
+      const result = await saveProofAsync(driverId, orderId, type, dataUrl);
+      setProofs(result.proofs.proofs);
+      setProofSync(result.proofs.proofSync);
+      setCompletedSteps(result.proofs.completedSteps);
+      setStepTimestamps(result.proofs.stepTimestamps);
       if (!result.synced && result.error) {
         setProofUploadErrors((prev) => ({ ...prev, [type]: result.error }));
       } else {
@@ -175,39 +302,61 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
   };
 
   const handleRemoveProof = (type: ProofType) => {
-    const stored = getOrderProofs(orderId);
-    const stepMap: Record<ProofType, DeliveryStepKey> = {
-      signature: "signature", exteriorPhoto: "exteriorPhoto",
-    };
-    const step = stepMap[type];
+    if (proofUploading || completing) return;
+    const stored = getOrderProofs(driverId, orderId);
+    const step = stepKeyForProofType(type);
     stored.proofs = { ...stored.proofs };
     delete stored.proofs[type];
-    stored.completedSteps = stored.completedSteps.filter((s) => s !== step);
-    stored.stepTimestamps = { ...stored.stepTimestamps };
-    delete stored.stepTimestamps[step];
+    stored.proofSync = { ...stored.proofSync };
+    delete stored.proofSync[type];
+    if (step) {
+      stored.completedSteps = stored.completedSteps.filter((s) => s !== step);
+      stored.stepTimestamps = { ...stored.stepTimestamps };
+      delete stored.stepTimestamps[step];
+    }
     if (stored.completedSteps.length > 0 || Object.keys(stored.proofs).length > 0) {
-      saveOrderProofs(orderId, stored);
+      saveOrderProofs(driverId, orderId, stored);
     } else {
-      clearOrderProofs(orderId);
+      clearOrderProofs(driverId, orderId);
     }
     setProofs(stored.proofs);
+    setProofSync(stored.proofSync);
     setStepTimestamps(stored.stepTimestamps);
     setCompletedSteps(stored.completedSteps.length > 0 ? stored.completedSteps : DEFAULT_COMPLETED_STEPS);
+    setProofUploadErrors((prev) => {
+      const next = { ...prev };
+      delete next[type];
+      return next;
+    });
   };
 
   const handleComplete = async () => {
+    if (!canComplete || delivered || completing) return;
+    setCompleting(true);
+    setCompleteError(null);
     setSyncing(true);
     try {
-      await completeDeliveryAsync(orderId);
+      await completeDeliveryAsync(driverId, orderId);
       await refresh({ silent: true });
       setDelivered(true);
       setTimeout(() => router.push("/driver-dashboard"), 1500);
+    } catch (err) {
+      setCompleteError(
+        err instanceof Error ? err.message : "Could not complete delivery. Please try again.",
+      );
     } finally {
+      setCompleting(false);
       setSyncing(false);
     }
   };
 
-  const completedCount = DELIVERY_STEPS.filter((s) => completedSteps.includes(s.key)).length;
+  const completedCount = DELIVERY_STEPS.filter((s) => {
+    if (s.type === "proof") {
+      const type = s.key === "signature" ? "signature" : "exteriorPhoto";
+      return proofSync[type]?.syncStatus === "synced";
+    }
+    return completedSteps.includes(s.key);
+  }).length;
   const deliveryLocation = getDeliveryLocation(order);
   const navigationUrl = orderMapsUrl(order, completedSteps);
 
@@ -317,7 +466,11 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
           </div>
           <ol className="mt-3 space-y-2">
             {DELIVERY_STEPS.map((s) => {
-              const done = completedSteps.includes(s.key);
+              const proofTypeForStep: ProofType | null =
+                s.key === "signature" ? "signature" : s.key === "exteriorPhoto" ? "exteriorPhoto" : null;
+              const done = proofTypeForStep
+                ? proofSync[proofTypeForStep]?.syncStatus === "synced"
+                : completedSteps.includes(s.key);
               const timestamp = stepTimestamps[s.key];
               const Icon = s.proofType === "signature" ? PenTool : s.proofType === "photo" ? Camera : null;
               const tapLabel = s.key === "verifyId" ? "Verify" : "Mark Done";
@@ -335,11 +488,16 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
                       {done && timestamp && (
                         <div className="mt-0.5 text-xs text-success">Completed at {formatStepTime(timestamp)}</div>
                       )}
+                      {!done && proofTypeForStep && proofSync[proofTypeForStep]?.syncStatus === "failed" && (
+                        <div className="mt-0.5 text-xs text-destructive">Upload required</div>
+                      )}
                     </div>
                     {!done && s.type === "tap" && (
                       <button
+                        type="button"
+                        disabled={proofUploading || completing}
                         onClick={() => handleTapStep(s.key)}
-                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-primary/40 px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary/5"
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-primary/40 px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary/5 disabled:opacity-50"
                       >
                         {TapIcon && <TapIcon className="h-3.5 w-3.5" />}
                         {tapLabel}
@@ -347,11 +505,13 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
                     )}
                     {!done && s.type === "proof" && Icon && (
                       <button
+                        type="button"
+                        disabled={proofUploading || completing}
                         onClick={() => openCapture(
                           s.key === "signature" ? "signature" : "exteriorPhoto",
                           s.proofType === "signature" ? "signature" : "photo",
                         )}
-                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-primary/40 bg-card px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary/5"
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-primary/40 bg-card px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary/5 disabled:opacity-50"
                       >
                         <Icon className="h-3.5 w-3.5" /> Capture <ChevronRight className="h-3 w-3" />
                       </button>
@@ -366,36 +526,34 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
         <section className="rounded-2xl border border-border bg-card p-4">
           <div className="text-sm font-bold">Proof Capture</div>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            <ProofThumbnail
-              label="Signature"
-              required
-              dataUrl={proofs.signature}
-              icon={<PenTool className="h-6 w-6" />}
-              onCapture={() => openCapture("signature", "signature")}
-              onRemove={proofs.signature && !uploadingProof ? () => handleRemoveProof("signature") : undefined}
-              uploading={uploadingProof === "signature"}
-              uploadError={proofUploadErrors.signature}
-              onRetry={
-                proofUploadErrors.signature && proofs.signature
-                  ? () => void handleRetryProofUpload("signature")
-                  : undefined
-              }
-            />
-            <ProofThumbnail
-              label="Exterior"
-              required
-              dataUrl={proofs.exteriorPhoto}
-              icon={<Camera className="h-6 w-6" />}
-              onCapture={() => openCapture("exteriorPhoto", "photo")}
-              onRemove={proofs.exteriorPhoto && !uploadingProof ? () => handleRemoveProof("exteriorPhoto") : undefined}
-              uploading={uploadingProof === "exteriorPhoto"}
-              uploadError={proofUploadErrors.exteriorPhoto}
-              onRetry={
-                proofUploadErrors.exteriorPhoto && proofs.exteriorPhoto
-                  ? () => void handleRetryProofUpload("exteriorPhoto")
-                  : undefined
-              }
-            />
+            {REQUIRED_PROOF_UPLOADS.map((proofDef) => {
+              const type = proofDef.proofType;
+              const Icon = type === "signature" ? PenTool : Camera;
+              return (
+                <ProofThumbnail
+                  key={type}
+                  label={proofDef.cardLabel}
+                  required={proofDef.required}
+                  dataUrl={proofs[type]}
+                  syncStatus={proofSyncStatus(proofSync[type], uploadingProof === type)}
+                  icon={<Icon className="h-6 w-6" />}
+                  onCapture={() => openCapture(type, proofDef.captureMode)}
+                  onRemove={
+                    proofs[type] && uploadingProof !== type && !completing
+                      ? () => handleRemoveProof(type)
+                      : undefined
+                  }
+                  uploading={uploadingProof === type}
+                  uploadError={proofUploadErrors[type]}
+                  disabled={proofUploading || completing}
+                  onRetry={
+                    proofUploadErrors[type] && proofs[type]
+                      ? () => void handleRetryProofUpload(type)
+                      : undefined
+                  }
+                />
+              );
+            })}
           </div>
         </section>
       </div>
@@ -403,16 +561,28 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
       <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card p-3">
         <div className="mx-auto max-w-md">
           <button
-            disabled={!canComplete || delivered || syncing}
-            onClick={handleComplete}
-            className={`flex h-14 w-full items-center justify-center gap-2 rounded-xl text-base font-bold ${canComplete && !delivered && !syncing ? "bg-primary text-primary-foreground hover:bg-primary/90" : "cursor-not-allowed bg-secondary text-muted-foreground"}`}
+            type="button"
+            disabled={!canComplete || delivered}
+            onClick={() => void handleComplete()}
+            className={`flex h-14 w-full items-center justify-center gap-2 rounded-xl text-base font-bold ${canComplete && !delivered ? "bg-primary text-primary-foreground hover:bg-primary/90" : "cursor-not-allowed bg-secondary text-muted-foreground"}`}
           >
             <CheckCircle2 className="h-5 w-5" />
-            {delivered ? "Delivery Complete!" : syncing ? "Saving…" : "Complete Delivery"}
+            {delivered
+              ? "Delivery Complete!"
+              : completing || syncing
+                ? "Saving…"
+                : "Complete Delivery"}
           </button>
-          {!canComplete && !delivered && (
+          {completeError && (
+            <div className="mt-1.5 text-center text-[11px] text-destructive" role="alert">
+              {completeError}
+            </div>
+          )}
+          {!canComplete && !delivered && !completeError && (
             <div className="mt-1.5 text-center text-[11px] text-muted-foreground">
-              Complete all delivery steps to continue
+              {proofUploading
+                ? "Wait for proof uploads to finish"
+                : "Complete all steps and sync required proofs to continue"}
             </div>
           )}
         </div>
@@ -422,12 +592,28 @@ export function DriverOrderDetail({ orderId }: { orderId: string }) {
         <ProofCaptureSheet
           open
           mode={capture.mode}
-          title={PROOF_LABELS[capture.proofType]}
-          onClose={() => setCapture(null)}
+          title={
+            REQUIRED_PROOF_UPLOADS.find((p) => p.proofType === capture.proofType)?.cardLabel ??
+            capture.proofType
+          }
+          onClose={() => !uploadingProof && setCapture(null)}
           onSave={handleSaveProof}
           saving={uploadingProof === capture.proofType}
         />
       )}
     </div>
   );
+}
+
+function stepKeyForProofTypeLookup(step: DeliveryStepKey): ProofType | null {
+  const type = proofTypeForStepKey(step);
+  return type && isDriverProofType(type) ? type : null;
+}
+
+function proofSyncStatus(
+  meta: ProofSyncMeta | undefined,
+  uploading: boolean,
+): ProofSyncStatus | undefined {
+  if (uploading) return "uploading";
+  return meta?.syncStatus;
 }

@@ -38,7 +38,6 @@ export const CONSUMER_STATUS_HEADINGS: Record<OrderStatus, string> = {
   Scheduled: "Scheduled for delivery",
   Assigned: "Driver assigned",
   "Picked Up": "Order picked up",
-  "En Route": "Out for delivery",
   "Out for Delivery": "Out for delivery",
   Delivered: "Delivered",
   Failed: "Delivery unsuccessful",
@@ -100,7 +99,6 @@ export function resolveConsumerStageKey(
   if (hasCompletedStep(order, "arrivedDestination")) return "arriving";
   if (
     order.status === "Out for Delivery" ||
-    order.status === "En Route" ||
     hasCompletedStep(order, "outForDelivery")
   ) {
     return "out_for_delivery";
@@ -136,7 +134,6 @@ function stageTimestamp(
     case "out_for_delivery":
       return (
         eventTimeForStep(events, "outForDelivery") ??
-        eventTimeForStatus(events, "En Route") ??
         eventTimeForStatus(events, "Out for Delivery")
       );
     case "arriving":

@@ -2,7 +2,6 @@ export type OrderStatus =
   | "New"
   | "Assigned"
   | "Picked Up"
-  | "En Route"
   | "Out for Delivery"
   | "Delivered"
   | "Failed"

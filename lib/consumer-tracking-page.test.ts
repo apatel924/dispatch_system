@@ -17,7 +17,7 @@ function makeOrder(): Order {
     deliveryUnit: "12A",
     assignedDriverId: "DRV-9",
     assignedDriverName: "Alex Driver",
-    status: "En Route",
+    status: "Out for Delivery",
     paymentStatus: "Paid",
     totalCents: 1500,
     totalDisplay: "$15.00",

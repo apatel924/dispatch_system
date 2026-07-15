@@ -50,7 +50,7 @@ describe("consumer-notes helpers", () => {
     ];
     const afterPickup = notesAddedAfterPickup(notes, events);
     expect(afterPickup.map((n) => n.id)).toEqual(["after"]);
-    expect(isOrderPastPickup("En Route")).toBe(true);
+    expect(isOrderPastPickup("Out for Delivery")).toBe(true);
     expect(isOrderPastPickup("Assigned")).toBe(false);
   });
 });

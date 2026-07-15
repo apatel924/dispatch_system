@@ -2,7 +2,6 @@ import type { ConsumerNote, OrderStatus, OrderStatusEvent } from "@/lib/types/ba
 
 const POST_PICKUP_STATUSES = new Set<OrderStatus>([
   "Picked Up",
-  "En Route",
   "Out for Delivery",
 ]);
 

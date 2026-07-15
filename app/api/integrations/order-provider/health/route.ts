@@ -9,6 +9,7 @@ import {
   getExternalOrderProviderSyncState,
   getOrderProviderHealth,
 } from "@/lib/integrations/order-provider/index.server";
+import { getBarnetSyncHealthView } from "@/lib/integrations/order-provider/execute-barnet-sync.server";
 
 export async function GET(request: Request) {
   try {
@@ -22,11 +23,30 @@ export async function GET(request: Request) {
       const user = await requireRole(request, ["admin"]);
       if (isErrorResponse(user)) return user;
 
-      const [health, syncState] = await Promise.all([
+      const [health, syncState, syncHealth] = await Promise.all([
         Promise.resolve(getOrderProviderHealth()),
         getExternalOrderProviderSyncState(),
+        getBarnetSyncHealthView(),
       ]);
-      return NextResponse.json({ ...health, syncState });
+      return NextResponse.json({
+        ...health,
+        syncState,
+        syncHealth: {
+          state: syncHealth.state,
+          message: syncHealth.message,
+          outsideOperatingHours: syncHealth.outsideOperatingHours,
+          isRunning: syncHealth.isRunning,
+          isLocked: syncHealth.isLocked,
+          lastAttemptedSyncAt: syncHealth.lastAttemptedSyncAt,
+          lastSuccessfulSyncAt: syncHealth.lastSuccessfulSyncAt,
+          lastDurationMs: syncHealth.lastDurationMs,
+          lastSafeErrorMessage: syncHealth.lastSafeErrorMessage,
+          lastErrorCode: syncHealth.lastErrorCode,
+          lastRunStatus: syncHealth.lastRunStatus,
+          counts: syncHealth.counts,
+          nextExpectedEligibleScanAt: syncHealth.nextExpectedEligibleScanAt,
+        },
+      });
     }
 
     const health = getOrderProviderHealth();

@@ -7,6 +7,15 @@ import {
   prepareProofImage,
   type ClientProofType,
 } from "@/lib/dash/proof-image-prepare";
+import {
+  applyStrokeStyle,
+  clearCanvasCssSpace,
+  cssPointerPosition,
+  resolveDevicePixelRatio,
+  restoreInkFromDataUrl,
+  setupHiDpiCanvas,
+} from "@/lib/dash/signature-canvas";
+import type { ProofSyncStatus } from "@/lib/dash/driver-store";
 
 type CaptureMode = "photo" | "signature" | "id";
 
@@ -202,63 +211,136 @@ function SignatureCapture({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawing = useRef(false);
+  const lastPoint = useRef<{ x: number; y: number } | null>(null);
+  const cssSize = useRef({ width: 0, height: 0 });
+  const inkSnapshot = useRef<string | null>(null);
+  const activePointerId = useRef<number | null>(null);
+  const hasStrokeRef = useRef(false);
   const [hasStroke, setHasStroke] = useState(false);
   const [savingLocal, setSavingLocal] = useState(false);
+
+  const setStrokeState = (value: boolean) => {
+    hasStrokeRef.current = value;
+    setHasStroke(value);
+  };
 
   const getPos = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+    return cssPointerPosition(e.clientX, e.clientY, rect);
   };
 
-  const startDraw = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const ctx = canvasRef.current?.getContext("2d");
-    if (!ctx || savingLocal || saving) return;
-    drawing.current = true;
-    const { x, y } = getPos(e);
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    canvasRef.current?.setPointerCapture(e.pointerId);
-  };
-
-  const draw = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!drawing.current) return;
-    const ctx = canvasRef.current?.getContext("2d");
-    if (!ctx) return;
-    const { x, y } = getPos(e);
-    ctx.lineTo(x, y);
-    ctx.stroke();
-    setHasStroke(true);
-  };
-
-  const endDraw = () => { drawing.current = false; };
-
-  const setupCanvas = useCallback(() => {
+  const configureCanvas = useCallback(async (preserveInk: boolean) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * 2;
-    canvas.height = rect.height * 2;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.scale(2, 2);
-    ctx.strokeStyle = "#1a1a1a";
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
+    const nextWidth = rect.width;
+    const nextHeight = rect.height;
+    if (nextWidth <= 0 || nextHeight <= 0) return;
+
+    const sizeChanged =
+      Math.abs(nextWidth - cssSize.current.width) > 0.5 ||
+      Math.abs(nextHeight - cssSize.current.height) > 0.5;
+    const snapshot =
+      preserveInk && hasStrokeRef.current ? canvas.toDataURL("image/png") : inkSnapshot.current;
+
+    if (!sizeChanged && cssSize.current.width > 0) {
+      const ctx = canvas.getContext("2d");
+      if (ctx) applyStrokeStyle(ctx);
+      return;
+    }
+
+    const setup = setupHiDpiCanvas(
+      canvas,
+      nextWidth,
+      nextHeight,
+      resolveDevicePixelRatio(),
+    );
+    if (!setup) return;
+    cssSize.current = { width: setup.cssWidth, height: setup.cssHeight };
+
+    if (snapshot) {
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        try {
+          await restoreInkFromDataUrl(ctx, snapshot, setup.cssWidth, setup.cssHeight);
+          inkSnapshot.current = snapshot;
+          setStrokeState(true);
+        } catch {
+          inkSnapshot.current = null;
+        }
+      }
+    }
   }, []);
 
-  useEffect(() => { setupCanvas(); }, [setupCanvas]);
+  useEffect(() => {
+    void configureCanvas(false);
+    const canvas = canvasRef.current;
+    if (!canvas || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      void configureCanvas(true);
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [configureCanvas]);
+
+  const startDraw = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx || savingLocal || saving) return;
+    e.preventDefault();
+    drawing.current = true;
+    activePointerId.current = e.pointerId;
+    const { x, y } = getPos(e);
+    lastPoint.current = { x, y };
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    canvas.setPointerCapture(e.pointerId);
+  };
+
+  const draw = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawing.current || activePointerId.current !== e.pointerId) return;
+    const ctx = canvasRef.current?.getContext("2d");
+    if (!ctx) return;
+    e.preventDefault();
+    const { x, y } = getPos(e);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    // Reset path so repeated stroke() calls do not darken prior segments.
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    lastPoint.current = { x, y };
+    if (!hasStrokeRef.current) setStrokeState(true);
+  };
+
+  const endDraw = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerId.current !== null && e.pointerId !== activePointerId.current) return;
+    const canvas = canvasRef.current;
+    if (canvas?.hasPointerCapture(e.pointerId)) {
+      canvas.releasePointerCapture(e.pointerId);
+    }
+    drawing.current = false;
+    activePointerId.current = null;
+    lastPoint.current = null;
+    if (hasStrokeRef.current && canvas) {
+      inkSnapshot.current = canvas.toDataURL("image/png");
+    }
+  };
+
+  const handlePointerLeave = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // While captured, keep the stroke active even if the pointer leaves the element.
+    if (drawing.current && canvasRef.current?.hasPointerCapture(e.pointerId)) return;
+    endDraw(e);
+  };
 
   const clear = () => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    setHasStroke(false);
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    clearCanvasCssSpace(ctx, cssSize.current.width || canvas.clientWidth, cssSize.current.height || canvas.clientHeight);
+    setStrokeState(false);
+    inkSnapshot.current = null;
+    lastPoint.current = null;
   };
 
   const save = async () => {
@@ -292,10 +374,13 @@ function SignatureCapture({
         <canvas
           ref={canvasRef}
           className="h-52 w-full touch-none"
+          style={{ touchAction: "none" }}
+          aria-label="Signature pad"
           onPointerDown={startDraw}
           onPointerMove={draw}
           onPointerUp={endDraw}
-          onPointerLeave={endDraw}
+          onPointerCancel={endDraw}
+          onPointerLeave={handlePointerLeave}
         />
         {!hasStroke && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted-foreground/50">
@@ -306,22 +391,28 @@ function SignatureCapture({
 
       <div className="grid grid-cols-3 gap-2">
         <button
+          type="button"
           disabled={busy}
           onClick={clear}
+          aria-label="Clear signature"
           className="flex h-12 items-center justify-center gap-1.5 rounded-xl border border-border text-sm font-semibold hover:bg-secondary disabled:opacity-50"
         >
           <Eraser className="h-4 w-4" /> Clear
         </button>
         <button
+          type="button"
           disabled={busy}
           onClick={onCancel}
+          aria-label="Cancel signature"
           className="flex h-12 items-center justify-center rounded-xl border border-border text-sm font-semibold hover:bg-secondary disabled:opacity-50"
         >
           Cancel
         </button>
         <button
+          type="button"
           disabled={!hasStroke || busy}
           onClick={() => void save()}
+          aria-label="Save signature"
           className="flex h-12 items-center justify-center gap-1.5 rounded-xl bg-primary text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
@@ -338,9 +429,31 @@ interface ProofThumbnailProps {
   icon: React.ReactNode;
   onCapture: () => void;
   onRemove?: () => void;
+  syncStatus?: ProofSyncStatus;
   uploading?: boolean;
   uploadError?: string;
   onRetry?: () => void;
+  disabled?: boolean;
+}
+
+function syncStatusLabel(
+  syncStatus: ProofSyncStatus | undefined,
+  uploading: boolean | undefined,
+  uploadError: string | undefined,
+): { text: string; className: string } {
+  if (uploading || syncStatus === "uploading" || syncStatus === "preparing") {
+    return { text: "Uploading…", className: "text-primary" };
+  }
+  if (uploadError || syncStatus === "failed") {
+    return { text: "Upload failed", className: "text-destructive" };
+  }
+  if (syncStatus === "synced") {
+    return { text: "Uploaded", className: "text-success" };
+  }
+  if (syncStatus === "captured_locally") {
+    return { text: "Captured locally", className: "text-amber-700 dark:text-amber-300" };
+  }
+  return { text: "Not captured", className: "text-muted-foreground" };
 }
 
 export function ProofThumbnail({
@@ -350,37 +463,59 @@ export function ProofThumbnail({
   icon,
   onCapture,
   onRemove,
+  syncStatus,
   uploading,
   uploadError,
   onRetry,
+  disabled,
 }: ProofThumbnailProps) {
+  const status = syncStatusLabel(syncStatus, uploading, uploadError);
+  const busy = Boolean(uploading || disabled || syncStatus === "uploading" || syncStatus === "preparing");
+  const showPreview = Boolean(dataUrl);
+
   return (
     <div className="relative flex flex-col items-center gap-2 rounded-xl border border-border bg-card p-3 text-center">
-      {dataUrl ? (
+      {showPreview ? (
         <>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={dataUrl} alt={label} className="h-20 w-full rounded-lg object-cover" />
-          {uploading ? (
-            <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary">
-              <Loader2 className="h-3 w-3 animate-spin" /> Uploading…
-            </span>
-          ) : uploadError ? (
-            <div className="space-y-1">
-              <span className="block text-[10px] text-destructive">{uploadError}</span>
-              {onRetry && (
-                <button
-                  type="button"
-                  onClick={onRetry}
-                  className="text-[10px] font-semibold text-primary hover:underline"
-                >
-                  Retry upload
-                </button>
+          <div className="space-y-1">
+            <span className={`inline-flex items-center gap-1 text-xs font-semibold ${status.className}`}>
+              {(uploading || syncStatus === "uploading") && (
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
               )}
-            </div>
-          ) : (
-            <span className="text-xs font-semibold text-success">Attached</span>
-          )}
-          {onRemove && !uploading && (
+              {status.text}
+            </span>
+            {required && (
+              <span className="block text-[10px] text-muted-foreground">Required</span>
+            )}
+            {uploadError && (
+              <span className="block text-[10px] text-destructive" role="alert">
+                {uploadError}
+              </span>
+            )}
+            {onRetry && (uploadError || syncStatus === "failed") && !busy && (
+              <button
+                type="button"
+                onClick={onRetry}
+                aria-label={`Retry upload for ${label}`}
+                className="text-[10px] font-semibold text-primary hover:underline"
+              >
+                Retry upload
+              </button>
+            )}
+            {(syncStatus === "failed" || syncStatus === "captured_locally") && !busy && (
+              <button
+                type="button"
+                onClick={onCapture}
+                aria-label={`Replace ${label}`}
+                className="block w-full text-[10px] font-semibold text-muted-foreground hover:text-foreground"
+              >
+                Replace
+              </button>
+            )}
+          </div>
+          {onRemove && !busy && (
             <button
               type="button"
               onClick={onRemove}
@@ -394,15 +529,20 @@ export function ProofThumbnail({
       ) : (
         <button
           type="button"
-          disabled={uploading}
+          disabled={busy}
           onClick={onCapture}
+          aria-label={`Capture ${label}`}
           className="flex w-full flex-col items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <div className="grid h-14 w-14 place-items-center rounded-xl border-2 border-dashed border-primary/30 bg-primary/5 text-primary">
             {icon}
           </div>
           <span className="text-xs font-semibold">{label}</span>
-          {required && <span className="text-[10px] text-muted-foreground">Required</span>}
+          {required ? (
+            <span className="text-[10px] text-muted-foreground">Required · Not captured</span>
+          ) : (
+            <span className="text-[10px] text-muted-foreground">Optional · Not captured</span>
+          )}
         </button>
       )}
     </div>

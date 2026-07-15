@@ -31,6 +31,13 @@ export const PROOF_PREPARE_SETTINGS: Record<ClientProofType, ProofPrepareSetting
   },
 };
 
+/** Client soft ceiling aligned with server type limits (decoded-byte estimate). */
+export const CLIENT_PROOF_MAX_BYTES: Record<ClientProofType, number> = {
+  signature: 1_048_576,
+  exteriorPhoto: 2_621_440,
+  idVerification: 2_621_440,
+};
+
 /** Alias for house/location/drop-off photos (same as exterior). */
 export const LOCATION_PHOTO_SETTINGS = PROOF_PREPARE_SETTINGS.exteriorPhoto;
 export const DROP_OFF_PHOTO_SETTINGS = PROOF_PREPARE_SETTINGS.exteriorPhoto;
@@ -129,13 +136,30 @@ function drawToCanvas(
       ? canvas.toDataURL(settings.mimeType)
       : canvas.toDataURL(settings.mimeType, settings.quality);
 
-  return {
+  const prepared: PreparedProofImage = {
     dataUrl,
     mimeType: settings.mimeType,
     byteSize: estimateDataUrlBytes(dataUrl),
     width,
     height,
   };
+
+  return prepared;
+}
+
+function assertPreparedWithinClientLimit(
+  prepared: PreparedProofImage,
+  proofType: ClientProofType,
+): PreparedProofImage {
+  const maxBytes = CLIENT_PROOF_MAX_BYTES[proofType];
+  if (prepared.byteSize > maxBytes) {
+    throw new Error(
+      proofType === "signature"
+        ? "Signature image is too large. Please clear and sign again."
+        : "Photo is still too large after compression. Please retake closer or at lower resolution.",
+    );
+  }
+  return prepared;
 }
 
 /** Prepare a camera/gallery file for upload. Applies EXIF orientation and resize. */
@@ -146,7 +170,7 @@ export async function prepareProofPhoto(
   const settings = PROOF_PREPARE_SETTINGS[proofType];
   const source = await loadBitmapFromFile(file);
   try {
-    return drawToCanvas(source, settings);
+    return assertPreparedWithinClientLimit(drawToCanvas(source, settings), proofType);
   } finally {
     if ("close" in source && typeof source.close === "function") {
       source.close();
@@ -158,7 +182,7 @@ export async function prepareProofPhoto(
 export async function prepareProofSignature(dataUrl: string): Promise<PreparedProofImage> {
   const settings = PROOF_PREPARE_SETTINGS.signature;
   const img = await loadImageFromDataUrl(dataUrl);
-  return drawToCanvas(img, settings);
+  return assertPreparedWithinClientLimit(drawToCanvas(img, settings), "signature");
 }
 
 /** Unified entry point for proof preparation. */

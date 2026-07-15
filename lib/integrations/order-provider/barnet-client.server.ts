@@ -274,7 +274,53 @@ function toSafeBarnetLocation(raw: Record<string, unknown>): SafeBarnetLocation 
   };
 }
 
-async function barnetGet(
+export class BarnetUpstreamHttpError extends Error {
+  readonly path: string;
+  readonly status: number;
+
+  constructor(path: string, status: number) {
+    super(`Barnet GET ${path} failed with status ${status}`);
+    this.name = "BarnetUpstreamHttpError";
+    this.path = path;
+    this.status = status;
+  }
+}
+
+export function isBarnetUpstreamHttpError(
+  error: unknown,
+): error is BarnetUpstreamHttpError {
+  return error instanceof BarnetUpstreamHttpError;
+}
+
+/** Retry only transient failures: timeout, network reset, 429, 5xx. */
+export function isRetryableBarnetFetchError(error: unknown): boolean {
+  if (isBarnetUpstreamTimeoutError(error)) return true;
+  if (isBarnetUpstreamHttpError(error)) {
+    return error.status === 429 || error.status >= 500;
+  }
+  if (error instanceof Error) {
+    const name = error.name.toLowerCase();
+    const message = error.message.toLowerCase();
+    if (name === "timeouterror" || name === "aborterror") return true;
+    if (
+      message.includes("fetch failed") ||
+      message.includes("econnreset") ||
+      message.includes("network")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const BARNET_FETCH_MAX_ATTEMPTS = 3;
+const BARNET_FETCH_BACKOFF_MS = [250, 750] as const;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function barnetGetOnce(
   path: string,
   searchParams?: Record<string, string | number>,
 ): Promise<unknown> {
@@ -322,9 +368,7 @@ async function barnetGet(
   }
 
   if (!response.ok) {
-    throw new Error(
-      `Barnet GET ${path} failed with status ${response.status}`,
-    );
+    throw new BarnetUpstreamHttpError(path, response.status);
   }
 
   const contentType = response.headers.get("content-type") ?? "";
@@ -333,6 +377,32 @@ async function barnetGet(
   }
 
   return response.json();
+}
+
+/**
+ * Page-level Barnet GET with bounded retry for transient failures.
+ * Retries: timeout, connection reset, 429, 5xx.
+ * Does not retry: 401/403/400/404, malformed config.
+ * Enrichment and whole-run retries are handled separately (not here).
+ */
+async function barnetGet(
+  path: string,
+  searchParams?: Record<string, string | number>,
+): Promise<unknown> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= BARNET_FETCH_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await barnetGetOnce(path, searchParams);
+    } catch (err) {
+      lastError = err;
+      if (attempt >= BARNET_FETCH_MAX_ATTEMPTS || !isRetryableBarnetFetchError(err)) {
+        throw err;
+      }
+      const backoff = BARNET_FETCH_BACKOFF_MS[attempt - 1] ?? 750;
+      await sleep(backoff);
+    }
+  }
+  throw lastError;
 }
 
 export function getBarnetProviderName(): string {

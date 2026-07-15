@@ -1,5 +1,5 @@
 import { FieldValue } from "firebase-admin/firestore";
-import type { DriverProfile, OrderStatus } from "@/lib/types/backend";
+import type { DriverProfile } from "@/lib/types/backend";
 import type { AuthUser } from "@/lib/server/auth";
 import { notFoundError, ServiceError } from "@/lib/server/errors";
 import { isDriverUnavailable, resolveStoredDriverStatus } from "@/lib/driver-status";
@@ -21,16 +21,16 @@ import type {
   ListDriversQuery,
 } from "@/lib/server/validation/drivers";
 import {
-  ACTIVE_ORDER_STATUSES,
   aggregateDriverMetricsFromOrders,
   emptyDriverOrderMetrics,
   type DriverOrderMetrics,
 } from "@/lib/delivery-metrics";
+import { ACTIVE_DELIVERY_QUERY_STATUSES } from "@/lib/order-status";
 import { TERMINAL_ORDER_STATUSES } from "@/lib/order-status-groups";
 
 /** Statuses fetched in one query when batch-computing driver metrics. */
-const METRIC_ORDER_STATUSES: OrderStatus[] = [
-  ...ACTIVE_ORDER_STATUSES,
+const METRIC_ORDER_STATUSES: string[] = [
+  ...ACTIVE_DELIVERY_QUERY_STATUSES,
   ...TERMINAL_ORDER_STATUSES,
 ];
 

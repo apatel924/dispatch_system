@@ -4,41 +4,33 @@ import Link from "next/link";
 import { useMemo } from "react";
 import { useRouter } from "next/navigation";
 
-import { Users, UserCheck, UserCog, Truck, XCircle, Clock, Search, Filter, Download, ChevronDown, MoreVertical, UserPlus } from "lucide-react";
+import { Users, UserCheck, UserCog, Truck, XCircle, Search, MoreVertical, UserPlus } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { StatCard } from "@/components/dash/ui/stat-card";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { TableScroll } from "@/components/dash/ui/table-scroll";
-import { DashEmptyState, DashErrorState, DashLoadingState } from "@/components/dash/ui/query-state";
+import { DashEmptyState, DashErrorState } from "@/components/dash/ui/query-state";
+import { TableRowSkeleton } from "@/components/dash/ui/skeletons";
 import { DriverStatusBadge } from "@/components/dash/status-badge";
 import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
 import { useAdminDashboardStats } from "@/lib/dash/hooks/use-admin-dashboard-stats";
-import { averageMs, formatAvgMs } from "@/lib/delivery-metrics";
-import { isApiEnabled } from "@/lib/dash/api/config";
 
 
 export function DriversPage() {
   const router = useRouter();
-  const apiEnabled = isApiEnabled();
   const { drivers, loading, error } = useAdminDrivers();
   const { stats: dashboardStats, loading: statsLoading, error: statsError } = useAdminDashboardStats();
 
   const stats = useMemo(() => {
-    const durations = drivers
-      .map((d) => d.averageDeliveryTimeMs)
-      .filter((ms): ms is number => ms != null && ms > 0);
-
-    const showPlaceholder = statsLoading && apiEnabled;
-
     return {
-      total: showPlaceholder ? "—" : dashboardStats.totalActiveDrivers,
-      available: showPlaceholder ? "—" : dashboardStats.availableDrivers,
-      busy: showPlaceholder ? "—" : dashboardStats.busyDrivers,
-      completedToday: showPlaceholder ? "—" : dashboardStats.completedToday,
-      failedToday: showPlaceholder ? "—" : dashboardStats.failedToday,
-      avgDeliveryTime: loading && drivers.length === 0 ? "—" : formatAvgMs(averageMs(durations)),
+      total: dashboardStats?.totalActiveDrivers ?? null,
+      available: dashboardStats?.availableDrivers ?? null,
+      busy: dashboardStats?.busyDrivers ?? null,
+      completedToday: dashboardStats?.completedToday ?? null,
+      failedToday: dashboardStats?.failedToday ?? null,
+      loading: statsLoading,
     };
-  }, [drivers, loading, apiEnabled, dashboardStats, statsLoading]);
+  }, [dashboardStats, statsLoading]);
 
   const topPerformers = useMemo(() => {
     return [...drivers]
@@ -56,22 +48,26 @@ export function DriversPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-6">
-        <StatCard label="Total Drivers" value={stats.total} icon={Users} tone="info" />
-        <StatCard label="Available Drivers" value={stats.available} icon={UserCheck} tone="success" />
-        <StatCard label="Busy Drivers" value={stats.busy} icon={UserCog} tone="orange" />
-        <StatCard label="Completed Today" value={stats.completedToday} icon={Truck} tone="purple" />
-        <StatCard label="Failed Deliveries Today" value={stats.failedToday} icon={XCircle} tone="primary" />
-        <StatCard label="Average Delivery Time" value={stats.avgDeliveryTime} icon={Clock} tone="warning" />
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
+        <StatCard label="Total Drivers" value={stats.total} icon={Users} tone="info" loading={stats.loading} />
+        <StatCard label="Available Drivers" value={stats.available} icon={UserCheck} tone="success" loading={stats.loading} />
+        <StatCard label="Busy Drivers" value={stats.busy} icon={UserCog} tone="orange" loading={stats.loading} />
+        <StatCard label="Completed Today" value={stats.completedToday} icon={Truck} tone="purple" loading={stats.loading} />
+        <StatCard label="Failed Deliveries Today" value={stats.failedToday} icon={XCircle} tone="primary" loading={stats.loading} />
       </div>
 
       <div className="mt-6 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_300px]">
         <SectionCard className="min-w-0" title="All Drivers" padded={false} action={
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><input placeholder="Search drivers…" className="h-9 w-full min-w-[160px] rounded-lg border border-input bg-card pl-9 pr-3 text-sm outline-none sm:w-[200px]" /></div>
-            <button className="inline-flex items-center gap-1 rounded-lg border border-input bg-card px-3 py-2 text-xs font-medium"><Filter className="h-3.5 w-3.5" /> Filter</button>
-            <button className="inline-flex items-center gap-1 rounded-lg border border-input bg-card px-3 py-2 text-xs font-medium">Status <ChevronDown className="h-3 w-3" /></button>
-            <button className="inline-flex items-center gap-1 rounded-lg border border-input bg-card px-3 py-2 text-xs font-medium"><Download className="h-3.5 w-3.5" /> Export <ChevronDown className="h-3 w-3" /></button>
+          <div className="relative min-w-0 sm:w-[240px]">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <label htmlFor="drivers-search" className="sr-only">
+              Search drivers
+            </label>
+            <input
+              id="drivers-search"
+              placeholder="Search drivers…"
+              className="h-9 w-full rounded-lg border border-input bg-card pl-9 pr-3 text-sm outline-none"
+            />
           </div>
         }>
           <TableScroll>
@@ -85,16 +81,17 @@ export function DriversPage() {
                   <th className="px-3 py-3 font-medium whitespace-nowrap">Active</th>
                   <th className="px-3 py-3 font-medium whitespace-nowrap">Completed</th>
                   <th className="px-3 py-3 font-medium whitespace-nowrap">Failed</th>
-                  <th className="px-3 py-3 font-medium whitespace-nowrap">Avg Time</th>
                   <th className="px-3 py-3 font-medium whitespace-nowrap">Last Active</th>
                   <th className="px-5 py-3 font-medium text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
                 {loading && drivers.length === 0 ? (
-                  <tr><td colSpan={10} className="px-5 py-8 text-center text-muted-foreground"><DashLoadingState message="Loading drivers…" /></td></tr>
+                  Array.from({ length: 6 }).map((_, i) => (
+                    <TableRowSkeleton key={i} columns={9} />
+                  ))
                 ) : drivers.length === 0 ? (
-                  <tr><td colSpan={10}><DashEmptyState message="No drivers found" /></td></tr>
+                  <tr><td colSpan={9}><DashEmptyState message="No drivers found" /></td></tr>
                 ) : (
                   drivers.map((d) => (
                     <tr
@@ -114,7 +111,6 @@ export function DriversPage() {
                       <td className="px-3 py-3 whitespace-nowrap">{d.activeDeliveries}</td>
                       <td className="px-3 py-3 whitespace-nowrap">{d.completedToday}</td>
                       <td className="px-3 py-3 whitespace-nowrap">{d.failedToday}</td>
-                      <td className="px-3 py-3 whitespace-nowrap text-muted-foreground">{d.averageTime}</td>
                       <td className="px-3 py-3 whitespace-nowrap text-muted-foreground">{d.lastActive}</td>
                       <td className="px-5 py-3 text-right">
                         <button

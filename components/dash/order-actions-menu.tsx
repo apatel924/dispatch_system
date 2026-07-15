@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   MoreVertical,
   Eye,
@@ -10,10 +11,20 @@ import {
   XCircle,
   Copy,
   Loader2,
+  RotateCcw,
+  Truck,
+  Package,
 } from "lucide-react";
 import type { AdminOrderRow } from "@/lib/dash/api/adapters";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import { updateOrderStatusApi } from "@/lib/dash/api/client";
+import {
+  isPostPickupStatus,
+  isTerminalOrderStatus,
+  tryNormalizeOrderStatus,
+  type CanonicalOrderStatus,
+} from "@/lib/order-status";
+import { invalidateAfterOrderLifecycle } from "@/lib/dash/query/query-keys";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -22,9 +33,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/dash/ui/dropdown-menu";
 
-const TERMINAL_STATUSES = new Set(["Delivered", "Failed", "Returned"]);
-
-export type OrderActionsOrder = Pick<AdminOrderRow, "id" | "status" | "driver">;
+export type OrderActionsOrder = Pick<
+  AdminOrderRow,
+  "id" | "status" | "driver" | "unrecognizedStatusRaw"
+>;
 
 interface OrderActionsMenuProps {
   order: OrderActionsOrder;
@@ -42,6 +54,141 @@ interface MenuAction {
   disabled?: boolean;
 }
 
+function contextualActionsForStatus(
+  status: CanonicalOrderStatus | null,
+  hasDriver: boolean,
+): {
+  showAssign: boolean;
+  assignLabel: string;
+  showMarkDelivered: boolean;
+  showMarkFailed: boolean;
+  showMarkReturned: boolean;
+  showRetryAssign: boolean;
+  showBeginDelivery: boolean;
+  showMarkPickedUp: boolean;
+  showReturnToNew: boolean;
+  viewLabel: string;
+  readonly: boolean;
+} {
+  if (!status || isTerminalOrderStatus(status)) {
+    if (status === "Failed") {
+      return {
+        showAssign: false,
+        assignLabel: "Assign Driver",
+        showMarkDelivered: false,
+        showMarkFailed: false,
+        showMarkReturned: true,
+        showRetryAssign: true,
+        showBeginDelivery: false,
+        showMarkPickedUp: false,
+        showReturnToNew: false,
+        viewLabel: "View Details",
+        readonly: false,
+      };
+    }
+    return {
+      showAssign: false,
+      assignLabel: "Assign Driver",
+      showMarkDelivered: false,
+      showMarkFailed: false,
+      showMarkReturned: false,
+      showRetryAssign: false,
+      showBeginDelivery: false,
+      showMarkPickedUp: false,
+      showReturnToNew: false,
+      viewLabel: "View Details",
+      readonly: true,
+    };
+  }
+
+  switch (status) {
+    case "New":
+      return {
+        showAssign: true,
+        assignLabel: "Assign Driver",
+        showMarkDelivered: false,
+        showMarkFailed: true,
+        showMarkReturned: false,
+        showRetryAssign: false,
+        showBeginDelivery: false,
+        showMarkPickedUp: false,
+        showReturnToNew: false,
+        viewLabel: "View Details",
+        readonly: false,
+      };
+    case "Scheduled":
+      return {
+        showAssign: true,
+        assignLabel: "Assign Driver",
+        showMarkDelivered: false,
+        showMarkFailed: true,
+        showMarkReturned: false,
+        showRetryAssign: false,
+        showBeginDelivery: false,
+        showMarkPickedUp: false,
+        showReturnToNew: true,
+        viewLabel: "View Details",
+        readonly: false,
+      };
+    case "Assigned":
+      return {
+        showAssign: true,
+        assignLabel: hasDriver ? "Reassign Driver" : "Assign Driver",
+        showMarkDelivered: false,
+        showMarkFailed: true,
+        showMarkReturned: false,
+        showRetryAssign: false,
+        showBeginDelivery: false,
+        showMarkPickedUp: true,
+        showReturnToNew: false,
+        viewLabel: "View Details",
+        readonly: false,
+      };
+    case "Picked Up":
+      return {
+        showAssign: true,
+        assignLabel: "Reassign Driver",
+        showMarkDelivered: false,
+        showMarkFailed: true,
+        showMarkReturned: false,
+        showRetryAssign: false,
+        showBeginDelivery: true,
+        showMarkPickedUp: false,
+        showReturnToNew: false,
+        viewLabel: "View Details",
+        readonly: false,
+      };
+    case "Out for Delivery":
+      return {
+        showAssign: true,
+        assignLabel: "Reassign Driver",
+        showMarkDelivered: true,
+        showMarkFailed: true,
+        showMarkReturned: false,
+        showRetryAssign: false,
+        showBeginDelivery: false,
+        showMarkPickedUp: false,
+        showReturnToNew: false,
+        viewLabel: "View Delivery",
+        readonly: false,
+      };
+    default:
+      return {
+        showAssign: false,
+        assignLabel: "Assign Driver",
+        showMarkDelivered: false,
+        showMarkFailed: false,
+        showMarkReturned: false,
+        showRetryAssign: false,
+        showBeginDelivery: false,
+        showMarkPickedUp: false,
+        showReturnToNew: false,
+        viewLabel: "View Details",
+        readonly: true,
+      };
+  }
+}
+
 export function OrderActionsMenu({
   order,
   onStatusChanged,
@@ -49,15 +196,19 @@ export function OrderActionsMenu({
   triggerClassName,
 }: OrderActionsMenuProps) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const apiEnabled = isApiEnabled();
-  const isActive = !TERMINAL_STATUSES.has(order.status);
+  const needsReview = Boolean(order.unrecognizedStatusRaw);
+  const status = needsReview ? null : tryNormalizeOrderStatus(order.status);
+  const hasDriver = Boolean(order.driver);
+  const ctx = contextualActionsForStatus(status, hasDriver);
 
   const runStatusUpdate = async (
     actionKey: string,
-    status: "Delivered" | "Failed" | "Returned",
+    nextStatus: "Delivered" | "Failed" | "Returned" | "Out for Delivery" | "Picked Up" | "New",
     confirmMessage: string,
   ) => {
     if (!apiEnabled) {
@@ -69,9 +220,12 @@ export function OrderActionsMenu({
     setBusy(actionKey);
     try {
       await updateOrderStatusApi(order.id, {
-        status,
-        note: `Status updated to ${status} by admin`,
+        status: nextStatus,
+        note: `Status updated to ${nextStatus} by admin`,
+        ...(nextStatus === "Out for Delivery" ? { stepKey: "outForDelivery" as const } : {}),
+        ...(nextStatus === "Picked Up" ? { stepKey: "pickedUp" as const } : {}),
       });
+      await invalidateAfterOrderLifecycle(queryClient, { orderId: order.id });
       onStatusChanged?.();
       setOpen(false);
     } catch (err) {
@@ -84,56 +238,116 @@ export function OrderActionsMenu({
   const actions: MenuAction[] = [
     {
       key: "view",
-      label: "View Details",
+      label: ctx.viewLabel,
       icon: Eye,
       onClick: () => {
         setOpen(false);
         router.push(`/orders/${order.id}`);
       },
     },
-    {
+  ];
+
+  if (ctx.showAssign) {
+    actions.push({
       key: "assign",
-      label: order.driver ? "Reassign Driver" : "Assign Driver",
+      label: ctx.assignLabel,
       icon: Users,
       onClick: () => {
         setOpen(false);
         router.push(`/orders/${order.id}?action=assign`);
       },
-      disabled: !isActive,
-    },
-  ];
-
-  if (isActive) {
-    actions.push(
-      {
-        key: "delivered",
-        label: "Mark as Delivered",
-        icon: CheckCircle2,
-        onClick: () =>
-          runStatusUpdate(
-            "delivered",
-            "Delivered",
-            `Mark order ${order.id} as delivered?`,
-          ),
-        disabled: !apiEnabled,
-      },
-      {
-        key: "failed",
-        label: "Mark as Failed",
-        icon: XCircle,
-        onClick: () =>
-          runStatusUpdate(
-            "failed",
-            "Failed",
-            `Mark order ${order.id} as failed? This cannot be undone easily.`,
-          ),
-        destructive: true,
-        disabled: !apiEnabled,
-      },
-    );
+    });
   }
 
-  if (order.status === "Failed") {
+  if (ctx.showRetryAssign) {
+    actions.push({
+      key: "retry",
+      label: "Retry and Assign",
+      icon: RotateCcw,
+      onClick: () => {
+        setOpen(false);
+        router.push(`/orders/${order.id}?action=assign&retryFailed=1`);
+      },
+    });
+  }
+
+  if (ctx.showReturnToNew) {
+    actions.push({
+      key: "return-new",
+      label: "Return to New",
+      icon: RotateCcw,
+      onClick: () =>
+        runStatusUpdate(
+          "return-new",
+          "New",
+          `Return order ${order.id} to New?`,
+        ),
+      disabled: !apiEnabled,
+    });
+  }
+
+  if (ctx.showMarkPickedUp) {
+    actions.push({
+      key: "picked-up",
+      label: "Mark Picked Up",
+      icon: Package,
+      onClick: () =>
+        runStatusUpdate(
+          "picked-up",
+          "Picked Up",
+          `Mark order ${order.id} as Picked Up?`,
+        ),
+      disabled: !apiEnabled,
+    });
+  }
+
+  if (ctx.showBeginDelivery) {
+    actions.push({
+      key: "begin",
+      label: "Begin Delivery",
+      icon: Truck,
+      onClick: () =>
+        runStatusUpdate(
+          "begin",
+          "Out for Delivery",
+          `Mark order ${order.id} as Out for Delivery?`,
+        ),
+      disabled: !apiEnabled,
+    });
+  }
+
+  if (ctx.showMarkDelivered) {
+    actions.push({
+      key: "delivered",
+      label: "Mark as Delivered",
+      icon: CheckCircle2,
+      onClick: () =>
+        runStatusUpdate(
+          "delivered",
+          "Delivered",
+          `Mark order ${order.id} as delivered? Required proofs must be on file.`,
+        ),
+      disabled: !apiEnabled,
+    });
+  }
+
+  if (ctx.showMarkFailed) {
+    actions.push({
+      key: "failed",
+      label: "Mark as Failed",
+      icon: XCircle,
+      onClick: () =>
+        runStatusUpdate(
+          "failed",
+          "Failed",
+          `Mark order ${order.id} as failed?`,
+        ),
+      destructive: true,
+      disabled: !apiEnabled,
+    });
+  }
+
+  if (ctx.showMarkReturned) {
     actions.push({
       key: "returned",
       label: "Mark as Returned",
@@ -214,3 +428,9 @@ export function OrderActionsMenu({
     </DropdownMenu>
   );
 }
+
+/** Exported for tests — keep assign-path helpers discoverable. */
+export const __orderActionsTest = {
+  isPostPickupStatus,
+  contextualActionsForStatus,
+};

@@ -1,7 +1,9 @@
 const DEFAULT_CONSECUTIVE_KNOWN_THRESHOLD = 20;
-const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
+/** Slightly above observed ~9–10s Barnet /orders latency. */
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 20_000;
 const DEFAULT_ENRICHMENT_CONCURRENCY = 4;
-const DEFAULT_LOCK_TTL_MS = 15 * 60 * 1000;
+/** 9 minutes — expires before the next 15-minute cron tick. */
+const DEFAULT_LOCK_TTL_MS = 9 * 60 * 1000;
 
 function parsePositiveInt(value: unknown, fallback: number): number {
   const parsed = Number(value);

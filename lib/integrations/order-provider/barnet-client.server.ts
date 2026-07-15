@@ -361,7 +361,10 @@ async function barnetGetOnce(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
-    if (err instanceof Error && err.name === "TimeoutError") {
+    if (
+      err instanceof Error &&
+      (err.name === "TimeoutError" || err.name === "AbortError")
+    ) {
       throw new BarnetUpstreamTimeoutError(path, timeoutMs);
     }
     throw err;

@@ -66,11 +66,18 @@ vi.mock("@/lib/integrations/order-provider/finalize-barnet-import.server", () =>
   finalizeBarnetDeliveryImport,
 }));
 
+const paginationState = vi.hoisted(() => ({
+  pages: 3,
+  itemsPerPage: 20,
+  concurrency: 2,
+}));
+
 vi.mock("@/lib/integrations/order-provider/sync-pagination.server", () => ({
   getExternalOrderSyncPaginationConfig: () => ({
-    pages: 3,
-    itemsPerPage: 20,
+    pages: paginationState.pages,
+    itemsPerPage: paginationState.itemsPerPage,
   }),
+  getExternalOrderSyncPageConcurrency: () => paginationState.concurrency,
 }));
 
 vi.mock("@/lib/server/firebase-admin", () => ({
@@ -118,6 +125,9 @@ describe("runBarnetOrderSync", () => {
     fetchBarnetOrders.mockReset();
     enrichBarnetDeliveryOrder.mockReset();
     docStore.clear();
+    paginationState.pages = 3;
+    paginationState.itemsPerPage = 20;
+    paginationState.concurrency = 2;
     Object.keys(integrationDocData).forEach((key) => delete integrationDocData[key]);
 
     enrichBarnetDeliveryOrder.mockImplementation(async (order) => ({
@@ -463,5 +473,62 @@ describe("runBarnetOrderSync", () => {
     expect(result.newDeliveries).toBe(1);
     expect(docStore.has("barnet_502")).toBe(true);
     expect(docStore.has("barnet_501")).toBe(false);
+  });
+
+  it("fetches ten pages with bounded concurrency and never exceeds the limit", async () => {
+    paginationState.pages = 10;
+    paginationState.concurrency = 3;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const started: number[] = [];
+
+    fetchBarnetOrders.mockImplementation(async ({ page }: { page: number }) => {
+      started.push(page);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      inFlight -= 1;
+      return [pickupOrder(page * 100)];
+    });
+
+    const result = await runBarnetOrderSync();
+
+    expect(result.pagesScanned).toBe(10);
+    expect(started).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+    expect(maxInFlight).toBeGreaterThan(1);
+    expect(fetchBarnetOrders).toHaveBeenCalledTimes(10);
+  });
+
+  it("allows a scan wall-clock over 60s without application-level cancellation", async () => {
+    paginationState.pages = 2;
+    paginationState.concurrency = 1;
+    vi.useFakeTimers();
+    try {
+      fetchBarnetOrders.mockImplementation(async ({ page }: { page: number }) => {
+        await new Promise((resolve) => setTimeout(resolve, 35_000));
+        return page === 1 ? [pickupOrder(1)] : [];
+      });
+
+      const pending = runBarnetOrderSync();
+      await vi.advanceTimersByTimeAsync(70_000);
+      const result = await pending;
+
+      expect(result.pagesScanned).toBe(2);
+      expect(fetchBarnetOrders).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails the run when a page fetch errors so success is not misleading", async () => {
+    paginationState.pages = 3;
+    paginationState.concurrency = 3;
+    fetchBarnetOrders.mockImplementation(async ({ page }: { page: number }) => {
+      if (page === 2) throw new Error("upstream boom");
+      return [pickupOrder(page)];
+    });
+
+    await expect(runBarnetOrderSync()).rejects.toThrow(/page\(s\): 2/);
   });
 });

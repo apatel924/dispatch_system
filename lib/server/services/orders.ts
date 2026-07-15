@@ -17,7 +17,18 @@ import { getAdminFirestore } from "@/lib/server/firebase-admin";
 import { generateOrderId } from "@/lib/server/firestore/ids";
 import { writeAuditLog } from "@/lib/server/services/audit";
 import { getDriverById, validateDriverForAssignment } from "@/lib/server/services/drivers";
-import { ACTIVE_DELIVERY_ORDER_STATUSES } from "@/lib/order-status-groups";
+import {
+  OrderStatusConflict,
+  assertOrderStatusTransition,
+  canUnassignDriver,
+  isPostPickupStatus,
+  isTerminalOrderStatus,
+  normalizeOrderStatusForRead,
+  orderNeedsStatusReview,
+  resolveRequestedOrderStatus,
+  type OrderStatusActionType,
+} from "@/lib/order-status";
+import { assertRequiredProofsForDelivery } from "@/lib/server/services/required-proofs";
 import { createTrackingLinkForOrder } from "@/lib/server/services/tracking-links";
 import { notifyCustomerOrderAssigned } from "@/lib/server/services/notifications";
 import type { TrackingLinkNotificationResult } from "@/lib/server/services/notifications";
@@ -27,15 +38,12 @@ import type {
   ListOrdersQuery,
   UpdateOrderInput,
 } from "@/lib/server/validation/orders";
-import { resolveStatusAfterStep } from "@/lib/delivery-workflow";
 import type { DeliveryStepKey } from "@/lib/types/backend";
 
 export interface AssignDriverResult {
   order: Order;
   trackingNotification: TrackingLinkNotificationResult;
 }
-
-const ACTIVE_STATUSES: OrderStatus[] = [...ACTIVE_DELIVERY_ORDER_STATUSES];
 
 const COMPLETED_STATUSES: OrderStatus[] = ["Delivered", "Failed", "Returned"];
 
@@ -48,11 +56,34 @@ function actorFromUser(user: AuthUser | ActorContext): ActorContext {
   return { uid: user.uid, role: user.role };
 }
 
+function asServiceError(err: unknown): never {
+  if (err instanceof OrderStatusConflict) {
+    throw new ServiceError(err.message, err.code, err.httpStatus);
+  }
+  throw err;
+}
+
+/** Blocks lifecycle actions until an unrecognized Firestore status is repaired. */
+function assertOrderStatusActionable(order: Order): void {
+  if (orderNeedsStatusReview(order)) {
+    throw new ServiceError(
+      "Order status needs review before lifecycle actions",
+      "STATUS_NEEDS_REVIEW",
+      409,
+    );
+  }
+}
+
 export async function addStatusEvent(
   orderId: string,
   status: OrderStatus,
   actor: ActorContext,
-  options?: { stepKey?: DeliveryStepKey; note?: string },
+  options?: {
+    stepKey?: DeliveryStepKey;
+    note?: string;
+    previousStatus?: OrderStatus;
+    actionType?: OrderStatusActionType;
+  },
 ): Promise<OrderStatusEvent> {
   const db = getAdminFirestore();
   const ref = orderEventsCollection(db, orderId).doc();
@@ -61,6 +92,8 @@ export async function addStatusEvent(
   const event: Omit<OrderStatusEvent, "id"> = {
     orderId,
     status,
+    previousStatus: options?.previousStatus,
+    actionType: options?.actionType ?? "status_transition",
     stepKey: options?.stepKey,
     note: options?.note,
     actorId: actor.uid,
@@ -278,8 +311,18 @@ export async function updateOrder(
   if (!existing.exists) throw notFoundError("Order", id);
 
   const act = actorFromUser(actor);
+
+  if (input.status !== undefined) {
+    throw new ServiceError(
+      "Use the status endpoint to change order status",
+      "INVALID_STATUS_TRANSITION",
+      409,
+    );
+  }
+
+  const { status: _ignoredStatus, ...safeInput } = input;
   const patch: Record<string, unknown> = {
-    ...input,
+    ...safeInput,
     updatedAt: nowIso(),
   };
 
@@ -296,7 +339,7 @@ export async function updateOrder(
     entityId: id,
     actorId: act.uid,
     actorRole: act.role,
-    metadata: { fields: Object.keys(input) },
+    metadata: { fields: Object.keys(safeInput) },
   });
 
   return updated;
@@ -306,6 +349,7 @@ export async function assignDriver(
   orderId: string,
   driverId: string,
   actor: AuthUser | ActorContext,
+  options?: { retryFailed?: boolean },
 ): Promise<AssignDriverResult> {
   const driver = await getDriverById(driverId);
   validateDriverForAssignment(driver);
@@ -315,29 +359,198 @@ export async function assignDriver(
   const existing = await ref.get();
   if (!existing.exists) throw notFoundError("Order", orderId);
 
+  const current = docToOrder(existing.id, existing.data()!);
+  assertOrderStatusActionable(current);
+  const currentStatus = normalizeOrderStatusForRead(current.status).status;
   const now = nowIso();
-  await ref.update({
-    assignedDriverId: driverId,
-    assignedDriverName: driver.name,
-    assignedAt: now,
-    status: "Assigned",
-    updatedAt: now,
-  });
 
-  await addStatusEvent(orderId, "Assigned", act, { note: `Assigned to ${driver.name}` });
+  // Idempotent same-driver assign
+  if (current.assignedDriverId === driverId) {
+    if (currentStatus === "Assigned" || isPostPickupStatus(currentStatus)) {
+      return {
+        order: current,
+        trackingNotification: {
+          linkCreated: false,
+          smsAttempted: false,
+          smsSent: false,
+          message: "Driver already assigned",
+        },
+      };
+    }
+  }
+
+  if (isTerminalOrderStatus(currentStatus) && currentStatus !== "Failed") {
+    throw new ServiceError(
+      "Cannot assign a driver to a terminal order",
+      "TERMINAL_ORDER",
+      409,
+    );
+  }
+
+  if (currentStatus === "Failed" && !options?.retryFailed) {
+    throw new ServiceError(
+      "Retrying a failed order requires an explicit retry action",
+      "INVALID_STATUS_TRANSITION",
+      409,
+    );
+  }
+
+  let nextStatus = currentStatus;
+  let actionType: OrderStatusActionType = "reassignment";
+  let statusChanged = false;
+  let shouldNotify = true;
+
+  if (currentStatus === "New" || currentStatus === "Scheduled") {
+    try {
+      assertOrderStatusTransition(currentStatus, "Assigned");
+    } catch (err) {
+      asServiceError(err);
+    }
+    nextStatus = "Assigned";
+    actionType = "assignment";
+    statusChanged = true;
+  } else if (currentStatus === "Failed" && options?.retryFailed) {
+    try {
+      assertOrderStatusTransition("Failed", "Assigned");
+    } catch (err) {
+      asServiceError(err);
+    }
+    nextStatus = "Assigned";
+    actionType = "retry";
+    statusChanged = true;
+  } else if (currentStatus === "Assigned") {
+    nextStatus = "Assigned";
+    actionType = "reassignment";
+    statusChanged = false;
+  } else if (isPostPickupStatus(currentStatus)) {
+    // Preserve Picked Up / Out for Delivery — driver change only.
+    nextStatus = currentStatus;
+    actionType = "reassignment";
+    statusChanged = false;
+  } else {
+    throw new ServiceError(
+      `Cannot assign a driver while order is ${currentStatus}`,
+      "INVALID_STATUS_TRANSITION",
+      409,
+    );
+  }
+
+  await ref.update(
+    omitUndefined({
+      assignedDriverId: driverId,
+      assignedDriverName: driver.name,
+      assignedAt: now,
+      status: nextStatus,
+      updatedAt: now,
+    }),
+  );
+
+  if (statusChanged) {
+    await addStatusEvent(orderId, nextStatus, act, {
+      note: `Assigned to ${driver.name}`,
+      previousStatus: currentStatus,
+      actionType,
+    });
+  } else {
+    // Reassignment at same lifecycle status — audit only, no fake status restart.
+    await addStatusEvent(orderId, nextStatus, act, {
+      note: `Reassigned to ${driver.name}`,
+      previousStatus: currentStatus,
+      actionType: "reassignment",
+    });
+  }
+
   await writeAuditLog({
-    action: "order.assign_driver",
+    action: actionType === "retry" ? "order.retry_assign" : "order.assign_driver",
     entityType: "order",
     entityId: orderId,
     actorId: act.uid,
     actorRole: act.role,
-    metadata: { driverId },
+    metadata: {
+      driverId,
+      previousStatus: currentStatus,
+      status: nextStatus,
+      statusChanged,
+      actionType,
+    },
   });
 
   const order = await getOrderById(orderId);
-  const trackingNotification = await notifyCustomerOrderAssigned(order);
+  const trackingNotification = shouldNotify
+    ? await notifyCustomerOrderAssigned(order)
+    : {
+        linkCreated: false,
+        smsAttempted: false,
+        smsSent: false,
+        message: "Notification skipped",
+      };
 
   return { order, trackingNotification };
+}
+
+/** Explicit Failed → Assigned retry + assign. */
+export async function retryFailedAndAssignDriver(
+  orderId: string,
+  driverId: string,
+  actor: AuthUser | ActorContext,
+): Promise<AssignDriverResult> {
+  return assignDriver(orderId, driverId, actor, { retryFailed: true });
+}
+
+/** Unassign driver before pickup (Assigned → New). */
+export async function unassignDriver(
+  orderId: string,
+  actor: AuthUser | ActorContext,
+): Promise<Order> {
+  const act = actorFromUser(actor);
+  const db = getAdminFirestore();
+  const ref = orderDoc(db, orderId);
+  const existing = await ref.get();
+  if (!existing.exists) throw notFoundError("Order", orderId);
+
+  const current = docToOrder(existing.id, existing.data()!);
+  assertOrderStatusActionable(current);
+  const currentStatus = normalizeOrderStatusForRead(current.status).status;
+
+  if (!canUnassignDriver(currentStatus)) {
+    throw new ServiceError(
+      "Unassign is only permitted before pickup",
+      "INVALID_STATUS_TRANSITION",
+      409,
+    );
+  }
+
+  try {
+    assertOrderStatusTransition(currentStatus, "New");
+  } catch (err) {
+    asServiceError(err);
+  }
+
+  const now = nowIso();
+  await ref.update({
+    assignedDriverId: null,
+    assignedDriverName: null,
+    assignedAt: null,
+    status: "New",
+    updatedAt: now,
+  });
+
+  await addStatusEvent(orderId, "New", act, {
+    note: "Driver unassigned",
+    previousStatus: currentStatus,
+    actionType: "unassign",
+  });
+
+  await writeAuditLog({
+    action: "order.unassign_driver",
+    entityType: "order",
+    entityId: orderId,
+    actorId: act.uid,
+    actorRole: act.role,
+    metadata: { previousStatus: currentStatus },
+  });
+
+  return getOrderById(orderId);
 }
 
 export async function updateOrderStatus(
@@ -353,43 +566,80 @@ export async function updateOrderStatus(
 
   const act = actorFromUser(actor);
   const current = docToOrder(existing.id, existing.data()!);
+  assertOrderStatusActionable(current);
+  const currentStatus = normalizeOrderStatusForRead(current.status).status;
   const now = nowIso();
+
+  let intended: OrderStatus;
+  try {
+    intended = resolveRequestedOrderStatus(currentStatus, status, options?.stepKey);
+    assertOrderStatusTransition(currentStatus, intended);
+  } catch (err) {
+    return asServiceError(err);
+  }
+
+  // Idempotent: no status change → no duplicate event (Delivered keeps Phase A path)
+  if (intended === currentStatus) {
+    if (intended === "Delivered") {
+      return markOrderDeliveredIdempotent(orderId, act, {
+        ...options,
+        previousStatus: currentStatus,
+      });
+    }
+    const events = await getStatusEvents(orderId);
+    const last = [...events].reverse().find((e) => e.status === currentStatus);
+    return {
+      order: current,
+      event: last ?? {
+        id: "noop",
+        orderId,
+        status: currentStatus,
+        actorId: act.uid,
+        actorRole: act.role,
+        createdAt: current.updatedAt,
+        actionType: "status_transition",
+        previousStatus: currentStatus,
+      },
+    };
+  }
 
   const completedSteps = [...current.completedSteps];
   if (options?.stepKey && !completedSteps.includes(options.stepKey)) {
     completedSteps.push(options.stepKey);
   }
 
-  const effectiveStatus = resolveStatusAfterStep(
-    current.status,
-    options?.stepKey,
-    status,
-  );
+  if (intended === "Delivered") {
+    return markOrderDeliveredIdempotent(orderId, act, {
+      ...options,
+      previousStatus: currentStatus,
+    });
+  }
 
   const patch: Record<string, unknown> = {
-    status: effectiveStatus,
+    status: intended,
     completedSteps,
     updatedAt: now,
   };
 
-  if (effectiveStatus === "Picked Up" && !current.pickedUpAt) {
+  if (intended === "Picked Up" && !current.pickedUpAt) {
     patch.pickedUpAt = now;
   }
   if (options?.stepKey === "pickedUp" && !current.pickedUpAt) {
     patch.pickedUpAt = now;
   }
-  if (effectiveStatus === "Delivered" && !current.deliveredAt) {
-    patch.deliveredAt = now;
-  }
-  if (effectiveStatus === "Failed" && !current.failedAt) {
+  if (intended === "Failed" && !current.failedAt) {
     patch.failedAt = now;
   }
-  if (effectiveStatus === "Returned" && !current.returnedAt) {
+  if (intended === "Returned" && !current.returnedAt) {
     patch.returnedAt = now;
   }
 
   await ref.update(patch);
-  const event = await addStatusEvent(orderId, effectiveStatus, act, options);
+  const event = await addStatusEvent(orderId, intended, act, {
+    ...options,
+    previousStatus: currentStatus,
+    actionType: "status_transition",
+  });
 
   await writeAuditLog({
     action: "order.status",
@@ -397,10 +647,152 @@ export async function updateOrderStatus(
     entityId: orderId,
     actorId: act.uid,
     actorRole: act.role,
-    metadata: { status: effectiveStatus, stepKey: options?.stepKey },
+    metadata: {
+      previousStatus: currentStatus,
+      status: intended,
+      stepKey: options?.stepKey,
+    },
   });
 
   return { order: await getOrderById(orderId), event };
+}
+
+/**
+ * First transition to Delivered validates proofs, writes status + deliveredAt,
+ * and appends exactly one history event (Firestore transaction).
+ * Repeat / concurrent Delivered requests are idempotent.
+ */
+async function markOrderDeliveredIdempotent(
+  orderId: string,
+  actor: ActorContext,
+  options?: {
+    stepKey?: DeliveryStepKey;
+    note?: string;
+    previousStatus?: OrderStatus;
+  },
+): Promise<{ order: Order; event: OrderStatusEvent }> {
+  const db = getAdminFirestore();
+  const ref = orderDoc(db, orderId);
+
+  const peek = await ref.get();
+  if (!peek.exists) throw notFoundError("Order", orderId);
+  const peekOrder = docToOrder(peek.id, peek.data()!);
+  const peekStatus = normalizeOrderStatusForRead(peekOrder.status).status;
+
+  if (peekStatus === "Delivered") {
+    return loadExistingDeliveredResult(orderId, actor, peekOrder);
+  }
+
+  assertOrderStatusActionable(peekOrder);
+
+  await assertRequiredProofsForDelivery(orderId);
+
+  let wroteEvent = false;
+  let racedToAlreadyDelivered = false;
+  let transactionResult: {
+    eventId: string;
+    eventPayload: Omit<OrderStatusEvent, "id">;
+  } | null = null;
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw notFoundError("Order", orderId);
+    const current = docToOrder(snap.id, snap.data()!);
+    const currentStatus = normalizeOrderStatusForRead(current.status).status;
+
+    if (currentStatus === "Delivered") {
+      racedToAlreadyDelivered = true;
+      return;
+    }
+
+    const completedSteps = [...current.completedSteps];
+    if (options?.stepKey && !completedSteps.includes(options.stepKey)) {
+      completedSteps.push(options.stepKey);
+    }
+
+    const now = nowIso();
+    const patch = omitUndefined({
+      status: "Delivered" as const,
+      completedSteps,
+      updatedAt: now,
+      deliveredAt: current.deliveredAt ?? now,
+    });
+
+    const eventRef = orderEventsCollection(db, orderId).doc();
+    const eventPayload = omitUndefined({
+      orderId,
+      status: "Delivered" as const,
+      previousStatus: options?.previousStatus ?? currentStatus,
+      actionType: "status_transition" as const,
+      stepKey: options?.stepKey,
+      note: options?.note,
+      actorId: actor.uid,
+      actorRole: actor.role,
+      createdAt: now,
+    }) as Omit<OrderStatusEvent, "id">;
+
+    tx.update(ref, patch);
+    tx.set(eventRef, eventPayload);
+    wroteEvent = true;
+    transactionResult = { eventId: eventRef.id, eventPayload };
+  });
+
+  const order = await getOrderById(orderId);
+
+  if (racedToAlreadyDelivered || (order.status === "Delivered" && !wroteEvent)) {
+    return loadExistingDeliveredResult(orderId, actor, order);
+  }
+
+  if (!wroteEvent || !transactionResult) {
+    throw new ServiceError("Failed to mark order delivered", "INTERNAL_ERROR", 500);
+  }
+
+  const deliveredWrite = transactionResult as {
+    eventId: string;
+    eventPayload: Omit<OrderStatusEvent, "id">;
+  };
+
+  await writeAuditLog({
+    action: "order.status",
+    entityType: "order",
+    entityId: orderId,
+    actorId: actor.uid,
+    actorRole: actor.role,
+    metadata: {
+      status: "Delivered",
+      previousStatus: options?.previousStatus,
+      stepKey: options?.stepKey,
+    },
+  });
+
+  return {
+    order,
+    event: { id: deliveredWrite.eventId, ...deliveredWrite.eventPayload },
+  };
+}
+
+async function loadExistingDeliveredResult(
+  orderId: string,
+  actor: ActorContext,
+  order: Order,
+): Promise<{ order: Order; event: OrderStatusEvent }> {
+  const events = await getStatusEvents(orderId);
+  const deliveredEvent = [...events].reverse().find((e) => e.status === "Delivered");
+  if (deliveredEvent) {
+    return { order, event: deliveredEvent };
+  }
+  // Legacy Delivered row without a history event — do not invent a write.
+  return {
+    order,
+    event: {
+      id: "legacy-delivered",
+      orderId,
+      status: "Delivered",
+      actorId: actor.uid,
+      actorRole: actor.role,
+      createdAt: order.deliveredAt ?? order.updatedAt,
+    },
+  };
 }
 
 export async function listOrdersForDriver(
@@ -420,7 +812,10 @@ export async function listOrdersForDriver(
 
   switch (query.scope) {
     case "active":
-      orders = orders.filter((o) => ACTIVE_STATUSES.includes(o.status));
+      orders = orders.filter((o) => {
+        const s = normalizeOrderStatusForRead(o.status).status;
+        return s === "Assigned" || s === "Picked Up" || s === "Out for Delivery";
+      });
       break;
     case "completed":
       orders = orders.filter((o) => COMPLETED_STATUSES.includes(o.status));

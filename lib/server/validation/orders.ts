@@ -57,6 +57,8 @@ export const DriverOrdersQuerySchema = PaginationQuerySchema.extend({
 
 export const AssignDriverSchema = z.object({
   driverId: z.string().min(1),
+  /** Explicit Failed → Assigned retry. Required to reopen Failed orders. */
+  retryFailed: z.boolean().optional(),
 });
 
 export const OrderStatusUpdateSchema = z.object({

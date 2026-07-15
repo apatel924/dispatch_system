@@ -15,6 +15,7 @@ import type {
   UserRole,
 } from "@/lib/types/backend";
 import { normalizeDriverStatus } from "@/lib/driver-status";
+import { normalizeOrderStatusForRead } from "@/lib/order-status";
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -40,6 +41,30 @@ export function omitUndefined<T extends Record<string, unknown>>(obj: T): T {
     if (out[key] === undefined) delete out[key];
   }
   return out;
+}
+
+/**
+ * Deep omit of `undefined` (including nested plain objects/arrays).
+ * Needed when persisting provider payloads that may contain sparse fields.
+ */
+export function deepOmitUndefined<T>(value: T): T {
+  if (value === undefined) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .filter((entry) => entry !== undefined)
+      .map((entry) => deepOmitUndefined(entry)) as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (entry === undefined) continue;
+      out[key] = deepOmitUndefined(entry);
+    }
+    return out as T;
+  }
+  return value;
 }
 
 function asString(value: unknown, fallback = ""): string {
@@ -95,7 +120,13 @@ export function docToOrder(id: string, data: FirebaseFirestore.DocumentData): Or
     deliveryWindow: data.deliveryWindow ? asString(data.deliveryWindow) : undefined,
     assignedDriverId: asNullableString(data.assignedDriverId),
     assignedDriverName: asNullableString(data.assignedDriverName),
-    status: asString(data.status, "New") as OrderStatus,
+    ...(() => {
+      const statusRead = normalizeOrderStatusForRead(data.status);
+      return {
+        status: statusRead.status,
+        unrecognizedStatusRaw: statusRead.unrecognizedRaw,
+      };
+    })(),
     paymentStatus: asString(data.paymentStatus, "Pending") as PaymentStatus,
     paymentMethod: data.paymentMethod ? asString(data.paymentMethod) : undefined,
     subtotalCents: data.subtotalCents !== undefined ? asNumber(data.subtotalCents) : undefined,
@@ -180,10 +211,17 @@ export function docToStatusEvent(
   id: string,
   data: FirebaseFirestore.DocumentData,
 ): OrderStatusEvent {
+  const statusRead = normalizeOrderStatusForRead(data.status);
   return {
     id,
     orderId: asString(data.orderId),
-    status: asString(data.status) as OrderStatus,
+    status: statusRead.status,
+    previousStatus: data.previousStatus
+      ? normalizeOrderStatusForRead(data.previousStatus).status
+      : undefined,
+    actionType: data.actionType
+      ? (asString(data.actionType) as OrderStatusEvent["actionType"])
+      : undefined,
     stepKey: data.stepKey ? (asString(data.stepKey) as DeliveryStepKey) : undefined,
     note: data.note ? asString(data.note) : undefined,
     actorId: asString(data.actorId),

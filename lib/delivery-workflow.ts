@@ -1,4 +1,9 @@
-import type { DeliveryStepKey, OrderStatus, OrderStatusEvent } from "@/lib/types/backend";
+import type {
+  DeliveryStepKey,
+  OrderStatus,
+  OrderStatusEvent,
+  ProofType,
+} from "@/lib/types/backend";
 
 export const DELIVERY_STEP_LABELS: Record<DeliveryStepKey, string> = {
   arrivedPickup: "Arrived at Pickup",
@@ -10,11 +15,74 @@ export const DELIVERY_STEP_LABELS: Record<DeliveryStepKey, string> = {
   exteriorPhoto: "Exterior Photo Uploaded",
 };
 
+/**
+ * Required proof uploads for delivery completion and driver UI.
+ * Single source of truth for gates, checklist proof rows, and proof cards.
+ */
+export const REQUIRED_PROOF_UPLOADS = [
+  {
+    stepKey: "signature" as const satisfies DeliveryStepKey,
+    proofType: "signature" as const satisfies ProofType,
+    /** Checklist row label */
+    label: "Capture signature",
+    /** Proof Capture card label */
+    cardLabel: "Signature",
+    required: true,
+    /** Matches CaptureMode / legacy DELIVERY_STEPS.proofType */
+    captureMode: "signature" as const,
+  },
+  {
+    stepKey: "exteriorPhoto" as const satisfies DeliveryStepKey,
+    proofType: "exteriorPhoto" as const satisfies ProofType,
+    label: "Upload exterior photo",
+    cardLabel: "Exterior",
+    required: true,
+    captureMode: "photo" as const,
+  },
+] as const;
+
+export type RequiredProofUpload = (typeof REQUIRED_PROOF_UPLOADS)[number];
+
+/** Non-proof operational steps (tap-to-complete). Kept separate from proof config. */
+export const NON_PROOF_DELIVERY_STEPS: ReadonlyArray<{
+  key: DeliveryStepKey;
+  label: string;
+}> = [
+  { key: "arrivedPickup", label: "Arrived at pickup" },
+  { key: "pickedUp", label: "Picked up" },
+  { key: "outForDelivery", label: "Out for delivery" },
+  { key: "arrivedDestination", label: "Arrived at destination" },
+  { key: "verifyId", label: "Verify ID" },
+];
+
+export function requiredProofTypesForDelivery(): ProofType[] {
+  return REQUIRED_PROOF_UPLOADS.map((entry) => entry.proofType);
+}
+
+export function requiredProofStepKeysForDelivery(): DeliveryStepKey[] {
+  return REQUIRED_PROOF_UPLOADS.map((entry) => entry.stepKey);
+}
+
+export function proofTypeForStepKey(stepKey: DeliveryStepKey): ProofType | null {
+  const match = REQUIRED_PROOF_UPLOADS.find((entry) => entry.stepKey === stepKey);
+  return match?.proofType ?? null;
+}
+
+export function stepKeyForProofType(proofType: ProofType): DeliveryStepKey | null {
+  const match = REQUIRED_PROOF_UPLOADS.find((entry) => entry.proofType === proofType);
+  return match?.stepKey ?? null;
+}
+
+export function requiredProofUploadForType(
+  proofType: ProofType,
+): RequiredProofUpload | undefined {
+  return REQUIRED_PROOF_UPLOADS.find((entry) => entry.proofType === proofType);
+}
+
 export const STATUS_TITLES: Record<OrderStatus, string> = {
   New: "Order Created",
   Assigned: "Assigned to Driver",
   "Picked Up": "Picked Up",
-  "En Route": "En Route",
   "Out for Delivery": "Out for Delivery",
   Delivered: "Delivered",
   Failed: "Delivery Failed",
@@ -27,7 +95,6 @@ const STATUS_PROGRESSION: OrderStatus[] = [
   "Scheduled",
   "Assigned",
   "Picked Up",
-  "En Route",
   "Out for Delivery",
   "Delivered",
 ];
@@ -49,7 +116,6 @@ const TIMELINE_POSITIONS: Array<
   { type: "step", value: "arrivedPickup" },
   { type: "step", value: "pickedUp" },
   { type: "status", value: "Picked Up" },
-  { type: "status", value: "En Route" },
   { type: "step", value: "outForDelivery" },
   { type: "status", value: "Out for Delivery" },
   { type: "step", value: "arrivedDestination" },
@@ -97,6 +163,8 @@ export function resolveStatusAfterStep(
   stepKey: DeliveryStepKey | undefined,
   requestedStatus: OrderStatus,
 ): OrderStatus {
+  // Prefer the authoritative resolver + graph; keep this helper for callers
+  // that only need step-aware progression without throwing.
   if (TERMINAL_STATUSES.includes(requestedStatus)) {
     return requestedStatus;
   }
@@ -112,6 +180,11 @@ export function resolveStatusAfterStep(
 
   if (statusRank(requestedStatus) > statusRank(next)) {
     next = requestedStatus;
+  }
+
+  // Map legacy progression gaps: En Route was between Picked Up and OFD.
+  if ((next as string) === "En Route") {
+    next = "Out for Delivery";
   }
 
   return next;

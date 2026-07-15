@@ -2,40 +2,82 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ServiceError } from "@/lib/server/errors";
 import { resetRateLimitsForTests } from "@/lib/server/rate-limit";
 
-const mockSave = vi.fn();
-const mockDelete = vi.fn();
-const mockFile = vi.fn(() => ({
-  save: mockSave,
-  delete: mockDelete,
-  getSignedUrl: vi.fn().mockResolvedValue(["https://signed.example/proof"]),
-}));
-
-const mockBucket = vi.fn(() => ({ file: mockFile }));
-const mockRefSet = vi.fn();
-const mockRef = { id: "proof-1", set: mockRefSet };
-const mockOrderProofsCollection = vi.fn((_db: unknown, _orderId: string) => ({
-  doc: vi.fn(() => mockRef),
-  orderBy: vi.fn().mockReturnThis(),
-  get: vi.fn().mockResolvedValue({ docs: [] }),
-}));
+const {
+  mockSave,
+  mockDelete,
+  mockDocGet,
+  mockFile,
+  mockBucket,
+  mockRefSet,
+  mockRef,
+  mockCollectionGet,
+  mockOrderProofsCollection,
+  updateOrder,
+  addStatusEvent,
+  getOrderById,
+  mockStorageConfigured,
+} = vi.hoisted(() => {
+  const mockSave = vi.fn();
+  const mockDelete = vi.fn();
+  const mockDocGet = vi.fn();
+  const mockFile = vi.fn(() => ({
+    save: mockSave,
+    delete: mockDelete,
+    getSignedUrl: vi.fn().mockResolvedValue(["https://signed.example/proof"]),
+  }));
+  const mockBucket = vi.fn(() => ({ file: mockFile }));
+  const mockRefSet = vi.fn();
+  const mockRef = { id: "signature", set: mockRefSet, get: mockDocGet };
+  const mockCollectionGet = vi.fn().mockResolvedValue({ docs: [] });
+  const mockOrderProofsCollection = vi.fn((_db: unknown, _orderId: string) => ({
+    doc: vi.fn((id?: string) => ({ ...mockRef, id: id ?? mockRef.id })),
+    orderBy: vi.fn().mockReturnThis(),
+    get: mockCollectionGet,
+  }));
+  return {
+    mockSave,
+    mockDelete,
+    mockDocGet,
+    mockFile,
+    mockBucket,
+    mockRefSet,
+    mockRef,
+    mockCollectionGet,
+    mockOrderProofsCollection,
+    updateOrder: vi.fn(),
+    addStatusEvent: vi.fn(),
+    getOrderById: vi.fn().mockResolvedValue({
+      id: "ORD-1",
+      status: "Out for Delivery",
+      completedSteps: [],
+    }),
+    mockStorageConfigured: vi.fn(() => true),
+  };
+});
 
 vi.mock("@/lib/server/firebase-admin", () => ({
   getAdminStorage: () => ({ bucket: mockBucket }),
   getAdminFirestore: () => ({}),
 }));
 
+vi.mock("@/lib/server/env", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/server/env")>("@/lib/server/env");
+  return {
+    ...actual,
+    isFirebaseStorageConfigured: () => mockStorageConfigured(),
+    getFirebaseStorageBucketName: () =>
+      mockStorageConfigured() ? "test-bucket" : undefined,
+  };
+});
+
 vi.mock("@/lib/server/firestore/collections", () => ({
   orderProofsCollection: (db: unknown, orderId: string) => mockOrderProofsCollection(db, orderId),
 }));
 
 vi.mock("@/lib/server/services/orders", () => ({
-  getOrderById: vi.fn().mockResolvedValue({
-    id: "ORD-1",
-    status: "Out for Delivery",
-    completedSteps: [],
-  }),
-  updateOrder: vi.fn(),
-  addStatusEvent: vi.fn(),
+  getOrderById,
+  updateOrder,
+  addStatusEvent,
 }));
 
 vi.mock("@/lib/server/services/audit", () => ({
@@ -47,6 +89,7 @@ import {
   createProof,
   decodeProofDataUrl,
   deleteProofFile,
+  proofDocumentIdForType,
   proofSignedUrlTtlMs,
   uploadProofFile,
 } from "@/lib/server/services/proofs";
@@ -66,6 +109,17 @@ describe("proof upload helpers", () => {
     mockSave.mockResolvedValue(undefined);
     mockDelete.mockResolvedValue(undefined);
     mockRefSet.mockResolvedValue(undefined);
+    mockDocGet.mockResolvedValue({ exists: false });
+    mockCollectionGet.mockResolvedValue({ docs: [] });
+    mockStorageConfigured.mockReturnValue(true);
+    getOrderById.mockResolvedValue({
+      id: "ORD-1",
+      status: "Out for Delivery",
+      completedSteps: [],
+    });
+    updateOrder.mockResolvedValue({});
+    addStatusEvent.mockResolvedValue({});
+    process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET = "test-bucket";
   });
 
   afterEach(() => {
@@ -81,6 +135,11 @@ describe("proof upload helpers", () => {
   it("builds scoped storage paths under the order proofs prefix", () => {
     const path = buildProofStoragePath("ORD-1001", "signature", "png");
     expect(path).toMatch(/^orders\/ORD-1001\/proofs\/signature-\d+\.png$/);
+  });
+
+  it("uses a deterministic proof document id per type", () => {
+    expect(proofDocumentIdForType("signature")).toBe("signature");
+    expect(proofDocumentIdForType("exteriorPhoto")).toBe("exteriorPhoto");
   });
 
   it("defaults signed URL TTL to 15 minutes", () => {
@@ -104,7 +163,10 @@ describe("proof upload helpers", () => {
         actor,
         "driver-1",
       ),
-    ).rejects.toThrow("storage down");
+    ).rejects.toMatchObject({
+      code: "STORAGE_UNAVAILABLE",
+      status: 503,
+    });
 
     expect(mockRefSet).not.toHaveBeenCalled();
   });
@@ -119,10 +181,32 @@ describe("proof upload helpers", () => {
         actor,
         "driver-1",
       ),
-    ).rejects.toThrow("firestore down");
+    ).rejects.toMatchObject({
+      code: "PROOF_PERSIST_FAILED",
+      status: 503,
+    });
 
     expect(mockSave).toHaveBeenCalledOnce();
     expect(mockDelete).toHaveBeenCalled();
+  });
+
+  it("keeps storage object when order step update fails after proof doc write", async () => {
+    updateOrder.mockRejectedValueOnce(new Error("order update failed"));
+
+    await expect(
+      createProof(
+        "ORD-1",
+        { type: "signature", stepKey: "signature", dataUrl: pngDataUrl },
+        actor,
+        "driver-1",
+      ),
+    ).rejects.toMatchObject({
+      code: "PROOF_STEP_UPDATE_FAILED",
+      status: 503,
+    });
+
+    expect(mockRefSet).toHaveBeenCalledOnce();
+    expect(mockDelete).not.toHaveBeenCalled();
   });
 
   it("creates metadata after successful upload", async () => {
@@ -133,8 +217,78 @@ describe("proof upload helpers", () => {
       "driver-1",
     );
 
-    expect(proof.id).toBe("proof-1");
+    expect(proof.id).toBe("signature");
     expect(mockRefSet).toHaveBeenCalledOnce();
+  });
+
+  it("returns existing proof on retry without duplicating storage upload", async () => {
+    mockDocGet.mockResolvedValueOnce({
+      exists: true,
+      id: "signature",
+      data: () => ({
+        orderId: "ORD-1",
+        type: "signature",
+        stepKey: "signature",
+        storagePath: "orders/ORD-1/proofs/signature-1.png",
+        mimeType: "image/png",
+        fileSizeBytes: 12,
+        uploadedBy: "user-1",
+        uploadedAt: "2024-01-01T00:00:00.000Z",
+        reviewStatus: "pending",
+      }),
+    });
+
+    const proof = await createProof(
+      "ORD-1",
+      { type: "signature", stepKey: "signature", dataUrl: pngDataUrl },
+      actor,
+      "driver-1",
+    );
+
+    expect(proof.storagePath).toBe("orders/ORD-1/proofs/signature-1.png");
+    expect(mockSave).not.toHaveBeenCalled();
+    expect(mockRefSet).not.toHaveBeenCalled();
+  });
+
+  it("retries missing completed-step after proof doc exists without re-uploading", async () => {
+    // Simulate prior partial success: Storage + Firestore exist, completedSteps missing.
+    getOrderById.mockResolvedValue({
+      id: "ORD-1",
+      status: "Out for Delivery",
+      completedSteps: [],
+    });
+    mockDocGet.mockResolvedValue({
+      exists: true,
+      id: "signature",
+      data: () => ({
+        orderId: "ORD-1",
+        type: "signature",
+        stepKey: "signature",
+        storagePath: "orders/ORD-1/proofs/signature-1.png",
+        mimeType: "image/png",
+        fileSizeBytes: 12,
+        uploadedBy: "user-1",
+        uploadedAt: "2024-01-01T00:00:00.000Z",
+        reviewStatus: "pending",
+      }),
+    });
+    updateOrder.mockResolvedValueOnce({});
+
+    const proof = await createProof(
+      "ORD-1",
+      { type: "signature", stepKey: "signature", dataUrl: pngDataUrl },
+      actor,
+      "driver-1",
+    );
+
+    expect(proof.storagePath).toBe("orders/ORD-1/proofs/signature-1.png");
+    expect(mockSave).not.toHaveBeenCalled();
+    expect(mockRefSet).not.toHaveBeenCalled();
+    expect(updateOrder).toHaveBeenCalledWith(
+      "ORD-1",
+      { completedSteps: ["signature"] },
+      actor,
+    );
   });
 
   it("rejects duplicate proof-type burst (double tap)", async () => {
@@ -158,5 +312,83 @@ describe("proof upload helpers", () => {
   it("deleteProofFile ignores missing objects", async () => {
     mockDelete.mockResolvedValueOnce(undefined);
     await expect(deleteProofFile("orders/ORD-1/proofs/x.png")).resolves.toBeUndefined();
+  });
+
+  it("maps missing bucket configuration to STORAGE_NOT_CONFIGURED", async () => {
+    mockStorageConfigured.mockReturnValue(false);
+    await expect(uploadProofFile("ORD-1", "signature", pngDataUrl)).rejects.toMatchObject({
+      code: "STORAGE_NOT_CONFIGURED",
+      status: 503,
+    });
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+
+  it("maps bucket-not-found (404) to STORAGE_NOT_CONFIGURED without Firestore writes", async () => {
+    const logSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    mockSave.mockRejectedValueOnce(Object.assign(new Error("The specified bucket does not exist."), { code: 404 }));
+
+    await expect(
+      createProof(
+        "ORD-1",
+        { type: "signature", stepKey: "signature", dataUrl: pngDataUrl },
+        actor,
+        "driver-1",
+      ),
+    ).rejects.toMatchObject({
+      code: "STORAGE_NOT_CONFIGURED",
+      status: 503,
+    });
+
+    expect(mockRefSet).not.toHaveBeenCalled();
+    expect(updateOrder).not.toHaveBeenCalled();
+    const proofLogs = logSpy.mock.calls
+      .filter((c) => c[0] === "[proof]")
+      .map((c) => JSON.parse(String(c[1])));
+    expect(proofLogs.some((l) => l.stage === "storage_upload" && l.firebaseCode === "404")).toBe(
+      true,
+    );
+    expect(JSON.stringify(proofLogs)).not.toContain("data:image");
+    logSpy.mockRestore();
+  });
+
+  it("maps permission denied to STORAGE_UNAVAILABLE with safe log fields", async () => {
+    const logSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    mockSave.mockRejectedValueOnce(
+      Object.assign(new Error("Permission denied"), { code: 403, status: 403 }),
+    );
+
+    await expect(
+      createProof(
+        "ORD-1",
+        { type: "signature", stepKey: "signature", dataUrl: pngDataUrl },
+        actor,
+        "driver-1",
+      ),
+    ).rejects.toMatchObject({
+      code: "STORAGE_UNAVAILABLE",
+      status: 503,
+    });
+
+    expect(mockRefSet).not.toHaveBeenCalled();
+    const proofLogs = logSpy.mock.calls
+      .filter((c) => c[0] === "[proof]")
+      .map((c) => JSON.parse(String(c[1])));
+    const uploadLog = proofLogs.find((l) => l.stage === "storage_upload");
+    expect(uploadLog).toMatchObject({
+      firebaseCode: "403",
+      message: "permission_denied",
+      bucketResolved: true,
+    });
+    expect(JSON.stringify(uploadLog)).not.toContain(pngDataUrl);
+    logSpy.mockRestore();
+  });
+
+  it("maps transient storage failures to retryable STORAGE_UNAVAILABLE", async () => {
+    mockSave.mockRejectedValueOnce(Object.assign(new Error("backend timeout"), { code: 503 }));
+
+    await expect(uploadProofFile("ORD-1", "signature", pngDataUrl)).rejects.toMatchObject({
+      code: "STORAGE_UNAVAILABLE",
+      status: 503,
+    });
   });
 });

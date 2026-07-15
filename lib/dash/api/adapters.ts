@@ -35,6 +35,8 @@ export interface AdminOrderRow {
   driver: string | null;
   driverId: string | null;
   status: OrderStatus;
+  /** Quarantine flag — unrecognized Firestore status; not a lifecycle value. */
+  unrecognizedStatusRaw?: string | null;
   payment: PaymentStatus;
   total: string;
   created: string;
@@ -65,6 +67,8 @@ export interface AdminDriverRow {
 export interface AdminOrderDetail {
   id: string;
   status: OrderStatus;
+  /** Quarantine flag — unrecognized Firestore status; not a lifecycle value. */
+  unrecognizedStatusRaw?: string | null;
   payment: PaymentStatus;
   external: string;
   customerName: string;
@@ -364,6 +368,7 @@ export function orderToAdminRow(order: Order): AdminOrderRow {
     driver: order.assignedDriverName,
     driverId: order.assignedDriverId,
     status: order.status,
+    unrecognizedStatusRaw: order.unrecognizedStatusRaw ?? null,
     payment: order.paymentStatus,
     total: order.totalDisplay,
     created: created.combined,
@@ -487,6 +492,7 @@ export function orderToAdminDetail(
   return {
     id: order.id,
     status: order.status,
+    unrecognizedStatusRaw: order.unrecognizedStatusRaw ?? null,
     payment: order.paymentStatus,
     external: order.externalOrderNumber ?? order.externalOrderId ?? "—",
     customerName: order.customerName,

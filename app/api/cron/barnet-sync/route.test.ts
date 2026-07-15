@@ -23,11 +23,15 @@ vi.mock("@/lib/server/route-utils", () => ({
   ensureFirebaseConfigured,
 }));
 
-import { GET } from "@/app/api/cron/barnet-sync/route";
+import { GET, maxDuration } from "@/app/api/cron/barnet-sync/route";
 
 describe("GET /api/cron/barnet-sync", () => {
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("configures a 300s function duration for multi-page Barnet scans", () => {
+    expect(maxDuration).toBe(300);
   });
 
   it("returns auth response when cron secret validation fails", async () => {

@@ -10,8 +10,8 @@ import { ensureFirebaseConfigured } from "@/lib/server/route-utils";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-/** Hobby caps at 10s; Pro supports up to 300s. */
-export const maxDuration = 60;
+/** Pro supports up to 300s — required for ~10 slow Barnet page fetches. */
+export const maxDuration = 300;
 
 export async function GET(request: Request) {
   const authError = validateCronSecret(request);
@@ -26,6 +26,10 @@ export async function GET(request: Request) {
   }
 
   const runId = randomUUID();
+  console.info(
+    "[barnet-cron] request-received",
+    JSON.stringify({ executionId: runId, maxDuration }),
+  );
   const result = await executeBarnetCronSync(runId);
 
   if (!result.ok && result.error === "upstream_timeout") {

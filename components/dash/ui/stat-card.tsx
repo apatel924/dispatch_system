@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/dash/ui/skeletons";
 
 export function StatCard({
   label,
@@ -10,14 +11,17 @@ export function StatCard({
   delta,
   trend = "up",
   compareLabel = "vs yesterday",
+  loading = false,
 }: {
   label: string;
-  value: string | number;
+  /** Pass null/undefined when value is unknown (shows skeleton). Genuine `0` displays as 0. */
+  value: string | number | null | undefined;
   icon: LucideIcon;
   tone?: "info" | "success" | "warning" | "purple" | "orange" | "primary";
   delta?: string;
   trend?: "up" | "down";
   compareLabel?: string;
+  loading?: boolean;
 }) {
   const toneMap: Record<string, string> = {
     info: "bg-info-soft text-info",
@@ -27,14 +31,21 @@ export function StatCard({
     orange: "bg-orange-soft text-orange",
     primary: "bg-primary/10 text-primary",
   };
+  const showSkeleton = loading || value === null || value === undefined;
+
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-[0_1px_2px_0_rgb(0_0_0/0.03)]">
+    <div
+      className="rounded-xl border border-border bg-card p-4 shadow-[0_1px_2px_0_rgb(0_0_0/0.03)]"
+      aria-busy={showSkeleton || undefined}
+    >
       <div className={cn("grid h-10 w-10 place-items-center rounded-lg", toneMap[tone])}>
         <Icon className="h-5 w-5" />
       </div>
-      <div className="mt-3 text-2xl font-bold tracking-tight text-foreground">{value}</div>
+      <div className="mt-3 min-h-[1.75rem] text-2xl font-bold tracking-tight text-foreground tabular-nums">
+        {showSkeleton ? <Skeleton className="h-7 w-14" /> : value}
+      </div>
       <div className="mt-1 text-xs leading-snug text-muted-foreground">{label}</div>
-      {(delta || compareLabel) && (
+      {(delta || compareLabel) && !showSkeleton && (
         <div className="mt-2.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
           {delta && (
             <>

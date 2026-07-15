@@ -1,4 +1,5 @@
 import { diagnoseNormalizedExternalOrder } from "@/lib/integrations/order-provider/barnet-order-diagnostics";
+import { evaluateNormalizedOrderReview } from "@/lib/integrations/order-provider/barnet-order-decision";
 import type {
   ExternalOrderDispatchStatus,
   ExternalOrderIntakeDetail,
@@ -12,13 +13,30 @@ function resolveDispatchStatus(order: NormalizedExternalOrder): ExternalOrderDis
     return "assigned";
   }
   if (order.dispatchReady) return "ready";
-  if ((order.missingFields?.length ?? 0) > 0) return "needs_review";
+  if ((order.missingFields?.length ?? 0) > 0 || order.needsReview) return "needs_review";
   return order.dispatchStatus ?? "pending";
 }
 
 function resolveMissingFields(order: NormalizedExternalOrder): string[] {
   if (order.missingFields?.length) return order.missingFields;
   return diagnoseNormalizedExternalOrder(order).missingFields;
+}
+
+function resolveReviewState(order: NormalizedExternalOrder): {
+  needsReview: boolean;
+  reviewReasons: string[];
+} {
+  if (typeof order.needsReview === "boolean" && Array.isArray(order.reviewReasons)) {
+    return {
+      needsReview: order.needsReview,
+      reviewReasons: order.reviewReasons,
+    };
+  }
+  const review = evaluateNormalizedOrderReview(order);
+  return {
+    needsReview: review.needsReview,
+    reviewReasons: review.reviewReasons,
+  };
 }
 
 export function resolveExternalOrderDocId(order: NormalizedExternalOrder): string {
@@ -33,6 +51,7 @@ export function toExternalOrderIntakeRow(
   options?: { docId?: string; isPreview?: boolean; alreadyImported?: boolean },
 ): ExternalOrderIntakeRow {
   const missingFields = resolveMissingFields(order);
+  const review = resolveReviewState(order);
   return {
     id: options?.docId ?? resolveExternalOrderDocId(order),
     provider: order.provider,
@@ -45,6 +64,8 @@ export function toExternalOrderIntakeRow(
     total: order.total,
     sourceStatus: order.sourceStatus ?? order.status,
     dispatchReady: order.dispatchReady,
+    needsReview: review.needsReview,
+    reviewReasons: review.reviewReasons,
     customerMessagingReady: order.customerMessagingReady,
     missingFields,
     assignmentStatus: order.assignmentStatus ?? "unassigned",
@@ -66,6 +87,7 @@ export function toExternalOrderIntakeDetail(
   options?: { docId?: string },
 ): ExternalOrderIntakeDetail {
   const missingFields = resolveMissingFields(order);
+  const review = resolveReviewState(order);
   const customerName = order.customer?.name ?? order.customerName;
   const customerPhone = order.customer?.phone ?? order.customerPhone;
   const customerEmail = order.customer?.email ?? order.customerEmail;
@@ -109,6 +131,8 @@ export function toExternalOrderIntakeDetail(
       total: order.total,
     },
     dispatchReady: order.dispatchReady,
+    needsReview: review.needsReview,
+    reviewReasons: review.reviewReasons,
     customerMessagingReady: order.customerMessagingReady,
     customerEnrichmentStatus: order.customerEnrichmentStatus,
     missingFields,
@@ -139,6 +163,11 @@ export function hydrateNormalizedExternalOrder(
   const order = data as unknown as NormalizedExternalOrder;
   const status = order.status ?? "unknown";
   const diagnostics = diagnoseNormalizedExternalOrder(order);
+  const review = evaluateNormalizedOrderReview({
+    ...order,
+    missingFields: order.missingFields ?? diagnostics.missingFields,
+    dispatchReady: order.dispatchReady ?? diagnostics.dispatchReady,
+  });
 
   return {
     ...order,
@@ -167,6 +196,8 @@ export function hydrateNormalizedExternalOrder(
       total: order.total ?? 0,
     },
     missingFields: order.missingFields ?? diagnostics.missingFields,
+    needsReview: order.needsReview ?? review.needsReview,
+    reviewReasons: order.reviewReasons ?? review.reviewReasons,
     assignmentStatus: order.assignmentStatus ?? "unassigned",
     dispatchStatus: order.dispatchStatus ?? (order.dispatchReady ? "ready" : "pending"),
     assignedDriverId: order.assignedDriverId ?? null,

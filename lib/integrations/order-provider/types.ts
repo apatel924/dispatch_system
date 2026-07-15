@@ -90,6 +90,10 @@ export interface NormalizedExternalOrder {
   customerEnrichmentStatus: CustomerEnrichmentStatus | null;
   customerEnrichmentError: string | null;
   dispatchReady: boolean;
+  /** True when this is a delivery order that is not yet dispatch-ready. */
+  needsReview: boolean;
+  /** Stable review reason codes (e.g. missing_address). */
+  reviewReasons: string[];
   missingFields: string[];
   assignmentStatus: ExternalOrderAssignmentStatus;
   dispatchStatus: ExternalOrderDispatchStatus;
@@ -121,6 +125,8 @@ export interface ExternalOrderIntakeRow {
   total: number;
   sourceStatus: string;
   dispatchReady: boolean;
+  needsReview: boolean;
+  reviewReasons: string[];
   customerMessagingReady: boolean;
   missingFields: string[];
   assignmentStatus: ExternalOrderAssignmentStatus;
@@ -156,6 +162,8 @@ export interface ExternalOrderIntakeDetail {
   items: ExternalProviderOrderItem[];
   totals: ExternalOrderTotals;
   dispatchReady: boolean;
+  needsReview: boolean;
+  reviewReasons: string[];
   customerMessagingReady: boolean;
   customerEnrichmentStatus: CustomerEnrichmentStatus | null;
   missingFields: string[];
@@ -180,12 +188,17 @@ export interface ExternalOrderIntakeDetail {
 
 export interface ExternalOrderProviderSyncState {
   lastSuccessfulSyncAt: string | null;
+  lastAttemptedSyncAt?: string | null;
   lastError: string | null;
   lastSyncSummary: {
     inserted: number;
     updated: number;
     deliveryOrdersFound: number;
     pagesScanned: number;
+    unchanged?: number;
+    invalid?: number;
+    enrichmentErrors?: number;
+    syncErrors?: number;
   } | null;
 }
 
@@ -201,6 +214,13 @@ export interface ExternalOrderSyncResult extends ExternalOrderScanStats {
   inserted: number;
   updated: number;
   total: number;
+  unchangedOrders?: number;
+  needsReview?: number;
+  readyToDispatch?: number;
+  invalidOrders?: number;
+  enrichmentErrors?: number;
+  syncErrors?: number;
+  exclusionReasons?: Record<string, number>;
 }
 
 export interface LiveDeliveryScanResult {

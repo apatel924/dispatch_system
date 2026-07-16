@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowLeft, Users, Send, Save, FileText, MapPin, Package, User2, ClipboardList, CheckCircle2, Truck, Camera, PenTool, IdCard, MessageSquare, Copy, Check } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ArrowLeft, Users, Send, Save, FileText, MapPin, Package, User2, ClipboardList, CheckCircle2, Truck, Camera, PenTool, IdCard, MessageSquare, Copy, Check, Phone, ExternalLink } from "lucide-react";
 import { DashboardLayout } from "@/components/dash/layout/dashboard-layout";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { ConsumerDeliveryInstructions } from "@/components/dash/consumer-delivery-instructions";
 import { OrderActionsMenu } from "@/components/dash/order-actions-menu";
+import { AssignDriverDialog } from "@/components/dash/orders/assign-driver-dialog";
 import { OrderStatusBadge, DriverStatusBadge, ProofReviewBadge } from "@/components/dash/status-badge";
 import { OrderDetailSkeleton } from "@/components/dash/ui/skeletons";
 import { reviewProofApi, acknowledgeConsumerNoteApi, rotateOrderTrackingLinkApi } from "@/lib/dash/api/client";
@@ -43,7 +45,18 @@ const PLACEHOLDER_PROOFS = [
   { label: "Exterior / Address", icon: Camera },
 ];
 
+function mapsUrl(address: string): string {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+}
+
+function telHref(phone: string): string | null {
+  const cleaned = phone.replace(/[^\d+]/g, "");
+  return cleaned ? `tel:${cleaned}` : null;
+}
+
 export function OrderDetailPage({ orderId }: { orderId: string }) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { detail, proofs, consumerNotes, loading, refresh } = useAdminOrderDetail(orderId);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [acknowledgingId, setAcknowledgingId] = useState<string | null>(null);
@@ -53,12 +66,29 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
   const [trackingMessageTone, setTrackingMessageTone] = useState<"success" | "warning" | "error">("success");
   const [showResendConfirm, setShowResendConfirm] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [retryFailed, setRetryFailed] = useState(false);
 
   useEffect(() => {
     return () => {
       setTrackingUrl(undefined);
     };
   }, []);
+
+  useEffect(() => {
+    if (searchParams.get("action") === "assign") {
+      setAssignOpen(true);
+      setRetryFailed(searchParams.get("retryFailed") === "1");
+    }
+  }, [searchParams]);
+
+  const clearAssignQuery = () => {
+    setAssignOpen(false);
+    setRetryFailed(false);
+    if (searchParams.get("action") === "assign") {
+      router.replace(`/orders/${orderId}`, { scroll: false });
+    }
+  };
 
   const handleReview = async (proofId: string, status: "approved" | "rejected") => {
     if (!isApiEnabled()) return;
@@ -134,7 +164,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
   if (!detail) {
     return (
       <DashboardLayout title="Orders">
-        <Link href="/orders" className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary"><ArrowLeft className="h-4 w-4" /> Back to Orders</Link>
+        <Link href="/orders" className="mb-4 inline-flex min-h-11 items-center gap-1.5 text-sm text-muted-foreground hover:text-primary"><ArrowLeft className="h-4 w-4" /> Back to Orders</Link>
         <p className="text-muted-foreground">Order {orderId} not found</p>
       </DashboardLayout>
     );
@@ -142,26 +172,58 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
 
   const d = detail;
   const hasNewConsumerNotes = hasUnreadConsumerNotes(consumerNotes);
+  const customerPhone = telHref(d.phone);
+  const driverPhone = d.driver ? telHref(d.driver.phone) : null;
+  const deliveryAddress = [d.address, d.deliveryUnit].filter(Boolean).join(", ");
+
+  const openAssign = (options?: { retryFailed?: boolean }) => {
+    setRetryFailed(Boolean(options?.retryFailed));
+    setAssignOpen(true);
+  };
 
   return (
     <DashboardLayout title="Orders">
-      <Link href="/orders" className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary"><ArrowLeft className="h-4 w-4" /> Back to Orders</Link>
+      {assignOpen && (
+        <AssignDriverDialog
+          open
+          orderId={d.id}
+          orderLabel={`${d.id} · ${d.customerName}`}
+          retryFailed={retryFailed}
+          onClose={clearAssignQuery}
+          onAssigned={() => void refresh()}
+        />
+      )}
 
-      <div className="rounded-xl border border-border bg-card p-5 shadow-[0_1px_2px_0_rgb(0_0_0/0.03)]">
-        <div className="flex flex-wrap items-center gap-3">
-          <h2 className="text-2xl font-bold tracking-tight">{d.id}</h2>
-          <OrderStatusBadge status={d.status} unrecognizedStatusRaw={d.unrecognizedStatusRaw} />
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            <button className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary"><Users className="h-4 w-4" /> Assign Driver</button>
+      <Link href="/orders" className="mb-4 inline-flex min-h-11 items-center gap-1.5 text-sm text-muted-foreground hover:text-primary"><ArrowLeft className="h-4 w-4" /> Back to Orders</Link>
+
+      <div className="rounded-xl border border-border bg-card p-4 shadow-[0_1px_2px_0_rgb(0_0_0/0.03)] sm:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
+            <h2 className="truncate text-xl font-bold tracking-tight sm:text-2xl">{d.id}</h2>
+            <OrderStatusBadge status={d.status} unrecognizedStatusRaw={d.unrecognizedStatusRaw} />
+          </div>
+          <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+            <button
+              type="button"
+              onClick={() => openAssign()}
+              className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary sm:flex-initial"
+            >
+              <Users className="h-4 w-4" /> {d.driver ? "Reassign Driver" : "Assign Driver"}
+            </button>
             <button
               type="button"
               onClick={() => setShowResendConfirm(true)}
               disabled={trackingBusy}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-60"
+              className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-60 sm:flex-initial"
             >
-              <Send className="h-4 w-4" /> {trackingBusy ? "Sending…" : "Resend Tracking Link"}
+              <Send className="h-4 w-4" /> <span className="sm:inline">{trackingBusy ? "Sending…" : "Resend Tracking"}</span>
             </button>
-            <button className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"><Save className="h-4 w-4" /> Save Changes</button>
+            <button
+              type="button"
+              className="hidden min-h-11 items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 sm:inline-flex"
+            >
+              <Save className="h-4 w-4" /> Save Changes
+            </button>
             <OrderActionsMenu
               order={{
                 id: d.id,
@@ -170,7 +232,8 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                 unrecognizedStatusRaw: d.unrecognizedStatusRaw,
               }}
               onStatusChanged={() => void refresh()}
-              triggerClassName="rounded-lg border border-input bg-card p-2 hover:bg-secondary"
+              onAssign={(_id, options) => openAssign(options)}
+              triggerClassName="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-input bg-card hover:bg-secondary"
             />
           </div>
         </div>
@@ -187,7 +250,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                 type="button"
                 onClick={() => void handleResendTrackingLink()}
                 disabled={trackingBusy}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+                className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
               >
                 <Send className="h-4 w-4" /> {trackingBusy ? "Sending…" : "Confirm resend"}
               </button>
@@ -195,7 +258,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                 type="button"
                 onClick={() => setShowResendConfirm(false)}
                 disabled={trackingBusy}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-60"
+                className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-60"
               >
                 Cancel
               </button>
@@ -225,7 +288,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
             <button
               type="button"
               onClick={() => void handleCopyTrackingUrl()}
-              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-1.5 text-xs font-semibold hover:bg-secondary"
+              className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-1.5 text-xs font-semibold hover:bg-secondary"
             >
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
               {copied ? "Copied" : "Copy Link"}
@@ -237,15 +300,19 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
             send a new link to the customer (invalidates the previous link).
           </p>
         ) : null}
-        <div className="mt-5 grid grid-cols-2 gap-6 md:grid-cols-3">
+        <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 md:gap-6">
           <div>
             <div className="text-xs uppercase tracking-wide text-muted-foreground">Assigned Driver</div>
             {d.driver ? (
               <div className="mt-2 flex items-center gap-2">
                 <div className={`grid h-9 w-9 place-items-center rounded-full ${d.driver.avatarColor} text-xs font-semibold`}>{d.driver.initials}</div>
-                <div className="leading-tight">
-                  <div className="text-sm font-semibold">{d.driver.name}</div>
-                  <div className="text-xs text-muted-foreground">{d.driver.phone}</div>
+                <div className="min-w-0 leading-tight">
+                  <div className="truncate text-sm font-semibold">{d.driver.name}</div>
+                  {driverPhone ? (
+                    <a href={driverPhone} className="text-xs text-primary hover:underline">{d.driver.phone}</a>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">{d.driver.phone}</div>
+                  )}
                 </div>
               </div>
             ) : (
@@ -265,15 +332,37 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
         </div>
       </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-3">
+      <div className="mt-6 grid gap-6 pb-24 lg:grid-cols-3 md:pb-0">
         <div className="space-y-6">
-          <SectionCard title="Customer Information" icon={<User2 className="h-4 w-4" />} action={<button className="text-xs font-semibold text-primary hover:underline">Edit</button>}>
+          <SectionCard title="Customer Information" icon={<User2 className="h-4 w-4" />} action={<button type="button" className="text-xs font-semibold text-primary hover:underline">Edit</button>}>
             <div className="space-y-3 text-sm">
-              <div className="flex items-center gap-2"><FileText className="h-4 w-4 text-purple" /><span className="font-semibold">{d.companyName}</span></div>
+              <div className="flex items-center gap-2"><FileText className="h-4 w-4 shrink-0 text-purple" /><span className="min-w-0 break-words font-semibold">{d.companyName}</span></div>
               <Field label="Contact Name" value={d.contactName} />
-              <Field label="Phone" value={d.phone} />
+              <div>
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Phone</div>
+                {customerPhone ? (
+                  <a href={customerPhone} className="mt-0.5 inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-primary hover:underline">
+                    <Phone className="h-3.5 w-3.5" /> {d.phone}
+                  </a>
+                ) : (
+                  <div className="mt-0.5 text-sm">{d.phone}</div>
+                )}
+              </div>
               <Field label="Email" value={d.email} />
-              <Field label="Address" value={[d.address, d.deliveryUnit].filter(Boolean).join(", ")} />
+              <div>
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Address</div>
+                <div className="mt-0.5 break-words text-sm">{deliveryAddress}</div>
+                {deliveryAddress && (
+                  <a
+                    href={mapsUrl(deliveryAddress)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-1 inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-primary hover:underline"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" /> Open in Maps
+                  </a>
+                )}
+              </div>
             </div>
           </SectionCard>
           <SectionCard
@@ -294,15 +383,15 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
               acknowledgingId={acknowledgingId}
             />
           </SectionCard>
-          <SectionCard title="Internal Admin Notes" action={<button className="text-xs font-semibold text-primary hover:underline">Edit</button>}>
-            <p className="text-sm">{d.notes}</p>
+          <SectionCard title="Internal Admin Notes" action={<button type="button" className="text-xs font-semibold text-primary hover:underline">Edit</button>}>
+            <p className="break-words text-sm">{d.notes}</p>
           </SectionCard>
           {d.driverNotes.length > 0 && (
             <SectionCard title="Driver Notes">
               <ol className="space-y-3">
                 {d.driverNotes.map((note) => (
                   <li key={note.id} className="rounded-lg border border-border p-3 text-sm">
-                    <p>{note.text}</p>
+                    <p className="break-words">{note.text}</p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {note.date} {note.time}
                     </p>
@@ -314,45 +403,59 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
         </div>
 
         <div className="space-y-6">
-          <SectionCard title="Delivery Information" icon={<MapPin className="h-4 w-4" />} action={<button className="text-xs font-semibold text-primary hover:underline">Edit</button>}>
+          <SectionCard title="Delivery Information" icon={<MapPin className="h-4 w-4" />} action={<button type="button" className="text-xs font-semibold text-primary hover:underline">Edit</button>}>
             <Field label="External Order #" value={d.external} />
             <div className="mt-4">
               <div className="text-xs uppercase tracking-wide text-muted-foreground">Pickup Location</div>
               <div className="mt-1 flex items-start gap-2">
-                <MapPin className="mt-0.5 h-4 w-4 text-purple" />
-                <div className="text-sm">
+                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-purple" />
+                <div className="min-w-0 text-sm">
                   <div className="font-semibold">{d.pickupName}</div>
-                  <div className="text-muted-foreground">{d.pickupAddress}</div>
+                  <div className="break-words text-muted-foreground">{d.pickupAddress}</div>
+                  {d.pickupAddress && (
+                    <a
+                      href={mapsUrl(d.pickupAddress)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-primary hover:underline"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" /> Open in Maps
+                    </a>
+                  )}
                 </div>
               </div>
             </div>
             <div className="mt-4">
               <div className="text-xs uppercase tracking-wide text-muted-foreground">Delivery Location</div>
               <div className="mt-1 flex items-start gap-2">
-                <MapPin className="mt-0.5 h-4 w-4 text-primary" />
-                <div className="text-sm">
+                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                <div className="min-w-0 text-sm">
                   <div className="font-semibold">{d.customerName}</div>
-                  <div className="text-muted-foreground">{d.address}</div>
+                  <div className="break-words text-muted-foreground">{d.address}</div>
                 </div>
               </div>
             </div>
             <div className="mt-4">
               <div className="text-xs uppercase tracking-wide text-muted-foreground">Special Instructions</div>
-              <p className="mt-1 text-sm">{d.deliveryInstructions}</p>
+              <p className="mt-1 break-words text-sm">{d.deliveryInstructions}</p>
             </div>
           </SectionCard>
 
           {d.driver && (
-            <SectionCard title="Driver Assignment" icon={<Users className="h-4 w-4" />} action={<button className="text-xs font-semibold text-primary hover:underline">Edit</button>}>
-              <div className="flex items-center gap-3">
+            <SectionCard title="Driver Assignment" icon={<Users className="h-4 w-4" />} action={<button type="button" onClick={() => openAssign()} className="text-xs font-semibold text-primary hover:underline">Change</button>}>
+              <div className="flex flex-wrap items-center gap-3">
                 <div className={`grid h-11 w-11 place-items-center rounded-full ${d.driver.avatarColor} text-sm font-semibold`}>{d.driver.initials}</div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-sm font-semibold">{d.driver.name}</div>
-                  <div className="text-xs text-muted-foreground">{d.driver.phone}</div>
+                  {driverPhone ? (
+                    <a href={driverPhone} className="text-xs text-primary hover:underline">{d.driver.phone}</a>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">{d.driver.phone}</div>
+                  )}
                 </div>
-                <div className="ml-auto"><DriverStatusBadge status={d.driver.status} /></div>
+                <div className="sm:ml-auto"><DriverStatusBadge status={d.driver.status} /></div>
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
+              <div className="mt-4 grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
                 <Field label="Vehicle" value={d.driver.vehicle} />
               </div>
             </SectionCard>
@@ -377,7 +480,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                       <div>{s.date}</div>
                       <div>{s.time}</div>
                     </div>
-                    <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-success" aria-label="Completed" />
                   </li>
                 );
               })}
@@ -396,6 +499,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                       </div>
                       <div className="overflow-hidden rounded-lg border border-border bg-secondary/40">
                         {proof.downloadUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
                           <img
                             src={proof.downloadUrl}
                             alt={proof.label}
@@ -414,16 +518,18 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                       {proof.reviewStatus === "pending" && isApiEnabled() && (
                         <div className="mt-3 flex gap-2">
                           <button
+                            type="button"
                             disabled={reviewingId === proof.id}
                             onClick={() => handleReview(proof.id, "approved")}
-                            className="flex-1 rounded-lg bg-success px-2 py-1.5 text-xs font-semibold text-white hover:bg-success/90 disabled:opacity-50"
+                            className="min-h-11 flex-1 rounded-lg bg-success px-2 py-1.5 text-xs font-semibold text-white hover:bg-success/90 disabled:opacity-50"
                           >
                             Approve
                           </button>
                           <button
+                            type="button"
                             disabled={reviewingId === proof.id}
                             onClick={() => handleReview(proof.id, "rejected")}
-                            className="flex-1 rounded-lg border border-primary px-2 py-1.5 text-xs font-semibold text-primary hover:bg-primary/5 disabled:opacity-50"
+                            className="min-h-11 flex-1 rounded-lg border border-primary px-2 py-1.5 text-xs font-semibold text-primary hover:bg-primary/5 disabled:opacity-50"
                           >
                             Reject
                           </button>
@@ -434,7 +540,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                 })}
               </div>
             ) : (
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {PLACEHOLDER_PROOFS.map((p) => (
                   <div key={p.label} className="text-center">
                     <div className="mb-1 text-xs text-muted-foreground">{p.label}</div>
@@ -448,6 +554,28 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
           </SectionCard>
         </div>
       </div>
+
+      {/* Fixed mobile action strip — does not cover content (pb-24 above) */}
+      <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-card/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-card/80 md:hidden pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <div className="mx-auto flex max-w-lg gap-2">
+          <button
+            type="button"
+            onClick={() => openAssign()}
+            className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"
+          >
+            <Users className="h-4 w-4" /> {d.driver ? "Reassign" : "Assign Driver"}
+          </button>
+          {customerPhone && (
+            <a
+              href={customerPhone}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-input bg-card"
+              aria-label="Call customer"
+            >
+              <Phone className="h-4 w-4" />
+            </a>
+          )}
+        </div>
+      </div>
     </DashboardLayout>
   );
 }
@@ -456,7 +584,7 @@ function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="mt-0.5 text-sm">{value}</div>
+      <div className="mt-0.5 break-words text-sm">{value}</div>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 'use client'
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   FileText,
@@ -20,8 +20,10 @@ import { StatCard } from "@/components/dash/ui/stat-card";
 import { SectionCard } from "@/components/dash/ui/section-card";
 import { DashEmptyState, DashErrorState } from "@/components/dash/ui/query-state";
 import { OrdersTableSkeletonRows, DriverRowSkeleton } from "@/components/dash/ui/skeletons";
-import { OrderStatusBadge } from "@/components/dash/status-badge";
+import { OrderStatusBadge, DriverStatusBadge } from "@/components/dash/status-badge";
 import { OrderActionsMenu } from "@/components/dash/order-actions-menu";
+import { MobileOrderCard, MobileOrderCardSkeleton } from "@/components/dash/orders/mobile-order-card";
+import { AssignDriverDialog } from "@/components/dash/orders/assign-driver-dialog";
 import { TableScroll } from "@/components/dash/ui/table-scroll";
 import { useAdminOrders } from "@/lib/dash/hooks/use-admin-orders";
 import { useAdminDrivers } from "@/lib/dash/hooks/use-admin-drivers";
@@ -37,10 +39,18 @@ export function DashboardPage() {
   const { orders, loading: ordersLoading, error: ordersError, refresh: refreshOrders } = useAdminOrders({ limit: 50 });
   const { drivers, loading: driversLoading, error: driversError } = useAdminDrivers({ limit: 20 });
   const { stats: dashboardStats, loading: statsLoading, error: statsError } = useAdminDashboardStats();
+  const [assignTarget, setAssignTarget] = useState<{
+    orderId: string;
+    retryFailed?: boolean;
+  } | null>(null);
 
   const onOrderStatusChanged = () => {
     void invalidateAfterOrderLifecycle(queryClient);
     void refreshOrders();
+  };
+
+  const onAssign = (orderId: string, options?: { retryFailed?: boolean }) => {
+    setAssignTarget({ orderId, retryFailed: options?.retryFailed });
   };
 
   const stats = useMemo(() => {
@@ -114,9 +124,23 @@ export function DashboardPage() {
   const busyCount = dashboardStats?.busyDrivers ?? null;
   const completedToday = dashboardStats?.completedToday ?? null;
   const driverStatsLoading = statsLoading && apiEnabled;
+  const assignOrder = assignTarget
+    ? orders.find((o) => o.id === assignTarget.orderId)
+    : undefined;
 
   return (
     <DashboardLayout title="Dashboard">
+      {assignTarget && (
+        <AssignDriverDialog
+          open
+          orderId={assignTarget.orderId}
+          orderLabel={assignOrder ? `${assignOrder.id} · ${assignOrder.customer}` : assignTarget.orderId}
+          retryFailed={assignTarget.retryFailed}
+          onClose={() => setAssignTarget(null)}
+          onAssigned={onOrderStatusChanged}
+        />
+      )}
+
       {(ordersError || driversError || statsError) && (
         <div className="mb-4 space-y-2">
           {ordersError && <DashErrorState message={ordersError} />}
@@ -131,17 +155,138 @@ export function DashboardPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 md:grid-cols-3 md:gap-4 xl:grid-cols-5">
         {stats.map((s) => <StatCard key={s.label} {...s} />)}
       </div>
 
-      <div className="mt-6 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+      {/* Mobile portrait: card-based operational layout */}
+      <div className="mt-5 space-y-5 md:hidden">
+        <SectionCard
+          title="Active Orders"
+          padded={false}
+          action={
+            <Link href="/orders" className="text-xs font-semibold text-primary hover:underline">
+              All Orders
+            </Link>
+          }
+        >
+          {ordersLoading && tableOrders.length === 0 ? (
+            <div className="space-y-3 p-4" aria-busy="true" aria-label="Loading orders">
+              <MobileOrderCardSkeleton />
+              <MobileOrderCardSkeleton />
+              <MobileOrderCardSkeleton />
+            </div>
+          ) : tableOrders.length === 0 ? (
+            <DashEmptyState message="No orders found" />
+          ) : (
+            <ul className="space-y-3 p-4">
+              {tableOrders.map((o) => (
+                <li key={o.id}>
+                  <MobileOrderCard
+                    order={o}
+                    onStatusChanged={onOrderStatusChanged}
+                    onAssign={onAssign}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="border-t border-border/60 px-4 py-3 text-xs text-muted-foreground">
+            Showing {tableOrders.length === 0 ? 0 : 1} to {tableOrders.length} recent orders
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Driver Activity"
+          action={
+            <Link href="/drivers" className="text-xs font-semibold text-primary hover:underline">
+              View All
+            </Link>
+          }
+        >
+          <div className="grid grid-cols-3 gap-2 pb-4 sm:gap-3">
+            {([["Available", availableCount, "text-success"], ["Busy", busyCount, "text-warning-foreground"], ["Completed", completedToday, "text-success"]] as const).map(([l, v, tone]) => (
+              <div key={l} className="rounded-lg border border-border/60 bg-secondary/30 p-2.5 text-center sm:p-3">
+                <div className="text-[10px] leading-tight text-muted-foreground sm:text-[11px]">{l}</div>
+                <div className={`mt-1 min-h-[1.5rem] text-base font-bold tabular-nums sm:text-lg ${tone}`}>
+                  {driverStatsLoading || v === null ? (
+                    <span className="inline-block h-5 w-8 animate-pulse rounded bg-secondary" aria-hidden />
+                  ) : (
+                    v
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="space-y-2">
+            {driversLoading && activeDrivers.length === 0 ? (
+              <>
+                <DriverRowSkeleton />
+                <DriverRowSkeleton />
+                <DriverRowSkeleton />
+              </>
+            ) : activeDrivers.length === 0 ? (
+              <DashEmptyState message="No drivers found" className="py-4" />
+            ) : (
+              activeDrivers.map((d) => (
+                <Link
+                  href={`/drivers/${d.id}`}
+                  key={d.id}
+                  className="flex min-h-14 items-center gap-3 rounded-xl border border-border/60 px-3 py-2.5 hover:bg-secondary/30"
+                >
+                  <div className={`grid h-10 w-10 place-items-center rounded-full ${d.avatarColor} text-xs font-semibold`}>{d.initials}</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-semibold">{d.name}</span>
+                      <DriverStatusBadge status={d.status} />
+                    </div>
+                    <div className="text-xs text-muted-foreground">{d.activeDeliveries} active</div>
+                  </div>
+                  <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                </Link>
+              ))
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Recent Activity">
+          {recentActivity.length === 0 ? (
+            <DashEmptyState message="No recent activity" className="py-4" />
+          ) : (
+            <div className="space-y-4">
+              {recentActivity.map((a, i) => {
+                const Icon = a.icon === "check" ? CheckCircle : a.icon === "truck" ? Truck : a.icon === "file" ? FileEdit : a.icon === "x" ? XCircle : RefreshCw;
+                const toneMap: Record<string, string> = {
+                  success: "bg-success-soft text-success",
+                  orange: "bg-orange-soft text-orange",
+                  info: "bg-info-soft text-info",
+                  destructive: "bg-primary/10 text-primary",
+                  muted: "bg-secondary text-muted-foreground",
+                };
+                return (
+                  <div key={i} className="flex items-start gap-3">
+                    <div className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${toneMap[a.tone]}`}><Icon className="h-4 w-4" /></div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium leading-tight">{a.title}</div>
+                      <div className="text-xs text-muted-foreground">by {a.by}</div>
+                    </div>
+                    <div className="shrink-0 text-xs text-muted-foreground">{a.time}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </SectionCard>
+      </div>
+
+      {/* Tablet + desktop: preserve existing table layout */}
+      <div className="mt-6 hidden min-w-0 gap-6 md:grid xl:grid-cols-[minmax(0,1fr)_360px]">
         <SectionCard
           title="Active Orders"
           padded={false}
           action={
             <div className="flex items-center gap-2">
-              <button className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-1.5 text-xs font-medium hover:bg-secondary"><Filter className="h-3.5 w-3.5" /> Filter</button>
+              <button type="button" className="inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-3 py-1.5 text-xs font-medium hover:bg-secondary"><Filter className="h-3.5 w-3.5" /> Filter</button>
               <Link href="/orders" className="rounded-lg border border-input bg-card px-3 py-1.5 text-xs font-medium hover:bg-secondary">All Orders</Link>
             </div>
           }
@@ -190,6 +335,7 @@ export function DashboardPage() {
                         <OrderActionsMenu
                           order={o}
                           onStatusChanged={onOrderStatusChanged}
+                          onAssign={onAssign}
                         />
                       </td>
                     </tr>
@@ -209,8 +355,8 @@ export function DashboardPage() {
         <div className="space-y-6">
           <SectionCard title="Driver Activity" action={<Link href="/drivers" className="text-xs font-semibold text-primary hover:underline">View All Drivers</Link>}>
             <div className="grid grid-cols-3 gap-3 pb-4">
-              {[["Available", availableCount, "text-success"], ["Busy", busyCount, "text-warning-foreground"], ["Completed Today", completedToday, "text-success"]].map(([l, v, tone]) => (
-                <div key={l as string} className="rounded-lg border border-border/60 bg-secondary/30 p-3 text-center">
+              {([["Available", availableCount, "text-success"], ["Busy", busyCount, "text-warning-foreground"], ["Completed Today", completedToday, "text-success"]] as const).map(([l, v, tone]) => (
+                <div key={l} className="rounded-lg border border-border/60 bg-secondary/30 p-3 text-center">
                   <div className="text-[11px] text-muted-foreground">{l}</div>
                   <div className={`mt-1 min-h-[1.75rem] text-lg font-bold tabular-nums ${tone}`}>
                     {driverStatsLoading || v === null ? (
@@ -239,6 +385,7 @@ export function DashboardPage() {
                       <div className="flex items-center gap-2">
                         <span className="truncate text-sm font-semibold">{d.name}</span>
                         <span className={`h-1.5 w-1.5 rounded-full ${d.status === "Available" ? "bg-success" : d.status === "Busy" ? "bg-warning" : "bg-muted-foreground"}`} />
+                        <span className="sr-only">{d.status}</span>
                       </div>
                       <div className="text-xs text-muted-foreground">{d.phone}</div>
                     </div>

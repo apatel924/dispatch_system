@@ -41,6 +41,8 @@ export type OrderActionsOrder = Pick<
 interface OrderActionsMenuProps {
   order: OrderActionsOrder;
   onStatusChanged?: () => void;
+  /** When provided, assign/reassign uses this instead of navigating to ?action=assign. */
+  onAssign?: (orderId: string, options?: { retryFailed?: boolean }) => void;
   align?: "start" | "end";
   triggerClassName?: string;
 }
@@ -192,6 +194,7 @@ function contextualActionsForStatus(
 export function OrderActionsMenu({
   order,
   onStatusChanged,
+  onAssign,
   align = "end",
   triggerClassName,
 }: OrderActionsMenuProps) {
@@ -254,6 +257,10 @@ export function OrderActionsMenu({
       icon: Users,
       onClick: () => {
         setOpen(false);
+        if (onAssign) {
+          onAssign(order.id);
+          return;
+        }
         router.push(`/orders/${order.id}?action=assign`);
       },
     });
@@ -266,6 +273,10 @@ export function OrderActionsMenu({
       icon: RotateCcw,
       onClick: () => {
         setOpen(false);
+        if (onAssign) {
+          onAssign(order.id, { retryFailed: true });
+          return;
+        }
         router.push(`/orders/${order.id}?action=assign&retryFailed=1`);
       },
     });

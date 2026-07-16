@@ -14,8 +14,9 @@ vi.mock("@/lib/dash/hooks/use-admin-orders", () => ({
 }));
 
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => "/orders",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 function renderWithQuery(ui: ReactNode) {
@@ -110,8 +111,10 @@ describe("OrdersPage", () => {
     const tbody = container.querySelector("table tbody");
     expect(tbody).toBeTruthy();
     expect(tbody!.querySelector("tbody")).toBeNull();
-    expect(screen.getByText("QRX-1")).toBeTruthy();
-    const dataRow = screen.getByText("QRX-1").closest("tr");
+    expect(screen.getAllByText("QRX-1").length).toBeGreaterThan(0);
+    const dataRow = Array.from(tbody!.querySelectorAll("tr")).find((tr) =>
+      tr.textContent?.includes("QRX-1"),
+    );
     expect(dataRow?.parentElement).toBe(tbody);
   });
 
@@ -128,8 +131,7 @@ describe("OrdersPage", () => {
     const tbodies = container.querySelectorAll("table tbody");
     expect(tbodies).toHaveLength(1);
     expect(tbodies[0].querySelector("tbody")).toBeNull();
-    expect(tbodies[0].querySelector("div")).toBeTruthy(); // DashEmptyState inside td is fine
-    expect(screen.getByText("No orders found")).toBeTruthy();
+    expect(screen.getAllByText("No orders found").length).toBeGreaterThan(0);
   });
 
   it("shows error state with retry", () => {
@@ -180,10 +182,10 @@ describe("OrdersPage", () => {
     });
 
     renderWithQuery(<OrdersPage />);
-    fireEvent.click(screen.getByRole("tab", { name: "Active" }));
-    expect(screen.getByText("QRX-2")).toBeTruthy();
-    expect(screen.getByText("QRX-3")).toBeTruthy();
-    expect(screen.queryByText("QRX-1")).toBeNull();
+    fireEvent.click(screen.getAllByRole("tab", { name: "Active" })[0]);
+    expect(screen.getAllByText("QRX-2").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("QRX-3").length).toBeGreaterThan(0);
+    expect(screen.queryAllByText("QRX-1")).toHaveLength(0);
   });
 
   it("excludes unrecognized-status orders from Awaiting and shows Needs Review", () => {
@@ -227,13 +229,13 @@ describe("OrdersPage", () => {
     });
 
     renderWithQuery(<OrdersPage />);
-    fireEvent.click(screen.getByRole("tab", { name: "Awaiting" }));
-    expect(screen.getByText("QRX-OK")).toBeTruthy();
-    expect(screen.queryByText("QRX-NEW")).toBeNull();
+    fireEvent.click(screen.getAllByRole("tab", { name: "Awaiting" })[0]);
+    expect(screen.getAllByText("QRX-OK").length).toBeGreaterThan(0);
+    expect(screen.queryAllByText("QRX-NEW")).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole("tab", { name: "All" }));
-    expect(screen.getByText("QRX-NEW")).toBeTruthy();
-    expect(screen.getByText("Needs Review")).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("tab", { name: "All" })[0]);
+    expect(screen.getAllByText("QRX-NEW").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Needs Review").length).toBeGreaterThan(0);
   });
 
   it("does not render fake pagination controls", () => {

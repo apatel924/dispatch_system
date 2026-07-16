@@ -10,7 +10,7 @@ export function StatCard({
   tone = "info",
   delta,
   trend = "up",
-  compareLabel = "vs yesterday",
+  compareLabel,
   loading = false,
 }: {
   label: string;
@@ -33,20 +33,22 @@ export function StatCard({
   };
   const showSkeleton = loading || value === null || value === undefined;
 
+  const showCompare = Boolean(delta || compareLabel);
+
   return (
     <div
-      className="rounded-xl border border-border bg-card p-4 shadow-[0_1px_2px_0_rgb(0_0_0/0.03)]"
+      className="flex h-full flex-col rounded-xl border border-border bg-card p-3 shadow-[0_1px_2px_0_rgb(0_0_0/0.03)] sm:p-4"
       aria-busy={showSkeleton || undefined}
     >
-      <div className={cn("grid h-10 w-10 place-items-center rounded-lg", toneMap[tone])}>
-        <Icon className="h-5 w-5" />
+      <div className={cn("grid h-9 w-9 place-items-center rounded-lg sm:h-10 sm:w-10", toneMap[tone])}>
+        <Icon className="h-4 w-4 sm:h-5 sm:w-5" />
       </div>
-      <div className="mt-3 min-h-[1.75rem] text-2xl font-bold tracking-tight text-foreground tabular-nums">
-        {showSkeleton ? <Skeleton className="h-7 w-14" /> : value}
+      <div className="mt-2 min-h-[1.5rem] text-xl font-bold tracking-tight text-foreground tabular-nums sm:mt-3 sm:min-h-[1.75rem] sm:text-2xl">
+        {showSkeleton ? <Skeleton className="h-6 w-12 sm:h-7 sm:w-14" /> : value}
       </div>
-      <div className="mt-1 text-xs leading-snug text-muted-foreground">{label}</div>
-      {(delta || compareLabel) && !showSkeleton && (
-        <div className="mt-2.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
+      <div className="mt-1 text-xs leading-snug font-medium text-muted-foreground sm:font-normal">{label}</div>
+      {showCompare && !showSkeleton && (
+        <div className="mt-2 hidden flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs sm:mt-2.5 sm:flex">
           {delta && (
             <>
               {trend === "up" ? (

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   describeBarnetSyncResult,
+  formatEdmontonCompact,
   formatEdmontonExact,
   formatEdmontonRelative,
   isBarnetSyncLeaseActive,
@@ -13,6 +14,8 @@ describe("barnet sync status copy", () => {
     expect(formatEdmontonRelative(scanAt, now)).toBe("15 minutes ago");
     expect(formatEdmontonExact(scanAt)).toMatch(/July 14, 2026/);
     expect(formatEdmontonExact(scanAt)).toMatch(/MDT|MST/);
+    expect(formatEdmontonCompact(scanAt)).toMatch(/Jul 14/);
+    expect(formatEdmontonCompact(scanAt)).toMatch(/\d{1,2}:\d{2}/);
   });
 
   it("describes zero-new as not a failure", () => {

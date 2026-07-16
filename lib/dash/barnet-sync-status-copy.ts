@@ -31,6 +31,20 @@ export function formatEdmontonExact(iso: string | null | undefined): string {
   });
 }
 
+/** Compact absolute time for dense tables (e.g. Jul 15, 6:45 PM). */
+export function formatEdmontonCompact(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return iso;
+  return new Date(ms).toLocaleString("en-US", {
+    timeZone: TZ,
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 export function isBarnetSyncLeaseActive(input: {
   lastRunStatus?: string | null;
   lastStartedAt?: string | null;

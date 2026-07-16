@@ -31,6 +31,7 @@ import {
 } from "@/lib/dash/intake-status-pills";
 import {
   describeBarnetSyncResult,
+  formatEdmontonCompact,
   formatEdmontonExact,
   formatEdmontonRelative,
 } from "@/lib/dash/barnet-sync-status-copy";
@@ -543,7 +544,12 @@ export function LiveIntakePage() {
                         <td className="px-3 py-2 capitalize">{row.sourceStatus}</td>
                         <td className="px-3 py-2">{row.dispatchReady ? "Yes" : "No"}</td>
                         <td className="px-3 py-2">{row.assignedDriverName ?? "—"}</td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground">{row.updatedAt}</td>
+                        <td
+                          className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground"
+                          title={formatEdmontonExact(row.updatedAt)}
+                        >
+                          {formatEdmontonCompact(row.updatedAt)}
+                        </td>
                       </tr>
                     ))
                   )}
@@ -607,8 +613,8 @@ export function LiveIntakePage() {
                   <DetailRow label="Provider" value={detail.provider} />
                   <DetailRow label="Order status" value={detail.sourceStatus} />
                   <DetailRow label="Payment status" value={detail.paymentStatus} />
-                  <DetailRow label="Created at" value={detail.createdAt} />
-                  <DetailRow label="Updated at" value={detail.updatedAt} />
+                  <DetailRow label="Created at" value={formatEdmontonExact(detail.createdAt)} />
+                  <DetailRow label="Updated at" value={formatEdmontonExact(detail.updatedAt)} />
                   <DetailRow label="Total" value={intake.formatTotal(detail.totals.total)} />
                 </DetailSection>
               </div>

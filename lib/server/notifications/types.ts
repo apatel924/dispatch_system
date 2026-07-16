@@ -9,12 +9,23 @@ export type SmsFailureCategory =
 
 export type TrackingLinkNotificationType = "order_assigned" | "tracking_link_resend";
 
+export type DriverAssignmentNotificationType = "driver_assignment";
+
+export type NotificationAuditType =
+  | TrackingLinkNotificationType
+  | DriverAssignmentNotificationType;
+
 export interface SendTrackingLinkInput {
   orderId: string;
   trackingId: string;
   customerName: string;
   phoneE164: string;
   trackingUrl: string;
+}
+
+export interface SendSmsInput {
+  toE164: string;
+  body: string;
 }
 
 export interface SendSmsResult {
@@ -28,6 +39,16 @@ export interface SendSmsResult {
 export interface SmsProvider {
   readonly name: string;
   sendTrackingLink(input: SendTrackingLinkInput): Promise<SendSmsResult>;
+  /** Generic plaintext SMS (driver assignment, etc.). */
+  sendSms(input: SendSmsInput): Promise<SendSmsResult>;
+}
+
+export interface DriverAssignmentNotificationResult {
+  requested: boolean;
+  sent: boolean;
+  reason?: SmsFailureCategory | "already_sent" | "not_requested" | "same_driver";
+  provider?: string;
+  messageSid?: string;
 }
 
 export interface TrackingLinkNotificationResult {
@@ -44,7 +65,7 @@ export interface TrackingLinkNotificationResult {
 
 export interface NotificationAuditRecord {
   orderId: string;
-  notificationType: TrackingLinkNotificationType;
+  notificationType: NotificationAuditType;
   attemptedAt: string;
   provider: string;
   success: boolean;
@@ -52,4 +73,6 @@ export interface NotificationAuditRecord {
   failureCategory?: SmsFailureCategory;
   linkCreated: boolean;
   smsAttempted: boolean;
+  driverId?: string;
+  idempotencyKey?: string;
 }

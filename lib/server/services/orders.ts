@@ -30,8 +30,11 @@ import {
 } from "@/lib/order-status";
 import { assertRequiredProofsForDelivery } from "@/lib/server/services/required-proofs";
 import { createTrackingLinkForOrder } from "@/lib/server/services/tracking-links";
-import { notifyCustomerOrderAssigned } from "@/lib/server/services/notifications";
-import type { TrackingLinkNotificationResult } from "@/lib/server/services/notifications";
+import { notifyCustomerOrderAssigned, notifyDriverOrderAssigned } from "@/lib/server/services/notifications";
+import type {
+  DriverAssignmentNotificationResult,
+  TrackingLinkNotificationResult,
+} from "@/lib/server/services/notifications";
 import type {
   CreateOrderInput,
   DriverOrdersQuery,
@@ -42,7 +45,10 @@ import type { DeliveryStepKey } from "@/lib/types/backend";
 
 export interface AssignDriverResult {
   order: Order;
+  previousDriverId: string | null;
+  actionType: "assignment" | "reassignment" | "retry" | "noop";
   trackingNotification: TrackingLinkNotificationResult;
+  driverNotification: DriverAssignmentNotificationResult;
 }
 
 const COMPLETED_STATUSES: OrderStatus[] = ["Delivered", "Failed", "Returned"];
@@ -349,114 +355,180 @@ export async function assignDriver(
   orderId: string,
   driverId: string,
   actor: AuthUser | ActorContext,
-  options?: { retryFailed?: boolean },
+  options?: {
+    retryFailed?: boolean;
+    notifyDriver?: boolean;
+    assignmentOperationId?: string;
+  },
 ): Promise<AssignDriverResult> {
   const driver = await getDriverById(driverId);
   validateDriverForAssignment(driver);
   const act = actorFromUser(actor);
   const db = getAdminFirestore();
   const ref = orderDoc(db, orderId);
-  const existing = await ref.get();
-  if (!existing.exists) throw notFoundError("Order", orderId);
 
-  const current = docToOrder(existing.id, existing.data()!);
-  assertOrderStatusActionable(current);
-  const currentStatus = normalizeOrderStatusForRead(current.status).status;
-  const now = nowIso();
+  const notRequestedDriverSms: DriverAssignmentNotificationResult = {
+    requested: false,
+    sent: false,
+    reason: "not_requested",
+  };
 
-  // Idempotent same-driver assign
-  if (current.assignedDriverId === driverId) {
-    if (currentStatus === "Assigned" || isPostPickupStatus(currentStatus)) {
-      return {
-        order: current,
-        trackingNotification: {
-          linkCreated: false,
-          smsAttempted: false,
-          smsSent: false,
-          message: "Driver already assigned",
-        },
+  type AssignTxResult =
+    | {
+        kind: "noop";
+        order: Order;
+      }
+    | {
+        kind: "assigned";
+        actionType: "assignment" | "reassignment" | "retry";
+        statusChanged: boolean;
+        nextStatus: OrderStatus;
+        previousDriverId: string | null;
       };
+
+  const txResult = await db.runTransaction(async (tx): Promise<AssignTxResult> => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw notFoundError("Order", orderId);
+
+    const current = docToOrder(snap.id, snap.data()!);
+    assertOrderStatusActionable(current);
+    const currentStatus = normalizeOrderStatusForRead(current.status).status;
+    const priorDriverId = current.assignedDriverId ?? null;
+
+    // Idempotent same-driver assign — no duplicate history / SMS
+    if (
+      current.assignedDriverId === driverId &&
+      (currentStatus === "Assigned" || isPostPickupStatus(currentStatus))
+    ) {
+      return { kind: "noop", order: current };
     }
-  }
 
-  if (isTerminalOrderStatus(currentStatus) && currentStatus !== "Failed") {
-    throw new ServiceError(
-      "Cannot assign a driver to a terminal order",
-      "TERMINAL_ORDER",
-      409,
-    );
-  }
-
-  if (currentStatus === "Failed" && !options?.retryFailed) {
-    throw new ServiceError(
-      "Retrying a failed order requires an explicit retry action",
-      "INVALID_STATUS_TRANSITION",
-      409,
-    );
-  }
-
-  let nextStatus = currentStatus;
-  let actionType: OrderStatusActionType = "reassignment";
-  let statusChanged = false;
-  let shouldNotify = true;
-
-  if (currentStatus === "New" || currentStatus === "Scheduled") {
-    try {
-      assertOrderStatusTransition(currentStatus, "Assigned");
-    } catch (err) {
-      asServiceError(err);
+    if (isTerminalOrderStatus(currentStatus) && currentStatus !== "Failed") {
+      throw new ServiceError(
+        "Cannot assign a driver to a terminal order",
+        "TERMINAL_ORDER",
+        409,
+      );
     }
-    nextStatus = "Assigned";
-    actionType = "assignment";
-    statusChanged = true;
-  } else if (currentStatus === "Failed" && options?.retryFailed) {
-    try {
-      assertOrderStatusTransition("Failed", "Assigned");
-    } catch (err) {
-      asServiceError(err);
+
+    if (currentStatus === "Failed" && !options?.retryFailed) {
+      throw new ServiceError(
+        "Retrying a failed order requires an explicit retry action",
+        "INVALID_STATUS_TRANSITION",
+        409,
+      );
     }
-    nextStatus = "Assigned";
-    actionType = "retry";
-    statusChanged = true;
-  } else if (currentStatus === "Assigned") {
-    nextStatus = "Assigned";
-    actionType = "reassignment";
-    statusChanged = false;
-  } else if (isPostPickupStatus(currentStatus)) {
-    // Preserve Picked Up / Out for Delivery — driver change only.
-    nextStatus = currentStatus;
-    actionType = "reassignment";
-    statusChanged = false;
-  } else {
-    throw new ServiceError(
-      `Cannot assign a driver while order is ${currentStatus}`,
-      "INVALID_STATUS_TRANSITION",
-      409,
+
+    let resolvedAction: "assignment" | "reassignment" | "retry" = "reassignment";
+    let resolvedNext = currentStatus;
+    let resolvedStatusChanged = false;
+
+    if (currentStatus === "New" || currentStatus === "Scheduled") {
+      try {
+        assertOrderStatusTransition(currentStatus, "Assigned");
+      } catch (err) {
+        asServiceError(err);
+      }
+      resolvedNext = "Assigned";
+      resolvedAction = "assignment";
+      resolvedStatusChanged = true;
+    } else if (currentStatus === "Failed" && options?.retryFailed) {
+      try {
+        assertOrderStatusTransition("Failed", "Assigned");
+      } catch (err) {
+        asServiceError(err);
+      }
+      resolvedNext = "Assigned";
+      resolvedAction = "retry";
+      resolvedStatusChanged = true;
+    } else if (currentStatus === "Assigned") {
+      resolvedNext = "Assigned";
+      resolvedAction = "reassignment";
+      resolvedStatusChanged = false;
+    } else if (isPostPickupStatus(currentStatus)) {
+      resolvedNext = currentStatus;
+      resolvedAction = "reassignment";
+      resolvedStatusChanged = false;
+    } else {
+      throw new ServiceError(
+        `Cannot assign a driver while order is ${currentStatus}`,
+        "INVALID_STATUS_TRANSITION",
+        409,
+      );
+    }
+
+    const now = nowIso();
+    tx.update(
+      ref,
+      omitUndefined({
+        assignedDriverId: driverId,
+        assignedDriverName: driver.name,
+        assignedAt: now,
+        status: resolvedNext,
+        updatedAt: now,
+      }),
     );
+
+    const eventRef = orderEventsCollection(db, orderId).doc();
+    tx.set(
+      eventRef,
+      omitUndefined({
+        orderId,
+        status: resolvedNext,
+        previousStatus: currentStatus,
+        actionType: resolvedAction,
+        note: resolvedStatusChanged
+          ? `Assigned to ${driver.name}`
+          : `Reassigned to ${driver.name}`,
+        actorId: act.uid,
+        actorRole: act.role,
+        createdAt: now,
+      }),
+    );
+
+    return {
+      kind: "assigned",
+      actionType: resolvedAction,
+      statusChanged: resolvedStatusChanged,
+      nextStatus: resolvedNext,
+      previousDriverId: priorDriverId,
+    };
+  });
+
+  if (txResult.kind === "noop") {
+    return {
+      order: txResult.order,
+      previousDriverId: txResult.order.assignedDriverId ?? null,
+      actionType: "noop",
+      trackingNotification: {
+        linkCreated: false,
+        smsAttempted: false,
+        smsSent: false,
+        message: "Driver already assigned",
+      },
+      driverNotification: {
+        requested: false,
+        sent: false,
+        reason: "same_driver",
+      },
+    };
   }
 
-  await ref.update(
-    omitUndefined({
-      assignedDriverId: driverId,
-      assignedDriverName: driver.name,
-      assignedAt: now,
-      status: nextStatus,
-      updatedAt: now,
-    }),
-  );
+  const { actionType, statusChanged, nextStatus } = txResult;
+  const previousDriverId = txResult.previousDriverId;
 
-  if (statusChanged) {
-    await addStatusEvent(orderId, nextStatus, act, {
-      note: `Assigned to ${driver.name}`,
-      previousStatus: currentStatus,
-      actionType,
-    });
-  } else {
-    // Reassignment at same lifecycle status — audit only, no fake status restart.
-    await addStatusEvent(orderId, nextStatus, act, {
-      note: `Reassigned to ${driver.name}`,
-      previousStatus: currentStatus,
-      actionType: "reassignment",
+  const order = await getOrderById(orderId);
+  // Preserve prior behaviour: customer tracking SMS on every successful assign/reassign.
+  const trackingNotification = await notifyCustomerOrderAssigned(order);
+
+  // Driver SMS only after assignment commits; failure must not roll back.
+  let driverNotification: DriverAssignmentNotificationResult = notRequestedDriverSms;
+  if (options?.notifyDriver) {
+    driverNotification = await notifyDriverOrderAssigned({
+      orderId,
+      driverId,
+      driverPhone: driver.phone,
+      idempotencyKey: options.assignmentOperationId,
     });
   }
 
@@ -468,24 +540,23 @@ export async function assignDriver(
     actorRole: act.role,
     metadata: {
       driverId,
-      previousStatus: currentStatus,
+      previousDriverId,
       status: nextStatus,
       statusChanged,
       actionType,
+      smsRequested: options?.notifyDriver === true,
+      smsSent: driverNotification.sent,
+      smsReason: driverNotification.reason ?? null,
     },
   });
 
-  const order = await getOrderById(orderId);
-  const trackingNotification = shouldNotify
-    ? await notifyCustomerOrderAssigned(order)
-    : {
-        linkCreated: false,
-        smsAttempted: false,
-        smsSent: false,
-        message: "Notification skipped",
-      };
-
-  return { order, trackingNotification };
+  return {
+    order,
+    previousDriverId,
+    actionType,
+    trackingNotification,
+    driverNotification,
+  };
 }
 
 /** Explicit Failed → Assigned retry + assign. */

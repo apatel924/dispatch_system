@@ -59,6 +59,13 @@ export const AssignDriverSchema = z.object({
   driverId: z.string().min(1),
   /** Explicit Failed → Assigned retry. Required to reopen Failed orders. */
   retryFailed: z.boolean().optional(),
+  /** When true, SMS the newly assigned driver after assignment commits. */
+  notifyDriver: z.boolean().optional(),
+  /**
+   * Client-generated id for optional driver SMS dedupe across retries.
+   * Same key + successful prior send ⇒ SMS is not resent.
+   */
+  assignmentOperationId: z.string().min(8).max(128).optional(),
 });
 
 export const OrderStatusUpdateSchema = z.object({

@@ -129,12 +129,18 @@ export function clearAuthenticatedQueryCache(queryClient: QueryClient): void {
  */
 export async function invalidateAfterOrderLifecycle(
   queryClient: QueryClient,
-  options?: { orderId?: string; driverId?: string },
+  options?: {
+    orderId?: string;
+    driverId?: string;
+    previousDriverId?: string | null;
+  },
 ): Promise<void> {
   const tasks: Promise<unknown>[] = [
     queryClient.invalidateQueries({ queryKey: orderKeys.all }),
     queryClient.invalidateQueries({ queryKey: dashboardKeys.all }),
     queryClient.invalidateQueries({ queryKey: reportKeys.all }),
+    queryClient.invalidateQueries({ queryKey: driverKeys.lists() }),
+    queryClient.invalidateQueries({ queryKey: intakeKeys.all }),
   ];
   if (options?.orderId) {
     tasks.push(
@@ -143,19 +149,39 @@ export async function invalidateAfterOrderLifecycle(
       }),
     );
   }
-  if (options?.driverId) {
-    tasks.push(
-      queryClient.invalidateQueries({
-        queryKey: driverKeys.detail(options.driverId),
-      }),
-      queryClient.invalidateQueries({
-        queryKey: driverKeys.ordersRoot,
-      }),
-    );
-  } else {
-    tasks.push(
-      queryClient.invalidateQueries({ queryKey: driverKeys.ordersRoot }),
-    );
+  const driverIds = new Set<string>();
+  if (options?.driverId) driverIds.add(options.driverId);
+  if (options?.previousDriverId) driverIds.add(options.previousDriverId);
+
+  if (driverIds.size > 0) {
+    for (const id of driverIds) {
+      tasks.push(
+        queryClient.invalidateQueries({
+          queryKey: driverKeys.detail(id),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: driverKeys.orders(id, "active"),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: driverKeys.orders(id, "today"),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: driverKeys.orders(id, "route"),
+        }),
+      );
+      if (options?.orderId) {
+        tasks.push(
+          queryClient.invalidateQueries({
+            queryKey: driverKeys.orderDetail(id, options.orderId),
+          }),
+        );
+      }
+    }
   }
+
+  tasks.push(
+    queryClient.invalidateQueries({ queryKey: driverKeys.ordersRoot }),
+  );
+
   await Promise.all(tasks);
 }

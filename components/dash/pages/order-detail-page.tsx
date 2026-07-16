@@ -68,6 +68,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
   const [copied, setCopied] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
   const [retryFailed, setRetryFailed] = useState(false);
+  const [assignFeedback, setAssignFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -188,9 +189,23 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
           open
           orderId={d.id}
           orderLabel={`${d.id} · ${d.customerName}`}
+          currentDriverId={d.driver?.id ?? null}
+          currentDriverName={d.driver?.name ?? null}
           retryFailed={retryFailed}
           onClose={clearAssignQuery}
-          onAssigned={() => void refresh()}
+          onAssigned={(info) => {
+            const first = info.driverName.split(" ")[0] ?? info.driverName;
+            if (info.notificationRequested && info.notificationSent) {
+              setAssignFeedback(`Order assigned to ${first} and notification sent.`);
+            } else if (info.notificationRequested && !info.notificationSent) {
+              setAssignFeedback(
+                `Order assigned to ${first}, but the text message could not be sent.`,
+              );
+            } else {
+              setAssignFeedback(`Order assigned to ${first}.`);
+            }
+            void refresh();
+          }}
         />
       )}
 
@@ -277,6 +292,11 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
             role="status"
           >
             {trackingMessage}
+          </p>
+        ) : null}
+        {assignFeedback ? (
+          <p className="mt-3 text-sm text-success" role="status">
+            {assignFeedback}
           </p>
         ) : null}
         {trackingUrl ? (

@@ -20,6 +20,8 @@ export async function writeNotificationAudit(
       failureCategory: record.failureCategory,
       linkCreated: record.linkCreated,
       smsAttempted: record.smsAttempted,
+      driverId: record.driverId,
+      idempotencyKey: record.idempotencyKey,
       createdAt: nowIso(),
     }),
   );

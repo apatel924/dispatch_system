@@ -1,11 +1,13 @@
 import type {
+  SendSmsInput,
   SendSmsResult,
   SendTrackingLinkInput,
   SmsProvider,
 } from "@/lib/server/notifications/types";
 
 export interface TestSmsRecord {
-  input: SendTrackingLinkInput;
+  kind: "tracking_link" | "sms";
+  input: SendTrackingLinkInput | SendSmsInput;
   sentAt: string;
 }
 
@@ -26,7 +28,33 @@ export const testSmsProvider: SmsProvider = {
       };
     }
 
-    sentMessages.push({ input, sentAt: new Date().toISOString() });
+    sentMessages.push({
+      kind: "tracking_link",
+      input,
+      sentAt: new Date().toISOString(),
+    });
+    return {
+      ok: true,
+      provider: "test",
+      messageSid: `SM_test_${sentMessages.length}`,
+    };
+  },
+
+  async sendSms(input: SendSmsInput): Promise<SendSmsResult> {
+    if (shouldFail) {
+      return {
+        ok: false,
+        provider: "test",
+        failureCategory,
+        providerErrorCode: failureCategory,
+      };
+    }
+
+    sentMessages.push({
+      kind: "sms",
+      input,
+      sentAt: new Date().toISOString(),
+    });
     return {
       ok: true,
       provider: "test",

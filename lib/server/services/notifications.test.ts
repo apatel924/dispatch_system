@@ -92,7 +92,11 @@ describe("tracking link notifications", () => {
     expect(result.smsSent).toBe(true);
     expect(result.copyUrl).toBeUndefined();
     expect(getTestSmsMessages()).toHaveLength(1);
-    expect(getTestSmsMessages()[0]?.input.trackingUrl).toBe(SAMPLE_URL);
+    const sent = getTestSmsMessages()[0]!;
+    expect(sent.kind).toBe("tracking_link");
+    expect(
+      (sent.input as { trackingUrl?: string }).trackingUrl,
+    ).toBe(SAMPLE_URL);
   });
 
   it("manual resend rotates prior token via shared issuance flow", async () => {

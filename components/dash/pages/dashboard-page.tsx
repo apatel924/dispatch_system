@@ -135,6 +135,8 @@ export function DashboardPage() {
           open
           orderId={assignTarget.orderId}
           orderLabel={assignOrder ? `${assignOrder.id} · ${assignOrder.customer}` : assignTarget.orderId}
+          currentDriverId={assignOrder?.driverId ?? null}
+          currentDriverName={assignOrder?.driver ?? null}
           retryFailed={assignTarget.retryFailed}
           onClose={() => setAssignTarget(null)}
           onAssigned={onOrderStatusChanged}

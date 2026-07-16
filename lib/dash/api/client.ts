@@ -148,8 +148,29 @@ export async function updateOrderStatusApi(
 
 export async function assignDriverApi(
   orderId: string,
-  body: { driverId: string; retryFailed?: boolean },
-): Promise<{ order: Order; warning?: string; trackingNotification?: unknown }> {
+  body: {
+    driverId: string;
+    retryFailed?: boolean;
+    notifyDriver?: boolean;
+    assignmentOperationId?: string;
+  },
+): Promise<{
+  order: Order;
+  assignment?: {
+    success: boolean;
+    previousDriverId: string | null;
+    driverId: string | null;
+    actionType: string;
+  };
+  notification?: {
+    requested: boolean;
+    sent: boolean;
+    reason?: string | null;
+  };
+  warning?: string;
+  trackingNotification?: unknown;
+  driverNotification?: unknown;
+}> {
   return adminFetch(`/api/orders/${encodeURIComponent(orderId)}/assign-driver`, {
     method: "POST",
     body: JSON.stringify(body),

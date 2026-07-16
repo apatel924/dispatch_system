@@ -255,4 +255,145 @@ describe("LiveIntakePage sync summary and review pills", () => {
     expect(screen.getByText(/Preview results \(not saved\)/i)).toBeTruthy();
     expect(screen.getByText(/failed to refresh imported orders/i)).toBeTruthy();
   });
+
+  it("does not expose Live Intake assign controls for already-promoted orders", async () => {
+    useLiveIntake.mockReturnValue({
+      health: {
+        mode: "live",
+        liveReadsEnabled: true,
+        liveSyncEnabled: true,
+        ordersConfigured: true,
+      },
+      orders: [],
+      tableRows: [
+        baseRow({
+          id: "barnet_promoted",
+          promoted: true,
+          promotedOrderId: "QRX-10007",
+          promotedAt: "2026-07-16T00:45:16.788Z",
+          dispatchReady: true,
+          needsReview: false,
+          missingFields: ["delivery_instructions"],
+        }),
+      ],
+      previewRows: [],
+      summary: {
+        ordersScanned: 1,
+        deliveryOrdersFound: 1,
+        readyToDispatch: 0,
+        needsReview: 0,
+        alreadyImported: 1,
+        assigned: 0,
+      },
+      syncState: null,
+      lastSyncResult: null,
+      selectedOrderId: "barnet_promoted",
+      selectedDetail: {
+        id: "barnet_promoted",
+        provider: "barnet",
+        externalOrderId: "826071552835",
+        externalOrderNumber: "826071552835",
+        sourceLocationId: "14",
+        sourceStatus: "Paid",
+        deliveryStatus: null,
+        paymentStatus: "Paid",
+        placedAt: "2026-07-15T00:00:00.000Z",
+        createdAt: "2026-07-15T00:00:00.000Z",
+        updatedAt: "2026-07-15T00:00:00.000Z",
+        lastSyncedAt: "2026-07-15T00:00:00.000Z",
+        isDelivery: true,
+        customer: {
+          externalCustomerId: "1",
+          name: "Abigail Walker",
+          phone: "8259757685",
+          email: null,
+        },
+        delivery: {
+          address1: "27 740 Daniels way",
+          address2: null,
+          city: null,
+          province: null,
+          postalCode: "T6H 5N2",
+          formattedAddress: "27 740 Daniels way, T6H 5N2",
+          notes: null,
+        },
+        items: [{ name: "Unknown item", quantity: 1, unitPrice: 10, notes: null }],
+        totals: {
+          subtotal: null,
+          tax: null,
+          discount: null,
+          total: 23,
+        },
+        dispatchReady: true,
+        needsReview: false,
+        reviewReasons: [],
+        customerMessagingReady: true,
+        customerEnrichmentStatus: "success",
+        missingFields: ["delivery_instructions"],
+        assignmentStatus: "unassigned",
+        dispatchStatus: "promoted",
+        assignedDriverId: null,
+        assignedDriverName: null,
+        assignedAt: null,
+        assignedBy: null,
+        dispatchChecks: {
+          deliveryOrderConfirmed: true,
+          customerNamePresent: true,
+          customerPhonePresent: true,
+          deliveryAddressPresent: true,
+          itemsPresent: true,
+          notAlreadyAssigned: true,
+        },
+        promoted: true,
+        promotedOrderId: "QRX-10007",
+        promotedAt: "2026-07-16T00:45:16.788Z",
+      },
+      discoveredLocations: [],
+      scanStats: null,
+      orderDetailDiagnostics: null,
+      loading: false,
+      detailLoading: false,
+      liveChecking: false,
+      liveDiscovering: false,
+      livePreviewing: false,
+      liveScanning: false,
+      liveSyncing: false,
+      liveProbing: false,
+      assigning: false,
+      promoting: false,
+      error: null,
+      message: null,
+      isMockMode: false,
+      liveReadsEnabled: true,
+      liveSyncEnabled: true,
+      ordersConfigured: true,
+      loadIntake: vi.fn(),
+      loadDetail: vi.fn(),
+      checkConnection: vi.fn(),
+      discoverLocations: vi.fn(),
+      previewOrders: vi.fn(),
+      scanDeliveryOrders: vi.fn(),
+      syncDeliveryOrders: vi.fn(),
+      probeOrderDetail: vi.fn(),
+      assignDriver: vi.fn(),
+      promoteToDispatch: vi.fn(),
+      clearPreview: vi.fn(),
+      setSelectedOrderId: vi.fn(),
+      setSelectedDetail: vi.fn(),
+      formatTotal: (cents: number) => `$${(cents / 100).toFixed(2)}`,
+    });
+
+    render(<LiveIntakePage />, { wrapper });
+
+    expect(screen.getByText(/Already in Orders as QRX-10007/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Open Dispatch Order/i })).toBeTruthy();
+    expect(
+      screen.getByText(/Driver assignment is managed on the dispatch order/i),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Assign on Orders page/i })).toBeTruthy();
+    expect(screen.queryByLabelText(/Active driver/i)).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /^Assign Driver$/i }),
+    ).toBeNull();
+  });
 });

@@ -237,6 +237,7 @@ export function LiveIntakePage() {
     (detail.dispatchReady || overrideMissing);
   const canAssign =
     detail &&
+    !detail.promoted &&
     detail.assignmentStatus !== "assigned" &&
     (detail.dispatchReady || overrideMissing);
 
@@ -647,6 +648,10 @@ export function LiveIntakePage() {
                           Already in Orders as {detail.promotedOrderId}
                           {detail.promotedAt ? ` · promoted ${detail.promotedAt}` : ""}
                         </div>
+                        <p className="text-xs text-muted-foreground">
+                          This intake record is linked to a dispatch order. Assign or reassign
+                          drivers from the Orders page.
+                        </p>
                         <button
                           type="button"
                           onClick={() => router.push(`/orders/${detail.promotedOrderId}`)}
@@ -696,7 +701,33 @@ export function LiveIntakePage() {
                     )}
                   </DetailSection>
 
-                  {detail.assignmentStatus !== "assigned" ? (
+                  {detail.promoted && detail.promotedOrderId ? (
+                    <DetailSection title="Assignment">
+                      <p className="text-sm text-muted-foreground">
+                        Driver assignment is managed on the dispatch order.
+                      </p>
+                      {detail.assignedDriverName && (
+                        <p className="mt-2 text-sm">
+                          Current driver:{" "}
+                          <span className="font-medium text-foreground">
+                            {detail.assignedDriverName}
+                          </span>
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          router.push(
+                            `/orders/${detail.promotedOrderId}?action=assign`,
+                          )
+                        }
+                        className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-input bg-card px-4 py-2 text-sm font-medium hover:bg-secondary"
+                      >
+                        <UserCheck className="h-4 w-4" />
+                        {detail.assignedDriverId ? "Reassign on Orders page" : "Assign on Orders page"}
+                      </button>
+                    </DetailSection>
+                  ) : detail.assignmentStatus !== "assigned" ? (
                     <DetailSection title="Assignment">
                       <label className="mb-1 block text-xs font-medium">Active driver</label>
                       <select

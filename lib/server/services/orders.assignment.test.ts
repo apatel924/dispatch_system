@@ -15,6 +15,19 @@ const notifyCustomerOrderAssigned = vi.hoisted(() =>
   })),
 );
 
+const notifyDriverOrderAssigned = vi.hoisted(() =>
+  vi.fn(
+    async (): Promise<{
+      requested: boolean;
+      sent: boolean;
+      reason?: string;
+    }> => ({
+      requested: true,
+      sent: true,
+    }),
+  ),
+);
+
 const { getAdminFirestore, COLLECTIONS, writeAuditLog } = vi.hoisted(() => {
   function makeDocRef(
     id: string,
@@ -36,49 +49,105 @@ const { getAdminFirestore, COLLECTIONS, writeAuditLog } = vi.hoisted(() => {
     };
   }
 
+  const db = {
+    collection: vi.fn((name: string) => {
+      if (name === "drivers") {
+        return {
+          doc: vi.fn((id: string) => makeDocRef(id, firestoreState.drivers)),
+        };
+      }
+      if (name === "orders") {
+        return {
+          doc: vi.fn((id: string) => {
+            const ref = makeDocRef(id, firestoreState.orders);
+            return {
+              ...ref,
+              collection: vi.fn((sub: string) => {
+                if (sub !== "events") throw new Error(`unexpected sub ${sub}`);
+                const events =
+                  firestoreState.orderEvents.get(id) ?? new Map();
+                firestoreState.orderEvents.set(id, events);
+                return {
+                  doc: vi.fn((eventId?: string) => {
+                    const eid = eventId ?? `evt-${events.size + 1}`;
+                    return makeDocRef(eid, events);
+                  }),
+                  orderBy: vi.fn(() => ({
+                    get: vi.fn(async () => ({
+                      docs: [...events.entries()].map(([eid, data]) => ({
+                        id: eid,
+                        data: () => data,
+                      })),
+                    })),
+                  })),
+                };
+              }),
+            };
+          }),
+        };
+      }
+      if (name === "notificationLogs") {
+        return {
+          doc: vi.fn((id: string) => makeDocRef(id, new Map())),
+        };
+      }
+      return { doc: vi.fn((id: string) => makeDocRef(id, new Map())) };
+    }),
+    runTransaction: vi.fn(
+      async (
+        callback: (tx: {
+          get: (ref: {
+            id: string;
+            get: () => Promise<{
+              exists: boolean;
+              id: string;
+              data: () => Record<string, unknown> | undefined;
+            }>;
+          }) => Promise<{
+            exists: boolean;
+            id: string;
+            data: () => Record<string, unknown> | undefined;
+          }>;
+          update: (
+            ref: { id: string; update: (patch: Record<string, unknown>) => Promise<void> },
+            patch: Record<string, unknown>,
+          ) => void;
+          set: (
+            ref: { id: string; set: (data: Record<string, unknown>) => Promise<void> },
+            data: Record<string, unknown>,
+          ) => void;
+        }) => Promise<unknown>,
+      ) => {
+        const tx = {
+          get: async (ref: {
+            get: () => Promise<{
+              exists: boolean;
+              id: string;
+              data: () => Record<string, unknown> | undefined;
+            }>;
+          }) => ref.get(),
+          update: (
+            ref: { update: (patch: Record<string, unknown>) => Promise<void> },
+            patch: Record<string, unknown>,
+          ) => {
+            void ref.update(patch);
+          },
+          set: (
+            ref: { set: (data: Record<string, unknown>) => Promise<void> },
+            data: Record<string, unknown>,
+          ) => {
+            void ref.set(data);
+          },
+        };
+        return callback(tx);
+      },
+    ),
+  };
+
   return {
     COLLECTIONS: { orders: "orders", drivers: "drivers", auditLogs: "auditLogs" },
     writeAuditLog: vi.fn(async () => undefined),
-    getAdminFirestore: vi.fn(() => ({
-      collection: vi.fn((name: string) => {
-        if (name === "drivers") {
-          return {
-            doc: vi.fn((id: string) => makeDocRef(id, firestoreState.drivers)),
-          };
-        }
-        if (name === "orders") {
-          return {
-            doc: vi.fn((id: string) => {
-              const ref = makeDocRef(id, firestoreState.orders);
-              return {
-                ...ref,
-                collection: vi.fn((sub: string) => {
-                  if (sub !== "events") throw new Error(`unexpected sub ${sub}`);
-                  const events =
-                    firestoreState.orderEvents.get(id) ?? new Map();
-                  firestoreState.orderEvents.set(id, events);
-                  return {
-                    doc: vi.fn((eventId?: string) => {
-                      const eid = eventId ?? `evt-${events.size + 1}`;
-                      return makeDocRef(eid, events);
-                    }),
-                    orderBy: vi.fn(() => ({
-                      get: vi.fn(async () => ({
-                        docs: [...events.entries()].map(([eid, data]) => ({
-                          id: eid,
-                          data: () => data,
-                        })),
-                      })),
-                    })),
-                  };
-                }),
-              };
-            }),
-          };
-        }
-        return { doc: vi.fn((id: string) => makeDocRef(id, new Map())) };
-      }),
-    })),
+    getAdminFirestore: vi.fn(() => db),
   };
 });
 
@@ -106,6 +175,7 @@ vi.mock("@/lib/server/firestore/collections", () => ({
 vi.mock("@/lib/server/services/audit", () => ({ writeAuditLog }));
 vi.mock("@/lib/server/services/notifications", () => ({
   notifyCustomerOrderAssigned,
+  notifyDriverOrderAssigned,
 }));
 vi.mock("@/lib/server/services/required-proofs", () => ({
   assertRequiredProofsForDelivery: vi.fn(async () => undefined),
@@ -175,6 +245,11 @@ describe("assignDriver status integrity", () => {
     firestoreState.orders.clear();
     firestoreState.orderEvents.clear();
     notifyCustomerOrderAssigned.mockClear();
+    notifyDriverOrderAssigned.mockClear();
+    notifyDriverOrderAssigned.mockResolvedValue({
+      requested: true,
+      sent: true,
+    });
     writeAuditLog.mockClear();
     seedDriver("DRV-1");
     seedDriver("DRV-2");
@@ -185,11 +260,67 @@ describe("assignDriver status integrity", () => {
     const result = await assignDriver("ORD-1", "DRV-1", actor);
     expect(result.order.status).toBe("Assigned");
     expect(result.order.assignedDriverId).toBe("DRV-1");
+    expect(result.previousDriverId).toBeNull();
+    expect(result.actionType).toBe("assignment");
+    expect(result.driverNotification.requested).toBe(false);
     expect(notifyCustomerOrderAssigned).toHaveBeenCalledTimes(1);
+    expect(notifyDriverOrderAssigned).not.toHaveBeenCalled();
     const events = firestoreState.orderEvents.get("ORD-1");
     expect([...events!.values()].some((e) => e.actionType === "assignment")).toBe(
       true,
     );
+  });
+
+  it("notifies driver only after assignment when notifyDriver is true", async () => {
+    firestoreState.orders.set("ORD-1", baseOrder());
+    const callOrder: string[] = [];
+    notifyCustomerOrderAssigned.mockImplementation(async () => {
+      callOrder.push("customer");
+      return {
+        linkCreated: true,
+        smsAttempted: true,
+        smsSent: true,
+        message: "sent",
+      };
+    });
+    notifyDriverOrderAssigned.mockImplementation(async () => {
+      callOrder.push("driver");
+      return { requested: true, sent: true };
+    });
+
+    const result = await assignDriver("ORD-1", "DRV-1", actor, {
+      notifyDriver: true,
+      assignmentOperationId: "op-abc-12345",
+    });
+
+    expect(result.order.assignedDriverId).toBe("DRV-1");
+    expect(result.driverNotification.sent).toBe(true);
+    expect(callOrder[0]).toBe("customer");
+    expect(callOrder).toContain("driver");
+    expect(notifyDriverOrderAssigned).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderId: "ORD-1",
+        driverId: "DRV-1",
+        idempotencyKey: "op-abc-12345",
+      }),
+    );
+  });
+
+  it("keeps assignment when driver SMS fails", async () => {
+    firestoreState.orders.set("ORD-1", baseOrder());
+    notifyDriverOrderAssigned.mockResolvedValue({
+      requested: true,
+      sent: false,
+      reason: "PROVIDER_ERROR",
+    });
+
+    const result = await assignDriver("ORD-1", "DRV-1", actor, {
+      notifyDriver: true,
+    });
+
+    expect(result.order.assignedDriverId).toBe("DRV-1");
+    expect(result.order.status).toBe("Assigned");
+    expect(result.driverNotification.sent).toBe(false);
   });
 
   it("keeps Assigned on reassignment and records reassignment", async () => {
@@ -204,9 +335,30 @@ describe("assignDriver status integrity", () => {
     const result = await assignDriver("ORD-1", "DRV-2", actor);
     expect(result.order.status).toBe("Assigned");
     expect(result.order.assignedDriverId).toBe("DRV-2");
+    expect(result.previousDriverId).toBe("DRV-1");
+    expect(result.actionType).toBe("reassignment");
     const events = [...firestoreState.orderEvents.get("ORD-1")!.values()];
     expect(events.some((e) => e.actionType === "reassignment")).toBe(true);
     expect(events.every((e) => e.status === "Assigned")).toBe(true);
+  });
+
+  it("same-driver reassign is noop without duplicate events or SMS", async () => {
+    firestoreState.orders.set(
+      "ORD-1",
+      baseOrder({
+        status: "Assigned",
+        assignedDriverId: "DRV-1",
+        assignedDriverName: "Ada Driver",
+      }),
+    );
+    const result = await assignDriver("ORD-1", "DRV-1", actor, {
+      notifyDriver: true,
+    });
+    expect(result.actionType).toBe("noop");
+    expect(result.driverNotification.reason).toBe("same_driver");
+    expect(notifyCustomerOrderAssigned).not.toHaveBeenCalled();
+    expect(notifyDriverOrderAssigned).not.toHaveBeenCalled();
+    expect(firestoreState.orderEvents.get("ORD-1")?.size ?? 0).toBe(0);
   });
 
   it("preserves Picked Up when reassigning", async () => {

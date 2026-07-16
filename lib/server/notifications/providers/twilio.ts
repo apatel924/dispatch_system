@@ -1,5 +1,6 @@
 import type { TwilioSmsConfig } from "@/lib/server/notifications/config";
 import type {
+  SendSmsInput,
   SendSmsResult,
   SendTrackingLinkInput,
   SmsProvider,
@@ -23,6 +24,59 @@ function sanitizeTwilioErrorCode(status: number, body: string): string {
   return "TWILIO_ERROR";
 }
 
+async function postTwilioMessage(
+  config: TwilioSmsConfig,
+  authHeader: string,
+  input: SendSmsInput,
+): Promise<SendSmsResult> {
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(config.accountSid)}/Messages.json`;
+
+  const params = new URLSearchParams({
+    From: config.fromNumber,
+    To: input.toE164,
+    Body: input.body,
+  });
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${authHeader}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params.toString(),
+    });
+
+    const responseText = await response.text();
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        provider: "twilio",
+        failureCategory: response.status === 400 ? "PROVIDER_REJECTED" : "PROVIDER_ERROR",
+        providerErrorCode: sanitizeTwilioErrorCode(response.status, responseText),
+      };
+    }
+
+    let messageSid: string | undefined;
+    try {
+      const parsed = JSON.parse(responseText) as { sid?: string };
+      messageSid = typeof parsed.sid === "string" ? parsed.sid : undefined;
+    } catch {
+      // Twilio may still have accepted the message
+    }
+
+    return { ok: true, provider: "twilio", messageSid };
+  } catch {
+    return {
+      ok: false,
+      provider: "twilio",
+      failureCategory: "NETWORK_ERROR",
+      providerErrorCode: "NETWORK_ERROR",
+    };
+  }
+}
+
 export function createTwilioSmsProvider(config: TwilioSmsConfig): SmsProvider {
   const authHeader = Buffer.from(`${config.accountSid}:${config.authToken}`).toString(
     "base64",
@@ -31,54 +85,15 @@ export function createTwilioSmsProvider(config: TwilioSmsConfig): SmsProvider {
   return {
     name: "twilio",
 
+    async sendSms(input: SendSmsInput): Promise<SendSmsResult> {
+      return postTwilioMessage(config, authHeader, input);
+    },
+
     async sendTrackingLink(input: SendTrackingLinkInput): Promise<SendSmsResult> {
-      const body = buildTrackingSmsBody(input);
-      const url = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(config.accountSid)}/Messages.json`;
-
-      const params = new URLSearchParams({
-        From: config.fromNumber,
-        To: input.phoneE164,
-        Body: body,
+      return postTwilioMessage(config, authHeader, {
+        toE164: input.phoneE164,
+        body: buildTrackingSmsBody(input),
       });
-
-      try {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            Authorization: `Basic ${authHeader}`,
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: params.toString(),
-        });
-
-        const responseText = await response.text();
-
-        if (!response.ok) {
-          return {
-            ok: false,
-            provider: "twilio",
-            failureCategory: response.status === 400 ? "PROVIDER_REJECTED" : "PROVIDER_ERROR",
-            providerErrorCode: sanitizeTwilioErrorCode(response.status, responseText),
-          };
-        }
-
-        let messageSid: string | undefined;
-        try {
-          const parsed = JSON.parse(responseText) as { sid?: string };
-          messageSid = typeof parsed.sid === "string" ? parsed.sid : undefined;
-        } catch {
-          // Twilio may still have accepted the message
-        }
-
-        return { ok: true, provider: "twilio", messageSid };
-      } catch {
-        return {
-          ok: false,
-          provider: "twilio",
-          failureCategory: "NETWORK_ERROR",
-          providerErrorCode: "NETWORK_ERROR",
-        };
-      }
     },
   };
 }

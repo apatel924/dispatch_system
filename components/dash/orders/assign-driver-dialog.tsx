@@ -15,6 +15,7 @@ import { assignDriverApi } from "@/lib/dash/api/client";
 import { isApiEnabled } from "@/lib/dash/api/config";
 import { isDriverAssignable } from "@/lib/driver-status";
 import { invalidateAfterOrderLifecycle } from "@/lib/dash/query/query-keys";
+import { normalizeNorthAmericanPhone } from "@/lib/server/notifications/phone";
 import { DriverStatusBadge } from "@/components/dash/status-badge";
 import { DashEmptyState, DashErrorState } from "@/components/dash/ui/query-state";
 import { DriverRowSkeleton } from "@/components/dash/ui/skeletons";
@@ -23,10 +24,25 @@ import { cn } from "@/lib/utils";
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
 
+function newOperationId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `assign_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export type AssignDriverSuccessInfo = {
+  driverName: string;
+  notificationRequested: boolean;
+  notificationSent: boolean;
+};
+
 export function AssignDriverDialog({
   open,
   orderId,
   orderLabel,
+  currentDriverId = null,
+  currentDriverName = null,
   retryFailed = false,
   onClose,
   onAssigned,
@@ -34,29 +50,59 @@ export function AssignDriverDialog({
   open: boolean;
   orderId: string;
   orderLabel?: string;
+  currentDriverId?: string | null;
+  currentDriverName?: string | null;
   retryFailed?: boolean;
   onClose: () => void;
-  onAssigned?: () => void;
+  onAssigned?: (info: AssignDriverSuccessInfo) => void;
 }) {
   const queryClient = useQueryClient();
   const { drivers, loading, error } = useAdminDrivers();
   const [selectedId, setSelectedId] = useState("");
+  const [notifyDriver, setNotifyDriver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const operationIdRef = useRef<string>(newOperationId());
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
   const titleId = useId();
+  const smsId = useId();
   const apiEnabled = isApiEnabled();
 
-  const assignable = drivers.filter((d) => isDriverAssignable(d.status));
-  const selected = assignable.find((d) => d.id === selectedId);
+  const isReassign = Boolean(currentDriverId);
+  const selected = drivers.find((d) => d.id === selectedId);
+  const selectedFirstName = selected?.name.split(" ")[0] ?? "driver";
+  const selectedHasPhone = selected
+    ? normalizeNorthAmericanPhone(
+        selected.phone && selected.phone !== "—" ? selected.phone : null,
+      ).ok
+    : false;
+  const changingDriver =
+    Boolean(selectedId) &&
+    Boolean(currentDriverId) &&
+    selectedId !== currentDriverId;
 
   useEffect(() => {
     if (!open) return;
     setSelectedId("");
     setSubmitError(null);
+    setSuccessMessage(null);
     setBusy(false);
-  }, [open, orderId]);
+    operationIdRef.current = newOperationId();
+    // First assign → unchecked; reassign to a *different* driver → checked (set when selection changes)
+    setNotifyDriver(false);
+  }, [open, orderId, currentDriverId]);
+
+  useEffect(() => {
+    if (!open || !selectedId) return;
+    if (!selectedHasPhone) {
+      setNotifyDriver(false);
+      return;
+    }
+    // Reassignment to a different driver defaults SMS on; same driver / first assign stays off unless user toggles.
+    setNotifyDriver(changingDriver);
+  }, [open, selectedId, selectedHasPhone, changingDriver]);
 
   const trapFocus = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Tab" || !panelRef.current) return;
@@ -104,17 +150,48 @@ export function AssignDriverDialog({
   }, [open, onClose, busy]);
 
   const handleConfirm = async () => {
-    if (!selectedId || !apiEnabled || busy) return;
+    if (!selectedId || !apiEnabled || busy || successMessage) return;
     setBusy(true);
     setSubmitError(null);
+    const operationId = operationIdRef.current;
+    const driverName = selected?.name ?? "driver";
+    const firstName = driverName.split(" ")[0] ?? driverName;
+    const wantNotify = notifyDriver && selectedHasPhone;
+
     try {
-      await assignDriverApi(orderId, {
+      const result = await assignDriverApi(orderId, {
         driverId: selectedId,
         retryFailed: retryFailed || undefined,
+        notifyDriver: wantNotify || undefined,
+        assignmentOperationId: operationId,
       });
-      await invalidateAfterOrderLifecycle(queryClient, { orderId });
-      onAssigned?.();
-      onClose();
+
+      await invalidateAfterOrderLifecycle(queryClient, {
+        orderId,
+        driverId: selectedId,
+        previousDriverId: result.assignment?.previousDriverId ?? currentDriverId,
+      });
+
+      const notificationRequested = Boolean(result.notification?.requested);
+      const notificationSent = Boolean(result.notification?.sent);
+
+      let message = `Order assigned to ${firstName}.`;
+      if (notificationRequested && notificationSent) {
+        message = `Order assigned to ${firstName} and notification sent.`;
+      } else if (notificationRequested && !notificationSent) {
+        message = `Order assigned to ${firstName}, but the text message could not be sent.`;
+      }
+
+      setSuccessMessage(message);
+      onAssigned?.({
+        driverName,
+        notificationRequested,
+        notificationSent,
+      });
+
+      window.setTimeout(() => {
+        onClose();
+      }, 900);
     } catch (err) {
       setSubmitError(
         err instanceof Error ? err.message : "Failed to assign driver",
@@ -126,6 +203,24 @@ export function AssignDriverDialog({
 
   if (!open) return null;
 
+  const heading = retryFailed
+    ? "Retry & Assign Driver"
+    : isReassign
+      ? "Reassign Driver"
+      : "Assign Driver";
+
+  const confirmLabel = busy
+    ? isReassign
+      ? "Reassigning…"
+      : "Assigning…"
+    : selected
+      ? isReassign
+        ? `Reassign to ${selectedFirstName}`
+        : `Assign Order`
+      : isReassign
+        ? "Reassign Order"
+        : "Assign Order";
+
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
       <button
@@ -134,7 +229,7 @@ export function AssignDriverDialog({
         aria-label="Close assign driver dialog"
         disabled={busy}
         onClick={() => {
-          if (!busy) onClose();
+          if (!busy && !successMessage) onClose();
         }}
       />
       <div
@@ -153,11 +248,17 @@ export function AssignDriverDialog({
         <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-4 sm:px-5">
           <div className="min-w-0">
             <h2 id={titleId} className="text-lg font-semibold tracking-tight">
-              {retryFailed ? "Retry & Assign Driver" : "Assign Driver"}
+              {heading}
             </h2>
             <p className="mt-0.5 truncate text-sm text-muted-foreground">
               {orderLabel ?? orderId}
             </p>
+            {isReassign && currentDriverName && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Currently assigned to{" "}
+                <span className="font-medium text-foreground">{currentDriverName}</span>
+              </p>
+            )}
           </div>
           <button
             type="button"
@@ -181,31 +282,40 @@ export function AssignDriverDialog({
               <DashErrorState message={submitError} />
             </div>
           )}
+          {successMessage && (
+            <div
+              role="status"
+              className="mb-3 rounded-lg border border-success/30 bg-success-soft px-3 py-2 text-sm text-success"
+            >
+              {successMessage}
+            </div>
+          )}
 
-          {loading && assignable.length === 0 ? (
+          {loading && drivers.length === 0 ? (
             <div className="space-y-2 py-2">
               <DriverRowSkeleton />
               <DriverRowSkeleton />
               <DriverRowSkeleton />
             </div>
-          ) : assignable.length === 0 ? (
-            <DashEmptyState message="No available drivers" className="py-8" />
+          ) : drivers.length === 0 ? (
+            <DashEmptyState message="No drivers found" className="py-8" />
           ) : (
             <ul className="space-y-2" role="listbox" aria-label="Assignable drivers">
               {drivers.map((d) => {
                 const canAssign = isDriverAssignable(d.status);
-                const selected = d.id === selectedId;
+                const isSelected = d.id === selectedId;
+                const isCurrent = d.id === currentDriverId;
                 return (
                   <li key={d.id}>
                     <button
                       type="button"
                       role="option"
-                      aria-selected={selected}
-                      disabled={!canAssign || busy || !apiEnabled}
+                      aria-selected={isSelected}
+                      disabled={!canAssign || busy || !apiEnabled || Boolean(successMessage)}
                       onClick={() => setSelectedId(d.id)}
                       className={cn(
                         "flex w-full min-h-14 items-center gap-3 rounded-xl border px-3 py-3 text-left transition-colors",
-                        selected
+                        isSelected
                           ? "border-primary bg-primary/5 ring-2 ring-primary/20"
                           : "border-border hover:bg-secondary/40",
                         !canAssign && "cursor-not-allowed opacity-50",
@@ -225,6 +335,11 @@ export function AssignDriverDialog({
                             {d.name}
                           </span>
                           <DriverStatusBadge status={d.status} />
+                          {isCurrent && (
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              Current
+                            </span>
+                          )}
                         </div>
                         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                           {d.phone && d.phone !== "—" && (
@@ -234,9 +349,7 @@ export function AssignDriverDialog({
                             </span>
                           )}
                           {d.vehicle && <span>{d.vehicle}</span>}
-                          <span>
-                            {d.activeDeliveries} active
-                          </span>
+                          <span>{d.activeDeliveries} active</span>
                         </div>
                         {!canAssign && (
                           <p className="mt-1 text-xs text-muted-foreground">
@@ -252,32 +365,75 @@ export function AssignDriverDialog({
           )}
         </div>
 
-        <div className="flex shrink-0 gap-2 border-t border-border px-4 py-3 sm:px-5">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="inline-flex min-h-11 flex-1 items-center justify-center rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleConfirm()}
-            disabled={busy || !selectedId || !apiEnabled}
-            className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {busy ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Assigning…
-              </>
-            ) : selected ? (
-              `Assign ${selected.name.split(" ")[0]}`
-            ) : (
-              "Assign Driver"
-            )}
-          </button>
+        <div className="shrink-0 space-y-3 border-t border-border px-4 py-3 sm:px-5">
+          <div className="space-y-1">
+            <label
+              htmlFor={smsId}
+              className={cn(
+                "flex min-h-11 items-start gap-3 rounded-lg border border-border px-3 py-2.5 text-sm",
+                (!selectedId || !selectedHasPhone || busy || successMessage) &&
+                  "opacity-60",
+              )}
+            >
+              <input
+                id={smsId}
+                type="checkbox"
+                checked={notifyDriver && selectedHasPhone}
+                disabled={
+                  !selectedId || !selectedHasPhone || busy || Boolean(successMessage)
+                }
+                onChange={(e) => setNotifyDriver(e.target.checked)}
+                className="mt-1 h-4 w-4 shrink-0"
+              />
+              <span className="min-w-0">
+                <span className="font-medium text-foreground">
+                  {selected
+                    ? `Text ${selectedFirstName} about this assignment`
+                    : "Text driver about this assignment"}
+                </span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  Optional. Sent only after the assignment succeeds.
+                </span>
+                {selectedId && !selectedHasPhone && (
+                  <span className="mt-0.5 block text-xs text-muted-foreground">
+                    No mobile number is available for this driver.
+                  </span>
+                )}
+              </span>
+            </label>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={busy}
+              className="inline-flex min-h-11 flex-1 items-center justify-center rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleConfirm()}
+              disabled={
+                busy ||
+                !selectedId ||
+                !apiEnabled ||
+                Boolean(successMessage) ||
+                (isReassign && selectedId === currentDriverId && !retryFailed)
+              }
+              className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {busy ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {confirmLabel}
+                </>
+              ) : (
+                confirmLabel
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>
